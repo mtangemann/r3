@@ -3,6 +3,7 @@
 import click
 
 import r3
+import r3.commit
 import r3.init
 
 
@@ -12,6 +13,7 @@ def cli() -> None:
     pass
 
 
+cli.add_command(r3.commit.commit)
 cli.add_command(r3.init.init)
 
 
