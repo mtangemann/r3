@@ -14,7 +14,7 @@ def init(path: Path):
 
     os.makedirs(path)
     os.makedirs(path / "data")
-    os.makedirs(path / "jobs")
+    os.makedirs(path / "jobs" / "by_hash")
 
     r3config = {"version": r3.__version__}
 

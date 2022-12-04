@@ -26,7 +26,7 @@ def commit(path: Path, repository: Path) -> None:
     files = _find_files(path)
 
     job_hash = _hash_job(config, files)
-    job_path = repository / "jobs" / job_hash
+    job_path = repository / "jobs" / "by_hash" / job_hash
 
     if job_path.exists():
         print(f"Job exists already: {job_path}")
