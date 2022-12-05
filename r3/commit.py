@@ -50,6 +50,20 @@ def commit(path: Path, repository: Path) -> None:
         os.makedirs(target.parent, exist_ok=True)
         shutil.copy(source, target)
 
+    # Add to by_date index.
+    iso_format = r"%Y-%m-%dT%H:%M:%S"
+    createdAt = datetime.strptime(config["metadata"]["createdAt"], iso_format)
+    date = str(createdAt.date())
+    by_date_path = repository / "jobs" / "by_date" / date / job_hash
+    os.makedirs(by_date_path.parent, exist_ok=True)
+    os.symlink(job_path, by_date_path)
+
+    # Add to by_tag index.
+    for tag in config["metadata"].get("tags", []):
+        by_tag_path = repository / "jobs" / "by_tag" / tag / job_hash
+        os.makedirs(by_tag_path.parent, exist_ok=True)
+        os.symlink(job_path, by_tag_path)
+
     print(job_path)
 
 
