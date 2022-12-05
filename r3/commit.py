@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
@@ -32,7 +33,18 @@ def commit(path: Path, repository: Path) -> None:
         print(f"Job exists already: {job_path}")
         return
 
+    config.setdefault("metadata", dict())
+    config["metadata"]["createdAt"] = datetime.now().replace(microsecond=0).isoformat()
+
+    os.makedirs(job_path)
+
+    with open(job_path / "config.yaml", "w") as config_file:
+        yaml.dump(config, config_file)
+
     for file in files:
+        if file == Path("config.yaml"):
+            continue
+
         source = path / file
         target = job_path / file
         os.makedirs(target.parent, exist_ok=True)
