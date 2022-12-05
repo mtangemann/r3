@@ -78,6 +78,7 @@ def _hash_file(path: Path, chunk_size: int = 2**16) -> str:
 
 
 def _hash_config(config: Dict) -> str:
-    config = {key: value for key, value in config.items() if key != "environment"}
+    ignored_keys = {"environment", "metadata"}
+    config = {key: value for key, value in config.items() if key not in ignored_keys}
     config_json = json.dumps(config, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(bytes(config_json, encoding="utf-8")).hexdigest()
