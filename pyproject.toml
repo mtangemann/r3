@@ -27,6 +27,9 @@ dev = [
     "flake8-bugbear==22.10.27",
     "isort==5.10.1",
     "mypy==0.991",
+    "pyfakefs==5.0.0",
+    "pytest==7.2.0",
+    "pytest-cov==4.0.0",
     "types-pyyaml~=6.0",
 ]
 
@@ -42,5 +45,6 @@ profile = "black"
 [[tool.mypy.overrides]]
 module = [
     "executor",
+    "pyfakefs.fake_filesystem",
 ]
 ignore_missing_imports = true
