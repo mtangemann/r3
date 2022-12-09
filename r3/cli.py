@@ -1,11 +1,10 @@
 """R3 command line interface."""
+import sys
+from pathlib import Path
 
 import click
 
 import r3
-import r3.build_indices
-import r3.commit
-import r3.init
 
 
 @click.group()
@@ -14,9 +13,41 @@ def cli() -> None:
     pass
 
 
-cli.add_command(r3.build_indices.build_indices)
-cli.add_command(r3.commit.commit)
-cli.add_command(r3.init.init)
+@cli.command()
+@click.argument("path", type=click.Path(file_okay=False, exists=False, path_type=Path))
+def init(path: Path):
+    repository = r3.Repository(path)
+
+    try:
+        repository.init()
+        print(f"Initialized empty repository in {path}")
+    except FileExistsError:
+        print(f"Cannot initialize repository in {path}: path exists", file=sys.stderr)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def commit(path: Path, repository_path: Path) -> None:
+    repository = r3.Repository(repository_path)
+    job_path = repository.commit(path)
+    print(job_path)
+
+
+@cli.command()
+@click.argument(
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def build_indices(repository_path: Path):
+    repository = r3.Repository(repository_path)
+    repository.build_indices()
 
 
 if __name__ == "__main__":

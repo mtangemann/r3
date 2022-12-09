@@ -4,24 +4,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Set
 
-import click
 import yaml
 
 _IndexType = Dict[str, Set[str]]
 
 
-@click.command()
-@click.argument(
-    "repository",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    envvar="R3_REPOSITORY",
-)
-def build_indices(repository: Path):
-    _build_by_date_index(repository)
-    _build_by_tag_index(repository)
-
-
-def _build_by_date_index(repository: Path) -> None:
+def build_by_date_index(repository: Path) -> None:
     print("Building index: by_date")
     index: _IndexType = dict()
 
@@ -44,7 +32,7 @@ def _build_by_date_index(repository: Path) -> None:
     _write_index(repository, "by_date", index)
 
 
-def _build_by_tag_index(repository: Path) -> None:
+def build_by_tag_index(repository: Path) -> None:
     print("Building index: by_tag")
     index: _IndexType = dict()
 
