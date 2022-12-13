@@ -58,3 +58,9 @@ So the following works as well:
 export R3_REPOSITORY=path/to/repository
 r3 commit path/to/job
 ```
+
+Checking out jobs from the repository will copy the job files and symlink the output
+directory and dependencies:
+```
+r3 checkout /repository/jobs/by_hash/123abc... work/dir
+```

@@ -96,6 +96,31 @@ class Repository:
 
         return job_path
 
+    def checkout(self, hash: str, path: Union[str, os.PathLike]) -> None:
+        path = Path(path)
+
+        job_path = self.path / "jobs" / "by_hash" / hash
+        if not job_path.exists():
+            raise FileNotFoundError(f"Cannot find job: {hash}")
+
+        os.makedirs(path)
+
+        # Copy files
+        for child in job_path.iterdir():
+            if not child.name == "output":
+                if child.is_dir():
+                    shutil.copytree(child, path / child.name)
+                else:
+                    shutil.copy(child, path / child.name)
+
+        # Symlink output directory
+        os.symlink(job_path / "output", path / "output")
+
+        # Symlink dependencies
+        config = _read_config(job_path / "config.yaml")
+        for dependency in config.get("dependencies", []):
+            os.symlink(self.path / dependency, path / dependency)
+
     def build_indices(self):
         """Builds the `by_date` and `by_tag` indices."""
         r3._indices.build_by_date_index(self.path)
