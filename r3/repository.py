@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Union
 
 import yaml
+from executor import ExternalCommandFailed, execute
 
 import r3
 import r3._indices
@@ -28,6 +29,7 @@ class Repository:
             raise FileExistsError(f"The repository path exists already: {self.path}")
 
         os.makedirs(self.path)
+        os.makedirs(self.path / "code")
         os.makedirs(self.path / "data")
         os.makedirs(self.path / "jobs" / "by_hash")
 
@@ -49,8 +51,27 @@ class Repository:
         config = _read_config(path / "config.yaml")
 
         for dependency in config.get("dependencies", []):
-            if not (self.path / dependency).exists():
+            parts = dependency.split("@", maxsplit=1)
+            dependency_path = self.path / parts[0]
+            dependency_commit = None if len(parts) < 2 else parts[1]
+
+            if not dependency_path.exists():
                 raise FileNotFoundError(f"Missing dependency: {dependency}")
+
+            if dependency_commit is not None:
+                try:
+                    object_type = execute(
+                        f"git cat-file -t {dependency_commit}",
+                        directory=dependency_path,
+                        capture=True,
+                    )
+                except ExternalCommandFailed:
+                    dependency_commit_exists = False
+                else:
+                    dependency_commit_exists = object_type == "commit"
+
+                if not dependency_commit_exists:
+                    raise FileNotFoundError(f"Missing dependecy (commit): {dependency}")
 
         files = _find_files(path)
 
@@ -119,7 +140,20 @@ class Repository:
         # Symlink dependencies
         config = _read_config(job_path / "config.yaml")
         for dependency in config.get("dependencies", []):
-            os.symlink(self.path / dependency, path / dependency)
+            parts = dependency.split("@", maxsplit=1)
+            dependency_path = parts[0]
+            dependency_commit = None if len(parts) < 2 else parts[1]
+
+            source = self.path / dependency_path
+            destination = path / dependency_path
+
+            os.makedirs(destination.parent, exist_ok=True)
+
+            if dependency_commit is None:
+                os.symlink(source, destination)
+            else:
+                execute(f"git clone {source} {destination}")
+                execute(f"git checkout {dependency_commit}", directory=destination)
 
     def build_indices(self):
         """Builds the `by_date` and `by_tag` indices."""
