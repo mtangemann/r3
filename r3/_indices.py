@@ -14,7 +14,7 @@ def build_by_date_index(repository: Path) -> None:
     index: _IndexType = dict()
 
     for job in (repository / "jobs" / "by_hash").iterdir():
-        with open(job / "config.yaml", "r") as config_file:
+        with open(job / "r3.yaml", "r") as config_file:
             config = yaml.safe_load(config_file)
 
         if "createdAt" not in config.get("metadata", dict()):
@@ -37,7 +37,7 @@ def build_by_tag_index(repository: Path) -> None:
     index: _IndexType = dict()
 
     for job in (repository / "jobs" / "by_hash").iterdir():
-        with open(job / "config.yaml", "r") as config_file:
+        with open(job / "r3.yaml", "r") as config_file:
             config = yaml.safe_load(config_file)
 
         tags = config.get("metadata", dict()).get("tags", [])

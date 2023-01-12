@@ -48,7 +48,7 @@ class Repository:
         """
         path = Path(path)
 
-        config = _read_config(path / "config.yaml")
+        config = _read_config(path / "r3.yaml")
 
         for dependency in config.get("dependencies", []):
             parts = dependency.split("@", maxsplit=1)
@@ -89,11 +89,11 @@ class Repository:
 
         os.makedirs(job_path)
 
-        with open(job_path / "config.yaml", "w") as config_file:
+        with open(job_path / "r3.yaml", "w") as config_file:
             yaml.dump(config, config_file)
 
         for file in files:
-            if file == Path("config.yaml"):
+            if file == Path("r3.yaml"):
                 continue
 
             source = path / file
@@ -138,7 +138,7 @@ class Repository:
         os.symlink(job_path / "output", path / "output")
 
         # Symlink dependencies
-        config = _read_config(job_path / "config.yaml")
+        config = _read_config(job_path / "r3.yaml")
         for dependency in config.get("dependencies", []):
             parts = dependency.split("@", maxsplit=1)
             dependency_path = parts[0]
@@ -175,9 +175,9 @@ def _find_files(path: Path) -> List[Path]:
 
 def _hash_job(config: Dict, files: List[Path]) -> str:
     hashes = {
-        str(file): _hash_file(file) for file in files if file != Path("config.yaml")
+        str(file): _hash_file(file) for file in files if file != Path("r3.yaml")
     }
-    hashes["config.yaml"] = _hash_config(config)
+    hashes["r3.yaml"] = _hash_config(config)
 
     index = "\n".join("{} {}".format(hashes[file], file) for file in sorted(hashes))
 

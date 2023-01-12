@@ -18,7 +18,7 @@ cp container-v1.sif path/to/repository/data/containers
 Prepare your job in a directory, including a config file. For example:
 
 ```yaml
-# config.yaml
+# r3.yaml
 dependencies:
   - &container data/containers/container-v1.sif
 
@@ -38,7 +38,7 @@ parameters:
 # run.py
 import yaml
 
-with open("config.yaml", "r") as config_file:
+with open("r3.yaml", "r") as config_file:
     parameters = yaml.safe_load(config_file).get("parameters", {})
 
 name = parameters.get("name", "World")
