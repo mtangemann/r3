@@ -10,7 +10,6 @@ import yaml
 from executor import ExternalCommandFailed, execute
 
 import r3
-import r3._indices
 
 
 class Repository:
@@ -31,7 +30,7 @@ class Repository:
         os.makedirs(self.path)
         os.makedirs(self.path / "code")
         os.makedirs(self.path / "data")
-        os.makedirs(self.path / "jobs" / "by_hash")
+        os.makedirs(self.path / "jobs")
 
         r3config = {"version": r3.__version__}
 
@@ -76,7 +75,7 @@ class Repository:
         files = _find_files(path)
 
         job_hash = _hash_job(config, files)
-        job_path = self.path / "jobs" / "by_hash" / job_hash
+        job_path = self.path / "jobs" / job_hash
 
         if job_path.exists():
             print(f"Job exists already: {job_path}")
@@ -101,26 +100,12 @@ class Repository:
             os.makedirs(target.parent, exist_ok=True)
             shutil.copy(source, target)
 
-        # Add to by_date index.
-        iso_format = r"%Y-%m-%dT%H:%M:%S"
-        createdAt = datetime.strptime(config["metadata"]["createdAt"], iso_format)
-        date = str(createdAt.date())
-        by_date_path = self.path / "jobs" / "by_date" / date / job_hash
-        os.makedirs(by_date_path.parent, exist_ok=True)
-        os.symlink(job_path, by_date_path)
-
-        # Add to by_tag index.
-        for tag in config["metadata"].get("tags", []):
-            by_tag_path = self.path / "jobs" / "by_tag" / tag / job_hash
-            os.makedirs(by_tag_path.parent, exist_ok=True)
-            os.symlink(job_path, by_tag_path)
-
         return job_path
 
     def checkout(self, hash: str, path: Union[str, os.PathLike]) -> None:
         path = Path(path)
 
-        job_path = self.path / "jobs" / "by_hash" / hash
+        job_path = self.path / "jobs" / hash
         if not job_path.exists():
             raise FileNotFoundError(f"Cannot find job: {hash}")
 
@@ -155,10 +140,18 @@ class Repository:
                 execute(f"git clone {source} {destination}")
                 execute(f"git checkout {dependency_commit}", directory=destination)
 
-    def build_indices(self):
-        """Builds the `by_date` and `by_tag` indices."""
-        r3._indices.build_by_date_index(self.path)
-        r3._indices.build_by_tag_index(self.path)
+    def rebuild_cache(self):
+        """Aggregates all job metadata into 'metadata.json'."""
+        metadata = dict()
+
+        for job in (self.path / "jobs").iterdir():
+            with open(job / "r3.yaml", "r") as config_file:
+                config = yaml.safe_load(config_file)
+
+            metadata[job.name] = config.get("metadata", dict())
+
+        with open(self.path / "metadata.json", "w") as metadata_file:
+            json.dump(metadata, metadata_file)
 
 
 def _read_config(path: Path) -> Dict:
@@ -174,9 +167,7 @@ def _find_files(path: Path) -> List[Path]:
 
 
 def _hash_job(config: Dict, files: List[Path]) -> str:
-    hashes = {
-        str(file): _hash_file(file) for file in files if file != Path("r3.yaml")
-    }
+    hashes = {str(file): _hash_file(file) for file in files if file != Path("r3.yaml")}
     hashes["r3.yaml"] = _hash_config(config)
 
     index = "\n".join("{} {}".format(hashes[file], file) for file in sorted(hashes))

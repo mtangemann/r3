@@ -56,9 +56,9 @@ def checkout(job_path: Path, target_path) -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def build_indices(repository_path: Path):
+def rebuild_cache(repository_path: Path):
     repository = r3.Repository(repository_path)
-    repository.build_indices()
+    repository.rebuild_cache()
 
 
 if __name__ == "__main__":

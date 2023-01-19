@@ -23,7 +23,7 @@ def test_init_creates_directories(fs: FakeFilesystem) -> None:
 
     assert root.exists()
     assert (root / "data").exists()
-    assert (root / "jobs" / "by_hash").exists()
+    assert (root / "jobs").exists()
 
 
 def test_init_creates_config_file(fs: FakeFilesystem) -> None:
