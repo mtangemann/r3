@@ -83,6 +83,7 @@ class Repository:
 
         config.setdefault("metadata", dict())
         config["metadata"]["date"] = datetime.now().replace(microsecond=0).isoformat()
+        config["metadata"]["source"] = str(path.absolute())
 
         os.makedirs(job_path)
 
