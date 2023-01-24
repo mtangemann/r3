@@ -100,13 +100,12 @@ class Repository:
             yaml.dump(config, config_file)
 
         for file in files:
-            if file == Path("r3.yaml"):
+            if file == Path(path / "r3.yaml"):
                 continue
 
-            source = path / file
             target = job_path / file
             os.makedirs(target.parent, exist_ok=True)
-            shutil.copy(source, target)
+            shutil.copy(file, target)
 
         return job_path
 
