@@ -22,6 +22,9 @@ Prepare your job in a directory, including a config file. For example:
 dependencies:
   - &container data/containers/container-v1.sif
 
+ignore:
+ - /__pycache__
+
 environment:
   container: *container
   gpus: none

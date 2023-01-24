@@ -4,12 +4,13 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, Iterable, Union
 
 import yaml
 from executor import ExternalCommandFailed, execute
 
 import r3
+import r3.utils
 
 
 class Repository:
@@ -49,6 +50,8 @@ class Repository:
 
         config = _read_config(path / "r3.yaml")
 
+        ignore_paths = set(config.get("ignore", []))
+
         for dependency in config.get("dependencies", []):
             parts = dependency.split("@", maxsplit=1)
             dependency_path = self.path / parts[0]
@@ -72,7 +75,13 @@ class Repository:
                 if not dependency_commit_exists:
                     raise FileNotFoundError(f"Missing dependecy (commit): {dependency}")
 
-        files = _find_files(path)
+            ignore_paths.add(f"/{dependency}")
+            if (path / parts[0]).exists() and (
+                path / parts[0]
+            ).resolve() != dependency_path:
+                print(f"WARNING: Ignoring {parts[0]}")
+
+        files = r3.utils.find_files(path, ignore_paths)
 
         job_hash = _hash_job(config, files)
         job_path = self.path / "jobs" / job_hash
@@ -161,15 +170,13 @@ def _read_config(path: Path) -> Dict:
         return yaml.safe_load(config_file)
 
 
-def _find_files(path: Path) -> List[Path]:
-    return [child.relative_to(path) for child in path.rglob("*")]
-
-
-def _hash_job(config: Dict, files: List[Path]) -> str:
+def _hash_job(config: Dict, files: Iterable[Path]) -> str:
     hashes = {str(file): _hash_file(file) for file in files if file != Path("r3.yaml")}
     hashes["r3.yaml"] = _hash_config(config)
 
     index = "\n".join("{} {}".format(hashes[file], file) for file in sorted(hashes))
+
+    print(index)
 
     return hashlib.sha256(index.encode("utf-8")).hexdigest()
 
