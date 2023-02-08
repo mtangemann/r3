@@ -45,7 +45,7 @@ def commit(path: Path, repository_path: Path) -> None:
 )
 @click.argument("target_path", type=click.Path(exists=False, path_type=Path))
 def checkout(job_path: Path, target_path) -> None:
-    repository_path = job_path.parent.parent.parent
+    repository_path = job_path.parent.parent
     repository = r3.Repository(repository_path)
     repository.checkout(job_path.name, target_path)
 
