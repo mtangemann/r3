@@ -35,8 +35,9 @@ def init(path: Path):
 )
 def commit(path: Path, repository_path: Path) -> None:
     repository = r3.Repository(repository_path)
-    job_path = repository.commit(path)
-    print(job_path)
+    job = r3.Job(path)
+    job = repository.add(job)
+    print(job.path)
 
 
 @cli.command()
@@ -45,9 +46,13 @@ def commit(path: Path, repository_path: Path) -> None:
 )
 @click.argument("target_path", type=click.Path(exists=False, path_type=Path))
 def checkout(job_path: Path, target_path) -> None:
-    repository_path = job_path.parent.parent
-    repository = r3.Repository(repository_path)
-    repository.checkout(job_path.name, target_path)
+    job = r3.Job(job_path)
+    repository = job.repository
+
+    if repository is None:
+        raise ValueError("Can only checkout commited jobs.")
+
+    repository.checkout(job, target_path)
 
 
 @cli.command()

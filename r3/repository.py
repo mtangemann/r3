@@ -4,7 +4,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, Union
+from typing import Any, Dict, Iterable, Optional, Union
 
 import yaml
 from executor import ExternalCommandFailed, execute
@@ -38,88 +38,46 @@ class Repository:
         with open(self.path / "r3.yaml", "w") as config_file:
             yaml.dump(r3config, config_file)
 
-    def commit(self, path: Union[str, os.PathLike]) -> Path:
-        """Adds the job from the given path to the repository.
+    def add(self, job: "Job") -> "Job":
+        target_path = self.path / "jobs" / job.hash()
 
-        Returns
-        -------
-        Path
-            The path to the job within the repository.
-        """
-        path = Path(path)
+        if (self.path / target_path).is_dir():
+            print(f"Job exists already: {target_path}")
+            return Job(target_path)
 
-        config = _read_config(path / "r3.yaml")
+        for dependency in job.dependencies():
+            if dependency not in self:
+                raise ValueError(f"Missing dependency: {dependency}")
 
-        ignore_paths = set(config.get("ignore", []))
+        os.makedirs(target_path)
+        os.makedirs(target_path / "output")
 
-        for dependency in config.get("dependencies", []):
-            parts = dependency.split("@", maxsplit=1)
-            dependency_path = self.path / parts[0]
-            dependency_commit = None if len(parts) < 2 else parts[1]
-
-            if not dependency_path.exists():
-                raise FileNotFoundError(f"Missing dependency: {dependency}")
-
-            if dependency_commit is not None:
-                try:
-                    object_type = execute(
-                        f"git cat-file -t {dependency_commit}",
-                        directory=dependency_path,
-                        capture=True,
-                    )
-                except ExternalCommandFailed:
-                    dependency_commit_exists = False
-                else:
-                    dependency_commit_exists = object_type == "commit"
-
-                if not dependency_commit_exists:
-                    raise FileNotFoundError(f"Missing dependecy (commit): {dependency}")
-
-            ignore_paths.add(f"/{dependency}")
-            if (path / parts[0]).exists() and (
-                path / parts[0]
-            ).resolve() != dependency_path:
-                print(f"WARNING: Ignoring {parts[0]}")
-
-        files = r3.utils.find_files(path, ignore_paths)
-
-        job_hash = _hash_job(config, files)
-        job_path = self.path / "jobs" / job_hash
-
-        if job_path.exists():
-            print(f"Job exists already: {job_path}")
-            return job_path
-
-        config.setdefault("metadata", dict())
+        config = job.config
         config["metadata"]["date"] = datetime.now().replace(microsecond=0).isoformat()
-        config["metadata"]["source"] = str(path.absolute())
+        config["metadata"]["source"] = str(job.path)
 
-        os.makedirs(job_path)
-
-        with open(job_path / "r3.yaml", "w") as config_file:
+        with open(target_path / "r3.yaml", "w") as config_file:
             yaml.dump(config, config_file)
 
-        for file in files:
-            if file == Path(path / "r3.yaml"):
+        for file in job.files():
+            if file == Path("r3.yaml"):
                 continue
 
-            target = job_path / file
+            target = target_path / file
             os.makedirs(target.parent, exist_ok=True)
             shutil.copy(file, target)
 
-        return job_path
+        return Job(target_path)
 
-    def checkout(self, hash: str, path: Union[str, os.PathLike]) -> None:
+    def checkout(self, job: "Job", path: Union[str, os.PathLike]) -> None:
+        if job not in self:
+            raise FileNotFoundError(f"Cannot find job: {job.path}")
+
         path = Path(path)
-
-        job_path = self.path / "jobs" / hash
-        if not job_path.exists():
-            raise FileNotFoundError(f"Cannot find job: {hash}")
-
         os.makedirs(path)
 
         # Copy files
-        for child in job_path.iterdir():
+        for child in job.path.iterdir():
             if not child.name == "output":
                 if child.is_dir():
                     shutil.copytree(child, path / child.name)
@@ -127,25 +85,42 @@ class Repository:
                     shutil.copy(child, path / child.name)
 
         # Symlink output directory
-        os.symlink(job_path / "output", path / "output")
+        os.symlink(job.path / "output", path / "output")
 
-        # Symlink dependencies
-        config = _read_config(job_path / "r3.yaml")
-        for dependency in config.get("dependencies", []):
-            parts = dependency.split("@", maxsplit=1)
-            dependency_path = parts[0]
-            dependency_commit = None if len(parts) < 2 else parts[1]
-
-            source = self.path / dependency_path
-            destination = path / dependency_path
+        # Symlink / clone dependencies
+        for dependency in job.dependencies():
+            source = self.path / dependency.path
+            destination = path / dependency.path
 
             os.makedirs(destination.parent, exist_ok=True)
 
-            if dependency_commit is None:
+            if dependency.commit is None:
                 os.symlink(source, destination)
             else:
                 execute(f"git clone {source} {destination}")
-                execute(f"git checkout {dependency_commit}", directory=destination)
+                execute(f"git checkout {dependency.commit}", directory=destination)
+
+    def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
+        if isinstance(item, Job):
+            return (self.path / "jobs" / item.hash()).is_dir()
+
+        if not (self.path / item.path).exists():
+            return False
+
+        elif item.commit is None:
+            return True
+
+        else:
+            try:
+                object_type = execute(
+                    f"git cat-file -t {item.commit}",
+                    directory=self.path / item.path,
+                    capture=True,
+                )
+            except ExternalCommandFailed:
+                return False
+            else:
+                return object_type == "commit"
 
     def rebuild_cache(self):
         """Aggregates all job metadata into 'metadata.json'."""
@@ -161,12 +136,73 @@ class Repository:
             json.dump(metadata, metadata_file)
 
 
-def _read_config(path: Path) -> Dict:
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing config file: {path}")
+class Job:
+    def __init__(self, path: Union[str, os.PathLike]) -> None:
+        self.path = Path(path).absolute()
 
-    with open(path, "r") as config_file:
-        return yaml.safe_load(config_file)
+        if (self.path.parent.parent / "r3.yaml").is_file():
+            self._repository: Optional[Repository] = Repository(self.path.parent.parent)
+        else:
+            self._repository = None
+
+        self._config: Optional[Dict[str, Any]] = None
+
+    @property
+    def repository(self) -> Optional[Repository]:
+        """Optionally returns the repository in which this job is contained.
+
+        Returns
+        -------
+        Repository or None
+            This returns the repository in which this job is contained. If this job is
+            not part of any repository, this returns ``None``.
+        """
+        return self._repository
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        if self._config is None:
+            with open(self.path / "r3.yaml", "r") as config_file:
+                self._config = yaml.safe_load(config_file)
+
+            self._config.setdefault("metadata", dict())
+
+        return self._config
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return self.config["metadata"]
+
+    def dependencies(self) -> Iterable["Dependency"]:
+        for dependency_string in self.config.get("dependencies", []):
+            yield Dependency.from_string(dependency_string)
+
+    def files(self) -> Iterable[Path]:
+        ignore_paths = self.config.get("ignore", [])
+
+        for dependency in self.dependencies():
+            ignore_paths.append(f"/{dependency.path}")
+
+        return r3.utils.find_files(self.path, ignore_paths)
+
+    def hash(self, recompute: bool = False) -> str:
+        if self.repository is not None and not recompute:
+            return self.path.name
+
+        return _hash_job(self.config, self.files())
+
+
+class Dependency:
+    def __init__(self, path: Path, commit: Optional[str] = None) -> None:
+        self.path = path
+        self.commit = commit
+
+    @staticmethod
+    def from_string(string: str) -> "Dependency":
+        parts = string.split("@", maxsplit=1)
+        path = Path(parts[0])
+        commit = None if len(parts) < 2 else parts[1]
+        return Dependency(path, commit)
 
 
 def _hash_job(config: Dict, files: Iterable[Path]) -> str:

@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from r3.repository import Repository
+from r3.repository import Dependency, Job, Repository
 
 with open(Path(__file__).parent.parent / "VERSION", "r") as version_file:
     __version__ = version_file.read().strip()
 
-__all__ = ["Repository"]
+__all__ = ["Dependency", "Job", "Repository"]

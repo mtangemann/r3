@@ -3,7 +3,7 @@ from typing import Iterable
 
 
 def find_files(path: Path, ignore_patterns: Iterable[str]) -> Iterable[Path]:
-    return list(_find_files(path, ignore_patterns))
+    return [child.relative_to(path) for child in _find_files(path, ignore_patterns)]
 
 
 def _find_files(path: Path, ignore_patterns: Iterable[str]) -> Iterable[Path]:
