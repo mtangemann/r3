@@ -69,7 +69,29 @@ class Repository:
 
         return Job(target_path)
 
-    def checkout(self, job: "Job", path: Union[str, os.PathLike]) -> None:
+    def checkout(
+        self, item: Union["Dependency", "Job"], path: Union[str, os.PathLike]
+    ) -> None:
+        if isinstance(item, Dependency):
+            return self._checkout_dependency(item, path)
+        else:
+            return self._checkout_job(item, path)
+
+    def _checkout_dependency(
+        self, dependency: "Dependency", path: Union[str, os.PathLike]
+    ) -> None:
+        source = self.path / dependency.path
+        destination = path / dependency.path
+
+        os.makedirs(destination.parent, exist_ok=True)
+
+        if dependency.commit is None:
+            os.symlink(source, destination)
+        else:
+            execute(f"git clone {source} {destination}")
+            execute(f"git checkout {dependency.commit}", directory=destination)
+
+    def _checkout_job(self, job: "Job", path: Union[str, os.PathLike]) -> None:
         if job not in self:
             raise FileNotFoundError(f"Cannot find job: {job.path}")
 
@@ -87,18 +109,8 @@ class Repository:
         # Symlink output directory
         os.symlink(job.path / "output", path / "output")
 
-        # Symlink / clone dependencies
         for dependency in job.dependencies():
-            source = self.path / dependency.path
-            destination = path / dependency.path
-
-            os.makedirs(destination.parent, exist_ok=True)
-
-            if dependency.commit is None:
-                os.symlink(source, destination)
-            else:
-                execute(f"git clone {source} {destination}")
-                execute(f"git checkout {dependency.commit}", directory=destination)
+            self.checkout(dependency, path)
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         if isinstance(item, Job):

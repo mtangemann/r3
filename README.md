@@ -50,6 +50,9 @@ with open("output/test", "w") as output_file:
     output_file.write(f"Hello {name}!")
 ```
 
+To facilitate developing jobs, dependencies for uncomitted jobs can be checked out
+using `r3 dev checkout`.
+
 Now commit your job to the repository:
 ```
 r3 commit path/to/job path/to/repository

@@ -55,6 +55,41 @@ def checkout(job_path: Path, target_path) -> None:
     repository.checkout(job, target_path)
 
 
+@cli.group()
+def dev():
+    pass
+
+
+@dev.command(name="checkout")
+@click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def dev_checkout(path: str, repository_path: str) -> None:
+    job = r3.Job(path)
+    if job.repository is not None:
+        print("ERROR: Can only dev checkout jobs that are not committed.")
+        sys.exit(1)
+
+    repository = r3.Repository(repository_path)
+
+    for dependency in job.dependencies():
+        if dependency not in repository:
+            print(f"ERROR: Missing dependency: {dependency}")
+            sys.exit(1)
+
+        target_path = Path(path) / dependency.path
+        if target_path.exists():
+            print(
+                f"ERROR: Target path exists already. Use --force to override. {target_path}"
+            )
+            sys.exit(1)
+
+        repository.checkout(dependency, path)
+
+
 @cli.command()
 @click.argument(
     "repository_path",
