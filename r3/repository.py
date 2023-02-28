@@ -19,27 +19,47 @@ R3_FORMAT_VERSION = "1.0.0-beta.1"
 
 class Repository:
     def __init__(self, path: Union[str, os.PathLike]) -> None:
+        """Initializes the repository instance.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the given path does not exist.
+        NotADirectoryError
+            If the given path exists but is not a directory.
+        """
         self.path = Path(path)
 
-    def init(self) -> None:
-        """Initializes the Repository in the file system.
+        if not self.path.exists():
+            raise FileNotFoundError(f"No such directory: {self.path}")
+
+        if not self.path.is_dir():
+            raise NotADirectoryError(f"Not a directory: {self.path}")
+
+    @staticmethod
+    def create(path: Union[str, os.PathLike]) -> "Repository":
+        """Creates a repository at the given path.
 
         Raises
         ------
         FileExistsError
-            If the repository path exists alreay.
+            If the given path exists alreay.
         """
-        if self.path.exists():
-            raise FileExistsError(f"The repository path exists already: {self.path}")
+        path = Path(path)
 
-        os.makedirs(self.path)
-        os.makedirs(self.path / "git")
-        os.makedirs(self.path / "jobs")
+        if path.exists():
+            raise FileExistsError(f"Path exists already: {path}")
+
+        os.makedirs(path)
+        os.makedirs(path / "git")
+        os.makedirs(path / "jobs")
 
         r3config = {"version": R3_FORMAT_VERSION}
 
-        with open(self.path / "r3repository.yaml", "w") as config_file:
+        with open(path / "r3repository.yaml", "w") as config_file:
             yaml.dump(r3config, config_file)
+
+        return Repository(path)
 
     def add(self, job: "Job") -> "Job":
         target_path = self.path / "jobs" / job.hash()

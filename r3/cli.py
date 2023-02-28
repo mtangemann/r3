@@ -16,13 +16,10 @@ def cli() -> None:
 @cli.command()
 @click.argument("path", type=click.Path(file_okay=False, exists=False, path_type=Path))
 def init(path: Path):
-    repository = r3.Repository(path)
-
     try:
-        repository.init()
-        print(f"Initialized empty repository in {path}")
-    except FileExistsError:
-        print(f"Cannot initialize repository in {path}: path exists", file=sys.stderr)
+        r3.Repository.create(path)
+    except FileExistsError as error:
+        print(f"Error: {error}")
         sys.exit(1)
 
 

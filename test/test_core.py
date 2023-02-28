@@ -15,9 +15,7 @@ DATA_PATH = Path(__file__).parent / "data"
 
 @pytest.fixture
 def repository(fs: FakeFilesystem) -> r3.Repository:
-    repository = r3.Repository("/test/repository")
-    repository.init()
-    return repository
+    return r3.Repository.create("/test/repository")
 
 
 def get_dummy_job(fs: FakeFilesystem, name: str) -> r3.Job:
