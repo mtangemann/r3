@@ -80,7 +80,7 @@ def dev_checkout(path: str, repository_path: str) -> None:
             print(f"ERROR: Missing dependency: {dependency}")
             sys.exit(1)
 
-        target_path = Path(path) / dependency.path
+        target_path = Path(path) / dependency.item
         if target_path.exists():
             print(
                 f"ERROR: Target path exists already. Use --force to override. {target_path}"

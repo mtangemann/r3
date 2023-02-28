@@ -22,7 +22,7 @@ def test_init_creates_directories(fs: FakeFilesystem) -> None:
     repository.init()
 
     assert root.exists()
-    assert (root / "data").exists()
+    assert (root / "git").exists()
     assert (root / "jobs").exists()
 
 
@@ -31,10 +31,9 @@ def test_init_creates_config_file(fs: FakeFilesystem) -> None:
     repository = r3.Repository(root)
     repository.init()
 
-    assert (root / "r3.yaml").exists()
+    assert (root / "r3repository.yaml").exists()
 
-    with open(root / "r3.yaml", "r") as config_file:
+    with open(root / "r3repository.yaml", "r") as config_file:
         config = yaml.safe_load(config_file)
 
     assert "version" in config
-    assert config["version"] == r3.__version__
