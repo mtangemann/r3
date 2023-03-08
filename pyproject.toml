@@ -42,6 +42,10 @@ r3 = "r3.cli:cli"
 profile = "black"
 
 
+[tool.mypy]
+exclude = "^test/data"
+
+
 [[tool.mypy.overrides]]
 module = [
     "executor",
