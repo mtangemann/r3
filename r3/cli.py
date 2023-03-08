@@ -33,6 +33,7 @@ def init(path: Path):
 def commit(path: Path, repository_path: Path) -> None:
     repository = r3.Repository(repository_path)
     job = r3.Job(path)
+    job.metadata["source"] = str(path)
     job = repository.add(job)
     print(job.path)
 

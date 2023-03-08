@@ -91,7 +91,6 @@ class Repository:
         metadata = config.pop("metadata", dict())
         metadata = {**metadata, **job.metadata}
         metadata["date"] = datetime.now().replace(microsecond=0).isoformat()
-        metadata["source"] = str(job.path)
 
         files = job.files
         config.pop("ignore", None)
