@@ -1,3 +1,9 @@
+"""R3 core functionality.
+
+This module provides the core functionality of R3. This module should not be used
+directly, but rather the public API exported by the top-level ``r3`` module.
+"""
+
 import hashlib
 import json
 import os

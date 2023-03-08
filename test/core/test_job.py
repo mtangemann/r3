@@ -6,7 +6,7 @@ import yaml
 
 import r3
 
-DATA_PATH = Path(__file__).parent / "data"
+DATA_PATH = Path(__file__).parent.parent / "data"
 
 
 def test_empty_job_is_valid():

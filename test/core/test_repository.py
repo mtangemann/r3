@@ -1,4 +1,4 @@
-"""Unit tests for ``r3.core``."""
+"""Unit tests for ``r3.Repository``."""
 
 import filecmp
 import os
@@ -6,11 +6,12 @@ import stat
 from pathlib import Path
 
 import pytest
+import yaml
 from pyfakefs.fake_filesystem import FakeFilesystem
 
 import r3
 
-DATA_PATH = Path(__file__).parent / "data"
+DATA_PATH = Path(__file__).parent.parent / "data"
 
 
 @pytest.fixture
@@ -22,6 +23,35 @@ def get_dummy_job(fs: FakeFilesystem, name: str) -> r3.Job:
     path = DATA_PATH / "jobs" / name
     fs.add_real_directory(path, read_only=True)
     return r3.Job(path)
+
+
+def test_create_fails_if_path_exists(fs: FakeFilesystem) -> None:
+    path = "/rest/repository"
+    fs.create_dir(path)
+
+    with pytest.raises(FileExistsError):
+        r3.Repository.create(path)
+
+
+def test_create_creates_directories(fs: FakeFilesystem) -> None:
+    path = Path("/test/repository")
+    r3.Repository.create(path)
+
+    assert path.exists()
+    assert (path / "git").exists()
+    assert (path / "jobs").exists()
+
+
+def test_create_creates_config_file_with_version(fs: FakeFilesystem) -> None:
+    path = Path("/test/repository")
+    r3.Repository.create(path)
+
+    assert (path / "r3repository.yaml").exists()
+
+    with open(path / "r3repository.yaml", "r") as config_file:
+        config = yaml.safe_load(config_file)
+
+    assert "version" in config
 
 
 def test_add_creates_job_folder(fs: FakeFilesystem, repository: r3.Repository) -> None:
