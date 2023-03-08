@@ -1,8 +1,8 @@
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
 
-def find_files(path: Path, ignore_patterns: Iterable[str]) -> Iterable[Path]:
+def find_files(path: Path, ignore_patterns: Iterable[str]) -> List[Path]:
     return [child.relative_to(path) for child in _find_files(path, ignore_patterns)]
 
 

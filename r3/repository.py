@@ -6,7 +6,8 @@ import stat
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Union
+from types import MappingProxyType
+from typing import Any, Dict, Iterable, Mapping, Optional, Union
 
 import yaml
 from executor import ExternalCommandFailed, execute
@@ -76,12 +77,17 @@ class Repository:
         os.makedirs(target_path / "output")
 
         config = job.config
-        metadata = job.config.pop("metadata", dict())
+
+        if not isinstance(config, dict):
+            # If this is reachable that's a bug.
+            raise RuntimeError("Expected config to be mutable for uncommitted jobs.")
+
+        metadata = config.pop("metadata", dict())
         metadata = {**metadata, **job.metadata}
         metadata["date"] = datetime.now().replace(microsecond=0).isoformat()
         metadata["source"] = str(job.path)
 
-        files = job.files()
+        files = job.files
         config.pop("ignore", None)
 
         with open(target_path / "r3.yaml", "w") as config_file:
@@ -91,13 +97,14 @@ class Repository:
         with open(target_path / "r3metadata.yaml", "w") as metadata_file:
             yaml.dump(metadata, metadata_file)
 
-        for file in files:
-            if file == Path("r3.yaml") or file == Path("r3metadata.yaml"):
+        for destination, source in files.items():
+            if destination in [Path("r3.yaml"), Path("r3metadata.yaml")]:
                 continue
 
-            target = target_path / file
+            target = target_path / destination
+
             os.makedirs(target.parent, exist_ok=True)
-            shutil.copy(job.path / file, target)
+            shutil.copy(source, target)
             _remove_write_permissions(target)
 
         _remove_write_permissions(target_path)
@@ -134,6 +141,9 @@ class Repository:
     def _checkout_job(self, job: "Job", path: Union[str, os.PathLike]) -> None:
         if job not in self:
             raise FileNotFoundError(f"Cannot find job: {job.path}")
+
+        if job.path is None:
+            raise RuntimeError("Job is committed but doesn't have a path.")
 
         path = Path(path)
         os.makedirs(path)
@@ -189,16 +199,118 @@ class Repository:
 
 
 class Job:
-    def __init__(self, path: Union[str, os.PathLike]) -> None:
-        self.path = Path(path).absolute()
+    """A job that may or may not be part of a repository
 
-        if (self.path.parent.parent / "r3repository.yaml").is_file():
-            self._repository: Optional[Repository] = Repository(self.path.parent.parent)
+    This class provides an API to access and/or modifiy jobs. The behavior of this class
+    depends on whether the job is committed to a repository or not. If this job is part
+    of a repository, all properties except the metadata are read-only. If not yet
+    committed, all properties may be modified.
+    """
+
+    def __init__(
+        self,
+        path: Optional[Union[str, os.PathLike]] = None,
+        config: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[Path, Path]] = None,
+    ) -> None:
+        """Initializes a job instance.
+
+        Parameters
+        ----------
+        path
+            Path to the job's root directory. This may be ``None`` if the job is
+            constructed entirely via the Python API and no corresponding directory
+            exists.
+        config
+            Job configuration override. Per default, the job config is read from a
+            config file named ``r3.yaml`` relative to the job path if it exists or set
+            to the empty dict otherwise. If a config is specified here, the default
+            config is entirely ignored. If the job is part of an R3 repository, this
+            parameter must be None.
+        metadata
+            Job metadata override. Per default, the job metadata is read from a config
+            file named ``r3metadata.yaml`` relative to the job path if it exists or set
+            to the empty dict otherwise. If a metadata dict is specified here, the
+            default metadata is entirely ignored.
+        files
+            A dict of files belonging to the job. Keys are the destination paths of the
+            files relative to the job directory which don't have to exist yet. The
+            values are the absolute file paths which have to exist. Per default, this
+            list is created by recursively scanning the job path if given or set to the
+            empty list otherwise. This respects the ignore rules from the job
+            configuration, see the user guide for more information. If a list of files
+            is specified here, the default list is entirely ignored. If the job is part
+            of an R3 repository, this parameter must be None.
+
+        Raises
+        ------
+        ValueError
+            If a job path is given that is contained in an R3 repository and ``config``
+            or ``files`` is not None.
+        """
+        self._repository: Optional[Repository] = None
+
+        if path is None:
+            self.path = None
+
         else:
-            self._repository = None
+            self.path = Path(path).absolute()
 
-        self._config: Optional[Dict[str, Any]] = None
-        self._metadata: Optional[Dict[str, Any]] = None
+            if (self.path.parent.parent / "r3repository.yaml").is_file():
+                self._repository = Repository(self.path.parent.parent)
+
+        if self._repository is not None and config is not None:
+            raise ValueError(
+                "Overriding the config is not allowed for committed jobs "
+                f"(path={path})."
+            )
+
+        if self._repository is not None and files is not None:
+            raise ValueError(
+                "Overriding the config is not allowed for committed jobs "
+                f"(path={path})."
+            )
+
+        self._config = config or self._load_config()
+        self.metadata = metadata or self._load_metadata()
+        self._files = files or self._load_files()
+
+    def _load_config(self) -> Mapping[str, Any]:
+        if self.path is not None and (self.path / "r3.yaml").is_file():
+            with open(self.path / "r3.yaml", "r") as config_file:
+                config = yaml.safe_load(config_file)
+        else:
+            config = dict()
+
+        if self._repository is None:
+            return config
+        else:
+            return MappingProxyType(config)
+
+    def _load_metadata(self) -> Dict[str, Any]:
+        if self.path is not None and (self.path / "r3metadata.yaml").is_file():
+            with open(self.path / "r3metadata.yaml", "r") as config_file:
+                return yaml.safe_load(config_file)
+        else:
+            return dict()
+
+    def _load_files(self) -> Mapping[Path, Path]:
+        if self.path is None:
+            return dict()
+
+        ignore_paths = self.config.get("ignore", [])
+
+        for dependency in self.dependencies():
+            ignore_paths.append(f"/{dependency.item}")
+
+        files = r3.utils.find_files(self.path, ignore_paths)
+        filedict = {file: (self.path / file).absolute() for file in files}
+
+        if self._repository is None:
+            return filedict
+        else:
+            return MappingProxyType(filedict)
 
     @property
     def repository(self) -> Optional[Repository]:
@@ -213,43 +325,53 @@ class Job:
         return self._repository
 
     @property
-    def config(self) -> Dict[str, Any]:
-        if self._config is None:
-            with open(self.path / "r3.yaml", "r") as config_file:
-                self._config = yaml.safe_load(config_file)
-
+    def config(self) -> Mapping[str, Any]:
+        """Returns the config of this job."""
         return self._config
 
+    @config.setter
+    def config(self, config: Dict[str, Any]) -> None:
+        """Sets the config of this jobs.
+
+        This operation is only allowed if this job is not committed. Otherwise this will
+        raise an exception.
+
+        Raises
+        ------
+        ValueError
+            If this job is contained in an R3 repository.
+        """
+        if self._repository is not None:
+            raise ValueError("The config is read-only for committed jobs.")
+
+        self._config = config
+
     @property
-    def metadata(self) -> Dict[str, Any]:
-        if self._metadata is None:
-            metadata_path = self.path / "r3metadata.yaml"
+    def files(self) -> Mapping[Path, Path]:
+        """Files belonging to this job."""
+        return self._files
 
-            if not metadata_path.exists():
-                self._metadata = dict()
-            else:
-                with open(metadata_path, "r") as metadata_file:
-                    self._metadata = yaml.safe_load(metadata_file)
+    @files.setter
+    def files(self, files: Dict[Path, Path]) -> None:
+        """Sets the list of files belonging to this job.
 
-        return self._metadata
+        This operation is only allowed if this job is not committed. Otherwise this will
+        raise an exception.
+        """
+        if self._repository is not None:
+            raise ValueError("The files list is read-only for committed jobs.")
+
+        self._files = files
 
     def dependencies(self) -> Iterable["Dependency"]:
         for dependency_dict in self.config.get("dependencies", []):
             yield Dependency(**dependency_dict)
 
-    def files(self) -> Iterable[Path]:
-        ignore_paths = self.config.get("ignore", [])
-
-        for dependency in self.dependencies():
-            ignore_paths.append(f"/{dependency.item}")
-
-        return r3.utils.find_files(self.path, ignore_paths)
-
     def hash(self, recompute: bool = False) -> str:
-        if self.repository is not None and not recompute:
+        if self.path is not None and self.repository is not None and not recompute:
             return self.path.name
 
-        return _hash_job(self.config, self.files(), self.path)
+        return _hash_job(self.config, self.files, self.path)
 
 
 class Dependency:
@@ -280,9 +402,11 @@ class Dependency:
         return Dependency(path, commit)
 
 
-def _hash_job(config: Dict, files: Iterable[Path], root: Path) -> str:
+def _hash_job(config: Mapping, files: Mapping[Path, Path], root: Optional[Path]) -> str:
     hashes = {
-        str(file): _hash_file(root / file) for file in files if file != Path("r3.yaml")
+        str(destination): _hash_file(source)
+        for destination, source in files.items()
+        if destination != Path("r3.yaml")
     }
     hashes["r3.yaml"] = _hash_config(config)
 
@@ -304,7 +428,7 @@ def _hash_file(path: Path, chunk_size: int = 2**16) -> str:
     return hash.hexdigest()
 
 
-def _hash_config(config: Dict) -> str:
+def _hash_config(config: Mapping) -> str:
     ignored_keys = {"environment", "ignore", "metadata"}
     config = {key: value for key, value in config.items() if key not in ignored_keys}
     config_json = json.dumps(config, sort_keys=True, ensure_ascii=True)

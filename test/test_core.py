@@ -65,8 +65,11 @@ def test_add_copies_files_write_protected(
     files in the repository should be write protected.
     """
     original_job = get_dummy_job(fs, "base")
+    assert original_job.path is not None
+
     added_job = repository.add(original_job)
 
+    assert added_job.path is not None
     assert (added_job.path / "run.py").is_file()
     assert filecmp.cmp(
         added_job.path / "run.py", original_job.path / "run.py", shallow=False
