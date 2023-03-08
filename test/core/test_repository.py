@@ -109,3 +109,19 @@ def test_add_copies_files_write_protected(
     assert mode & stat.S_IWOTH == 0
     assert mode & stat.S_IWGRP == 0
     assert mode & stat.S_IWUSR == 0
+
+
+def test_add_copies_nested_files(fs: FakeFilesystem, repository: r3.Repository) -> None:
+    """Unit test for ``r3.Repository.add``."""
+    original_job = get_dummy_job(fs, "nested")
+    assert original_job.path is not None
+
+    added_job = repository.add(original_job)
+
+    assert added_job.path is not None
+    assert (added_job.path / "code" / "run.py").is_file()
+    assert filecmp.cmp(
+        added_job.path / "code" / "run.py",
+        original_job.path / "code" / "run.py",
+        shallow=False,
+    )

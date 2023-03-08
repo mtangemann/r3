@@ -26,7 +26,7 @@ def _find_files(path: Path, ignore_patterns: Iterable[str]) -> Iterable[Path]:
                 for pattern in ignore_patterns
                 if pattern.startswith(prefix)
             ]
-            yield from find_files(child, ignore_patterns)
+            yield from _find_files(child, ignore_patterns)
 
 
 def _is_ignored(path: Path, ignore_patterns: Iterable[str]):
