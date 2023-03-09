@@ -319,7 +319,12 @@ class Job:
             return dict()
 
     def _load_files(self) -> Mapping[Path, Path]:
-        if self.path is None:
+        if "root" in self._commit_config:
+            root = (self.path / self._commit_config["root"]).resolve()
+        else:
+            root = self.path
+
+        if root is None:
             return dict()
 
         ignore_paths = self._commit_config.get("ignore", [])
@@ -327,8 +332,8 @@ class Job:
         for dependency in self.dependencies():
             ignore_paths.append(f"/{dependency.item}")
 
-        files = r3.utils.find_files(self.path, ignore_paths)
-        filedict = {file: (self.path / file).absolute() for file in files}
+        files = r3.utils.find_files(root, ignore_paths)
+        filedict = {file: (root / file).absolute() for file in files}
 
         if self._repository is None:
             return filedict

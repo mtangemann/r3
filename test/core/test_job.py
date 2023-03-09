@@ -73,3 +73,22 @@ def test_job_doesnt_need_a_path():
     assert job.files == files
     assert list(job.dependencies()) == []
     assert isinstance(job.hash(), str)
+
+
+def test_changed_root():
+    """Unit test for ``r3.Job``."""
+    job_path = DATA_PATH / "jobs" / "changed_root" / "config"
+
+    with open(job_path / "r3.yaml", "r") as config_file:
+        job_config = yaml.safe_load(config_file)
+        del job_config["commit"]
+
+    with open(job_path / "r3metadata.yaml", "r") as metadata_file:
+        job_metadata = yaml.safe_load(metadata_file)
+
+    job = r3.Job(job_path)
+    assert job.config == job_config
+    assert job.metadata == job_metadata
+    assert job.files == {
+        Path("run.py"): (job_path.parent / "run.py").absolute(),
+    }
