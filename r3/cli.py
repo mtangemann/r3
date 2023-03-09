@@ -1,6 +1,7 @@
 """R3 command line interface."""
 import sys
 from pathlib import Path
+from typing import Sequence
 
 import click
 
@@ -34,6 +35,36 @@ def commit(path: Path, repository_path: Path) -> None:
     repository = r3.Repository(repository_path)
     job = r3.Job(path)
     job.metadata["source"] = str(path)
+    job = repository.add(job)
+    print(job.path)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
+@click.argument(
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+@click.option("-t", "--tag", "tags", multiple=True)
+def commit_data(path: Path, repository_path: Path, tags: Sequence[str]) -> None:
+    repository = r3.Repository(repository_path)
+
+    config = {"commands": [{"done": "true"}]}
+    metadata = {
+        "source": str(path.absolute()),
+        "tags": list(tags),
+    }
+
+    if path.is_file():
+        files = {Path(path.name): path.absolute()}
+    else:
+        files = {
+            Path(path.name) / child.relative_to(path): child.absolute()
+            for child in path.rglob("**/*")
+        }
+
+    job = r3.Job(None, config, metadata, files)
     job = repository.add(job)
     print(job.path)
 

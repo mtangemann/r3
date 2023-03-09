@@ -7,12 +7,13 @@ Create a new repository using `r3 init`:
 r3 init path/to/repository
 ```
 
-Add data manually to the data directory. Files may not be renamed after being added to
-the repository! For example:
+Data files or directories can be added to the repository using the `commit-data`
+command. The command returns the path to the job within the repository, that can be
+used to specifiy dependencies later.
 
 ```bash
-mkdir path/to/repository/data/containers
-cp container-v1.sif path/to/repository/data/containers
+$ r3 commit-data container-v1.sif --tag container
+/repository/jobs/123abc...
 ```
 
 Prepare your job in a directory, including a config file. For example:
@@ -20,7 +21,9 @@ Prepare your job in a directory, including a config file. For example:
 ```yaml
 # r3.yaml
 dependencies:
-  - &container data/containers/container-v1.sif
+  - item: /repository/jobs/123abc...
+    source: container-v1.sif
+    destination: &container container.sif
 
 ignore:
  - /__pycache__
