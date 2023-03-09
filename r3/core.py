@@ -82,27 +82,16 @@ class Repository:
         os.makedirs(target_path)
         os.makedirs(target_path / "output")
 
-        config = job.config
-
-        if not isinstance(config, dict):
-            # If this is reachable that's a bug.
-            raise RuntimeError("Expected config to be mutable for uncommitted jobs.")
-
-        metadata = config.pop("metadata", dict())
-        metadata = {**metadata, **job.metadata}
-        metadata["date"] = datetime.now().replace(microsecond=0).isoformat()
-
-        files = job.files
-        config.pop("ignore", None)
+        job.metadata["date"] = datetime.now().replace(microsecond=0).isoformat()
 
         with open(target_path / "r3.yaml", "w") as config_file:
-            yaml.dump(config, config_file)
+            yaml.dump(job.config, config_file)
         _remove_write_permissions(target_path / "r3.yaml")
 
         with open(target_path / "r3metadata.yaml", "w") as metadata_file:
-            yaml.dump(metadata, metadata_file)
+            yaml.dump(job.metadata, metadata_file)
 
-        for destination, source in files.items():
+        for destination, source in job.files.items():
             if destination in [Path("r3.yaml"), Path("r3metadata.yaml")]:
                 continue
 
@@ -237,7 +226,9 @@ class Job:
             Job metadata override. Per default, the job metadata is read from a config
             file named ``r3metadata.yaml`` relative to the job path if it exists or set
             to the empty dict otherwise. If a metadata dict is specified here, the
-            default metadata is entirely ignored.
+            default metadata is entirely ignored. If the job is not committed yet, the
+            metadata may also specified in the ``r3.yaml`` config file. If present, this
+            will override the metadata file but not the given metadata.
         files
             A dict of files belonging to the job. Keys are the destination paths of the
             files relative to the job directory which don't have to exist yet. The
@@ -252,7 +243,8 @@ class Job:
         ------
         ValueError
             If a job path is given that is contained in an R3 repository and ``config``
-            or ``files`` is not None.
+            or ``files`` is not None. If the ``r3.yaml`` config file of a committed job
+            contains a ``metadata`` or ``commit`` key.
         """
         self._repository: Optional[Repository] = None
 
@@ -278,6 +270,32 @@ class Job:
             )
 
         self._config = config or self._load_config()
+
+        if "metadata" in self._config:
+            if self._repository is not None:
+                raise ValueError(
+                    "The r3.yaml file may not contain metadata for committed jobs."
+                )
+
+            if metadata is None:
+                metadata = self._config["metadata"]
+
+            assert isinstance(self._config, dict)
+            del self._config["metadata"]
+
+        if "ignore" in self._config:
+            if self._repository is not None:
+                raise ValueError(
+                    "The r3.yaml config file may not contain an ignore list for "
+                    "committed jobs."
+                )
+
+            assert isinstance(self._config, dict)
+            self._ignore_list = self._config.pop("ignore")
+
+        else:
+            self._ignore_list = []
+
         self.metadata = metadata or self._load_metadata()
         self._files = files or self._load_files()
 
@@ -304,7 +322,7 @@ class Job:
         if self.path is None:
             return dict()
 
-        ignore_paths = self.config.get("ignore", [])
+        ignore_paths = self._ignore_list
 
         for dependency in self.dependencies():
             ignore_paths.append(f"/{dependency.item}")
