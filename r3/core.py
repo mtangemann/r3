@@ -283,18 +283,18 @@ class Job:
             assert isinstance(self._config, dict)
             del self._config["metadata"]
 
-        if "ignore" in self._config:
+        if "commit" in self._config:
             if self._repository is not None:
                 raise ValueError(
-                    "The r3.yaml config file may not contain an ignore list for "
-                    "committed jobs."
+                    "The r3.yaml config file may not contain a commit config for jobs "
+                    "that are committed already."
                 )
 
             assert isinstance(self._config, dict)
-            self._ignore_list = self._config.pop("ignore")
+            self._commit_config = self._config.pop("commit")
 
         else:
-            self._ignore_list = []
+            self._commit_config = dict()
 
         self.metadata = metadata or self._load_metadata()
         self._files = files or self._load_files()
@@ -322,7 +322,7 @@ class Job:
         if self.path is None:
             return dict()
 
-        ignore_paths = self._ignore_list
+        ignore_paths = self._commit_config.get("ignore", [])
 
         for dependency in self.dependencies():
             ignore_paths.append(f"/{dependency.item}")

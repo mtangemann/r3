@@ -20,13 +20,13 @@ Prepare your job in a directory, including a config file. For example:
 
 ```yaml
 # r3.yaml
+commit:
+  ignore: [/__pycache__]
+
 dependencies:
   - item: /repository/jobs/123abc...
     source: container-v1.sif
     destination: &container container.sif
-
-ignore:
- - /__pycache__
 
 environment:
   container: *container
