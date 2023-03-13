@@ -1,6 +1,1 @@
-commands:
-  run: python run.py
-  done: ls output/greeting
-
-parameters:
-  name: R3
+dependencies: []

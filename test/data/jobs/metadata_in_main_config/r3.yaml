@@ -1,9 +1,4 @@
+dependencies: []
+
 metadata:
   tags: ["test"]
-
-commands:
-  run: python run.py
-  done: ls output/greeting
-
-parameters:
-  name: R3

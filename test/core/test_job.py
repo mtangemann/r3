@@ -38,7 +38,7 @@ def test_job_constructor_loads_metadata_file():
     """Unit test for ``r3.Job``."""
     job_path = DATA_PATH / "jobs" / "base"
 
-    with open(job_path / "r3metadata.yaml", "r") as metadata_file:
+    with open(job_path / "metadata.yaml", "r") as metadata_file:
         job_metadata = yaml.safe_load(metadata_file)
 
     job = r3.Job(job_path)
@@ -83,7 +83,7 @@ def test_changed_root():
         job_config = yaml.safe_load(config_file)
         del job_config["commit"]
 
-    with open(job_path / "r3metadata.yaml", "r") as metadata_file:
+    with open(job_path / "metadata.yaml", "r") as metadata_file:
         job_metadata = yaml.safe_load(metadata_file)
 
     job = r3.Job(job_path)

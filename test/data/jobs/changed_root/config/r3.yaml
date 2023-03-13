@@ -1,10 +1,5 @@
+dependencies: []
+
 commit:
   root: ..
   ignore: [/config]
-
-commands:
-  run: python run.py
-  done: ls output/greeting
-
-parameters:
-  name: R3

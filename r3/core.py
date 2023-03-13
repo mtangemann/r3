@@ -21,7 +21,7 @@ from executor import ExternalCommandFailed, execute
 import r3
 import r3.utils
 
-R3_FORMAT_VERSION = "1.0.0-beta.1"
+R3_FORMAT_VERSION = "1.0.0-beta.2"
 
 
 class Repository:
@@ -63,7 +63,7 @@ class Repository:
 
         r3config = {"version": R3_FORMAT_VERSION}
 
-        with open(path / "r3repository.yaml", "w") as config_file:
+        with open(path / "r3.yaml", "w") as config_file:
             yaml.dump(r3config, config_file)
 
         return Repository(path)
@@ -88,11 +88,11 @@ class Repository:
             yaml.dump(job.config, config_file)
         _remove_write_permissions(target_path / "r3.yaml")
 
-        with open(target_path / "r3metadata.yaml", "w") as metadata_file:
+        with open(target_path / "metadata.yaml", "w") as metadata_file:
             yaml.dump(job.metadata, metadata_file)
 
         for destination, source in job.files.items():
-            if destination in [Path("r3.yaml"), Path("r3metadata.yaml")]:
+            if destination in [Path("r3.yaml"), Path("metadata.yaml")]:
                 continue
 
             target = target_path / destination
@@ -144,7 +144,7 @@ class Repository:
 
         # Copy files
         for child in job.path.iterdir():
-            if not child.name == "output":
+            if child.name not in ["r3.yaml", "metadata.yaml", "output"]:
                 if child.is_dir():
                     shutil.copytree(child, path / child.name)
                 else:
@@ -183,13 +183,13 @@ class Repository:
         metadata = dict()
 
         for job in (self.path / "jobs").iterdir():
-            with open(job / "r3metadata.yaml", "r") as config_file:
-                config = yaml.safe_load(config_file)
+            with open(job / "metadata.yaml", "r") as metadata_file:
+                job_metadata = yaml.safe_load(metadata_file)
 
-            metadata[job.name] = config.get("metadata", dict())
+            metadata[job.name] = job_metadata
 
-        with open(self.path / "metadata.json", "w") as metadata_file:
-            json.dump(metadata, metadata_file)
+        with open(self.path / "index.yaml", "w") as cache_file:
+            yaml.dump(metadata, cache_file)
 
 
 class Job:
@@ -224,7 +224,7 @@ class Job:
             parameter must be None.
         metadata
             Job metadata override. Per default, the job metadata is read from a config
-            file named ``r3metadata.yaml`` relative to the job path if it exists or set
+            file named ``metadata.yaml`` relative to the job path if it exists or set
             to the empty dict otherwise. If a metadata dict is specified here, the
             default metadata is entirely ignored. If the job is not committed yet, the
             metadata may also specified in the ``r3.yaml`` config file. If present, this
@@ -254,7 +254,7 @@ class Job:
         else:
             self.path = Path(path).absolute()
 
-            if (self.path.parent.parent / "r3repository.yaml").is_file():
+            if (self.path.parent.parent / "r3.yaml").is_file():
                 self._repository = Repository(self.path.parent.parent)
 
         if self._repository is not None and config is not None:
@@ -312,8 +312,8 @@ class Job:
             return MappingProxyType(config)
 
     def _load_metadata(self) -> Dict[str, Any]:
-        if self.path is not None and (self.path / "r3metadata.yaml").is_file():
-            with open(self.path / "r3metadata.yaml", "r") as config_file:
+        if self.path is not None and (self.path / "metadata.yaml").is_file():
+            with open(self.path / "metadata.yaml", "r") as config_file:
                 return yaml.safe_load(config_file)
         else:
             return dict()

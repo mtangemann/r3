@@ -46,9 +46,9 @@ def test_create_creates_config_file_with_version(fs: FakeFilesystem) -> None:
     path = Path("/test/repository")
     r3.Repository.create(path)
 
-    assert (path / "r3repository.yaml").exists()
+    assert (path / "r3.yaml").exists()
 
-    with open(path / "r3repository.yaml", "r") as config_file:
+    with open(path / "r3.yaml", "r") as config_file:
         config = yaml.safe_load(config_file)
 
     assert "version" in config
@@ -137,7 +137,7 @@ def test_add_loads_metadata_from_main_config(
 
     job = repository.add(job)
     assert job.path is not None
-    assert (job.path / "r3metadata.yaml").is_file()
+    assert (job.path / "metadata.yaml").is_file()
     assert "metadata" not in job.config
     assert job.metadata.keys() == {"tags", "date"}
     assert job.metadata["tags"] == ["test"]
