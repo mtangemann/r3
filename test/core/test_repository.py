@@ -16,7 +16,7 @@ DATA_PATH = Path(__file__).parent.parent / "data"
 
 @pytest.fixture
 def repository(fs: FakeFilesystem) -> r3.Repository:
-    return r3.Repository.create("/test/repository")
+    return r3.Repository.init("/test/repository")
 
 
 def get_dummy_job(fs: FakeFilesystem, name: str) -> r3.Job:
@@ -25,26 +25,26 @@ def get_dummy_job(fs: FakeFilesystem, name: str) -> r3.Job:
     return r3.Job(path)
 
 
-def test_create_fails_if_path_exists(fs: FakeFilesystem) -> None:
+def test_init_fails_if_path_exists(fs: FakeFilesystem) -> None:
     path = "/rest/repository"
     fs.create_dir(path)
 
     with pytest.raises(FileExistsError):
-        r3.Repository.create(path)
+        r3.Repository.init(path)
 
 
-def test_create_creates_directories(fs: FakeFilesystem) -> None:
+def test_init_creates_directories(fs: FakeFilesystem) -> None:
     path = Path("/test/repository")
-    r3.Repository.create(path)
+    r3.Repository.init(path)
 
     assert path.exists()
     assert (path / "git").exists()
     assert (path / "jobs").exists()
 
 
-def test_create_creates_config_file_with_version(fs: FakeFilesystem) -> None:
+def test_init_creates_config_file_with_version(fs: FakeFilesystem) -> None:
     path = Path("/test/repository")
-    r3.Repository.create(path)
+    r3.Repository.init(path)
 
     assert (path / "r3.yaml").exists()
 
@@ -54,8 +54,10 @@ def test_create_creates_config_file_with_version(fs: FakeFilesystem) -> None:
     assert "version" in config
 
 
-def test_add_creates_job_folder(fs: FakeFilesystem, repository: r3.Repository) -> None:
-    """Unit test for ``r3.Repository.add``.
+def test_commit_creates_job_folder(
+    fs: FakeFilesystem, repository: r3.Repository
+) -> None:
+    """Unit test for ``r3.Repository.commit``.
 
     When adding a job, a directory should be created in ``$REPOSITORY_ROOT/jobs``.
     """
@@ -63,33 +65,33 @@ def test_add_creates_job_folder(fs: FakeFilesystem, repository: r3.Repository) -
     assert len(job_paths) == 0
 
     job = get_dummy_job(fs, "base")
-    repository.add(job)
+    repository.commit(job)
 
     job_paths = list((repository.path / "jobs").iterdir())
     assert len(job_paths) == 1
     assert job_paths[0].is_dir()
 
 
-def test_add_returns_the_updated_job(
+def test_commit_returns_the_updated_job(
     fs: FakeFilesystem, repository: r3.Repository
 ) -> None:
-    """Unit test for ``r3.Repository.add``.
+    """Unit test for ``r3.Repository.commit``.
 
-    ``r3.Repository.add`` should return the ``r3.Job`` instance within the repository.
+    ``r3.Repository.commit`` should return the ``r3.Job`` instance within the repository.
     """
     job = get_dummy_job(fs, "base")
     assert job.repository is None
     assert not str(job.path).startswith(str(repository.path))
 
-    job = repository.add(job)
+    job = repository.commit(job)
     assert job.repository is not None
     assert str(job.path).startswith(str(repository.path))
 
 
-def test_add_copies_files_write_protected(
+def test_commit_copies_files_write_protected(
     fs: FakeFilesystem, repository: r3.Repository
 ) -> None:
-    """Unit test for ``r3.Repository.add``.
+    """Unit test for ``r3.Repository.commit``.
 
     When adding a job to a repository, all files should be copied to the repository. The
     files in the repository should be write protected.
@@ -97,7 +99,7 @@ def test_add_copies_files_write_protected(
     original_job = get_dummy_job(fs, "base")
     assert original_job.path is not None
 
-    added_job = repository.add(original_job)
+    added_job = repository.commit(original_job)
 
     assert added_job.path is not None
     assert (added_job.path / "run.py").is_file()
@@ -111,12 +113,14 @@ def test_add_copies_files_write_protected(
     assert mode & stat.S_IWUSR == 0
 
 
-def test_add_copies_nested_files(fs: FakeFilesystem, repository: r3.Repository) -> None:
+def test_commit_copies_nested_files(
+    fs: FakeFilesystem, repository: r3.Repository
+) -> None:
     """Unit test for ``r3.Repository.add``."""
     original_job = get_dummy_job(fs, "nested")
     assert original_job.path is not None
 
-    added_job = repository.add(original_job)
+    added_job = repository.commit(original_job)
 
     assert added_job.path is not None
     assert (added_job.path / "code" / "run.py").is_file()

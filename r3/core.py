@@ -44,7 +44,7 @@ class Repository:
             raise NotADirectoryError(f"Not a directory: {self.path}")
 
     @staticmethod
-    def create(path: Union[str, os.PathLike]) -> "Repository":
+    def init(path: Union[str, os.PathLike]) -> "Repository":
         """Creates a repository at the given path.
 
         Raises
@@ -68,7 +68,7 @@ class Repository:
 
         return Repository(path)
 
-    def add(self, job: "Job") -> "Job":
+    def commit(self, job: "Job") -> "Job":
         target_path = self.path / "jobs" / job.hash()
 
         if (self.path / target_path).is_dir():

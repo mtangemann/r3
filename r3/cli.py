@@ -18,7 +18,7 @@ def cli() -> None:
 @click.argument("path", type=click.Path(file_okay=False, exists=False, path_type=Path))
 def init(path: Path):
     try:
-        r3.Repository.create(path)
+        r3.Repository.init(path)
     except FileExistsError as error:
         print(f"Error: {error}")
         sys.exit(1)
@@ -35,7 +35,7 @@ def commit(path: Path, repository_path: Path) -> None:
     repository = r3.Repository(repository_path)
     job = r3.Job(path)
     job.metadata["source"] = str(path)
-    job = repository.add(job)
+    job = repository.commit(job)
     print(job.path)
 
 
