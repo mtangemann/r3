@@ -13,7 +13,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Dict, Iterable, Mapping, Optional, Union
+from typing import Iterable, Mapping, Optional, Union
 
 import yaml
 from executor import ExternalCommandFailed, execute
@@ -75,7 +75,7 @@ class Repository:
             print(f"Job exists already: {target_path}")
             return Job(target_path)
 
-        for dependency in job.dependencies():
+        for dependency in job.dependencies:
             if dependency not in self:
                 raise ValueError(f"Missing dependency: {dependency}")
 
@@ -85,7 +85,7 @@ class Repository:
         job.metadata["date"] = datetime.now().replace(microsecond=0).isoformat()
 
         with open(target_path / "r3.yaml", "w") as config_file:
-            yaml.dump(job.config, config_file)
+            yaml.dump(job._config, config_file)
         _remove_write_permissions(target_path / "r3.yaml")
 
         with open(target_path / "metadata.yaml", "w") as metadata_file:
@@ -153,7 +153,7 @@ class Repository:
         # Symlink output directory
         os.symlink(job.path / "output", path / "output")
 
-        for dependency in job.dependencies():
+        for dependency in job.dependencies:
             self.checkout(dependency, path)
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
@@ -193,152 +193,70 @@ class Repository:
 
 
 class Job:
-    """A job that may or may not be part of a repository
+    """A job that may or may not be part of a repository."""
 
-    This class provides an API to access and/or modifiy jobs. The behavior of this class
-    depends on whether the job is committed to a repository or not. If this job is part
-    of a repository, all properties except the metadata are read-only. If not yet
-    committed, all properties may be modified.
-    """
-
-    def __init__(
-        self,
-        path: Optional[Union[str, os.PathLike]] = None,
-        config: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        files: Optional[Dict[Path, Path]] = None,
-    ) -> None:
+    def __init__(self, path: Union[str, os.PathLike]) -> None:
         """Initializes a job instance.
 
         Parameters
         ----------
         path
-            Path to the job's root directory. This may be ``None`` if the job is
-            constructed entirely via the Python API and no corresponding directory
-            exists.
-        config
-            Job configuration override. Per default, the job config is read from a
-            config file named ``r3.yaml`` relative to the job path if it exists or set
-            to the empty dict otherwise. If a config is specified here, the default
-            config is entirely ignored. If the job is part of an R3 repository, this
-            parameter must be None.
-        metadata
-            Job metadata override. Per default, the job metadata is read from a config
-            file named ``metadata.yaml`` relative to the job path if it exists or set
-            to the empty dict otherwise. If a metadata dict is specified here, the
-            default metadata is entirely ignored. If the job is not committed yet, the
-            metadata may also specified in the ``r3.yaml`` config file. If present, this
-            will override the metadata file but not the given metadata.
-        files
-            A dict of files belonging to the job. Keys are the destination paths of the
-            files relative to the job directory which don't have to exist yet. The
-            values are the absolute file paths which have to exist. Per default, this
-            list is created by recursively scanning the job path if given or set to the
-            empty list otherwise. This respects the ignore rules from the job
-            configuration, see the user guide for more information. If a list of files
-            is specified here, the default list is entirely ignored. If the job is part
-            of an R3 repository, this parameter must be None.
-
-        Raises
-        ------
-        ValueError
-            If a job path is given that is contained in an R3 repository and ``config``
-            or ``files`` is not None. If the ``r3.yaml`` config file of a committed job
-            contains a ``metadata`` or ``commit`` key.
+            Path to the job's root directory.
         """
+        self._path = Path(path).absolute()
+
         self._repository: Optional[Repository] = None
+        if (self._path.parent.parent / "r3.yaml").is_file():
+            self._repository = Repository(self._path.parent.parent)
 
-        if path is None:
-            self.path = None
+        self._load_config()
+        self._load_dependencies()
+        self._load_files()
+        self._load_metadata()
 
-        else:
-            self.path = Path(path).absolute()
-
-            if (self.path.parent.parent / "r3.yaml").is_file():
-                self._repository = Repository(self.path.parent.parent)
-
-        if self._repository is not None and config is not None:
-            raise ValueError(
-                "Overriding the config is not allowed for committed jobs "
-                f"(path={path})."
-            )
-
-        if self._repository is not None and files is not None:
-            raise ValueError(
-                "Overriding the config is not allowed for committed jobs "
-                f"(path={path})."
-            )
-
-        self._config = config or self._load_config()
-
-        if "metadata" in self._config:
-            if self._repository is not None:
-                raise ValueError(
-                    "The r3.yaml file may not contain metadata for committed jobs."
-                )
-
-            if metadata is None:
-                metadata = self._config["metadata"]
-
-            assert isinstance(self._config, dict)
-            del self._config["metadata"]
-
-        if "commit" in self._config:
-            if self._repository is not None:
-                raise ValueError(
-                    "The r3.yaml config file may not contain a commit config for jobs "
-                    "that are committed already."
-                )
-
-            assert isinstance(self._config, dict)
-            self._commit_config = self._config.pop("commit")
-
-        else:
-            self._commit_config = dict()
-
-        self.metadata = metadata or self._load_metadata()
-        self._files = files or self._load_files()
-
-    def _load_config(self) -> Mapping[str, Any]:
-        if self.path is not None and (self.path / "r3.yaml").is_file():
+    def _load_config(self) -> None:
+        if (self.path / "r3.yaml").is_file():
             with open(self.path / "r3.yaml", "r") as config_file:
                 config = yaml.safe_load(config_file)
         else:
             config = dict()
 
-        if self._repository is None:
-            return config
+        self._config = config if self._repository is None else MappingProxyType(config)
+
+    def _load_dependencies(self) -> None:
+        dependencies = [
+            Dependency(**kwargs) for kwargs in self._config.get("dependencies", [])
+        ]
+
+        self._dependencies = (
+            dependencies if self._repository is None else tuple(dependencies)
+        )
+
+    def _load_files(self) -> None:
+        ignore = self._config.get("ignore", [])
+
+        for dependency in self.dependencies:
+            ignore.append(f"/{dependency.item}")
+
+        files = {
+            file: (self.path / file).absolute()
+            for file in r3.utils.find_files(self.path, ignore)
+        }
+
+        self._files = files if self._repository is None else MappingProxyType(files)
+
+    def _load_metadata(self) -> None:
+        if (self.path / "metadata.yaml").is_file():
+            with open(self.path / "metadata.yaml", "r") as metadata_file:
+                metadata = yaml.safe_load(metadata_file)
         else:
-            return MappingProxyType(config)
+            metadata = dict()
 
-    def _load_metadata(self) -> Dict[str, Any]:
-        if self.path is not None and (self.path / "metadata.yaml").is_file():
-            with open(self.path / "metadata.yaml", "r") as config_file:
-                return yaml.safe_load(config_file)
-        else:
-            return dict()
+        self.metadata = metadata
 
-    def _load_files(self) -> Mapping[Path, Path]:
-        if "root" in self._commit_config:
-            root = (self.path / self._commit_config["root"]).resolve()
-        else:
-            root = self.path
-
-        if root is None:
-            return dict()
-
-        ignore_paths = self._commit_config.get("ignore", [])
-
-        for dependency in self.dependencies():
-            ignore_paths.append(f"/{dependency.item}")
-
-        files = r3.utils.find_files(root, ignore_paths)
-        filedict = {file: (root / file).absolute() for file in files}
-
-        if self._repository is None:
-            return filedict
-        else:
-            return MappingProxyType(filedict)
+    @property
+    def path(self) -> Path:
+        return self._path
 
     @property
     def repository(self) -> Optional[Repository]:
@@ -353,53 +271,20 @@ class Job:
         return self._repository
 
     @property
-    def config(self) -> Mapping[str, Any]:
-        """Returns the config of this job."""
-        return self._config
-
-    @config.setter
-    def config(self, config: Dict[str, Any]) -> None:
-        """Sets the config of this jobs.
-
-        This operation is only allowed if this job is not committed. Otherwise this will
-        raise an exception.
-
-        Raises
-        ------
-        ValueError
-            If this job is contained in an R3 repository.
-        """
-        if self._repository is not None:
-            raise ValueError("The config is read-only for committed jobs.")
-
-        self._config = config
-
-    @property
     def files(self) -> Mapping[Path, Path]:
         """Files belonging to this job."""
         return self._files
 
-    @files.setter
-    def files(self, files: Dict[Path, Path]) -> None:
-        """Sets the list of files belonging to this job.
-
-        This operation is only allowed if this job is not committed. Otherwise this will
-        raise an exception.
-        """
-        if self._repository is not None:
-            raise ValueError("The files list is read-only for committed jobs.")
-
-        self._files = files
-
+    @property
     def dependencies(self) -> Iterable["Dependency"]:
-        for dependency_dict in self.config.get("dependencies", []):
-            yield Dependency(**dependency_dict)
+        """Dependencies of this job."""
+        return self._dependencies
 
     def hash(self, recompute: bool = False) -> str:
-        if self.path is not None and self.repository is not None and not recompute:
+        if self.repository is not None and not recompute:
             return self.path.name
 
-        return _hash_job(self.config, self.files, self.path)
+        return _hash_job(self._config, self.files, self.path)
 
 
 class Dependency:

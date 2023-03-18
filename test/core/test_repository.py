@@ -125,19 +125,3 @@ def test_add_copies_nested_files(fs: FakeFilesystem, repository: r3.Repository) 
         original_job.path / "code" / "run.py",
         shallow=False,
     )
-
-
-def test_add_loads_metadata_from_main_config(
-    fs: FakeFilesystem, repository: r3.Repository
-) -> None:
-    """Unit test for ``r3.Repository.add``."""
-    job = get_dummy_job(fs, "metadata_in_main_config")
-    assert job.metadata == {"tags": ["test"]}
-    assert "metadata" not in job.config
-
-    job = repository.add(job)
-    assert job.path is not None
-    assert (job.path / "metadata.yaml").is_file()
-    assert "metadata" not in job.config
-    assert job.metadata.keys() == {"tags", "date"}
-    assert job.metadata["tags"] == ["test"]
