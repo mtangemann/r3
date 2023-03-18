@@ -206,8 +206,11 @@ class Job:
         self._path = Path(path).absolute()
 
         self._repository: Optional[Repository] = None
+        self._hash: Optional[str] = None
+
         if (self._path.parent.parent / "r3.yaml").is_file():
             self._repository = Repository(self._path.parent.parent)
+            self._hash = self._path.name
 
         self._load_config()
         self._load_dependencies()
@@ -281,10 +284,52 @@ class Job:
         return self._dependencies
 
     def hash(self, recompute: bool = False) -> str:
-        if self.repository is not None and not recompute:
-            return self.path.name
+        """Returns the hash of this job.
 
-        return _hash_job(self._config, self.files, self.path)
+        Parameters
+        ----------
+        recompute
+            This method uses cashing to compute the job hash only when necessary. If set
+            to `True`, this will recompute the job hash in any case.
+        """
+        if self._hash is None or recompute:
+            hashes = {
+                str(destination): self._hash_file(source)
+                for destination, source in self.files.items()
+                if destination not in (Path("r3.yaml"), Path("metadata.yaml"))
+            }
+            hashes["r3.yaml"] = self._hash_config()
+
+            index = "\n".join(
+                "{} {}".format(hashes[file], file) for file in sorted(hashes)
+            )
+
+            self._hash = hashlib.sha256(index.encode("utf-8")).hexdigest()
+
+        return self._hash
+
+    def _hash_config(self) -> str:
+        dependencies = []
+        for dependency in self._config.get("dependencies", []):
+            dependencies.append({k: v for k, v in dependency.items() if k != "query"})
+
+        config = {"dependencies": dependencies}
+
+        config_json = json.dumps(config, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha256(bytes(config_json, encoding="utf-8")).hexdigest()
+
+    @staticmethod
+    def _hash_file(path: Path, chunk_size: int = 2**16) -> str:
+        hash = hashlib.sha256()
+
+        with open(path, "rb") as file:
+            while True:
+                chunk = file.read(chunk_size)
+                if not chunk:
+                    break
+                hash.update(chunk)
+
+        return hash.hexdigest()
 
 
 class Dependency:
@@ -313,39 +358,6 @@ class Dependency:
         path = Path(parts[0])
         commit = None if len(parts) < 2 else parts[1]
         return Dependency(path, commit)
-
-
-def _hash_job(config: Mapping, files: Mapping[Path, Path], root: Optional[Path]) -> str:
-    hashes = {
-        str(destination): _hash_file(source)
-        for destination, source in files.items()
-        if destination != Path("r3.yaml")
-    }
-    hashes["r3.yaml"] = _hash_config(config)
-
-    index = "\n".join("{} {}".format(hashes[file], file) for file in sorted(hashes))
-
-    return hashlib.sha256(index.encode("utf-8")).hexdigest()
-
-
-def _hash_file(path: Path, chunk_size: int = 2**16) -> str:
-    hash = hashlib.sha256()
-
-    with open(path, "rb") as file:
-        while True:
-            chunk = file.read(chunk_size)
-            if not chunk:
-                break
-            hash.update(chunk)
-
-    return hash.hexdigest()
-
-
-def _hash_config(config: Mapping) -> str:
-    ignored_keys = {"environment", "ignore", "metadata"}
-    config = {key: value for key, value in config.items() if key not in ignored_keys}
-    config_json = json.dumps(config, sort_keys=True, ensure_ascii=True)
-    return hashlib.sha256(bytes(config_json, encoding="utf-8")).hexdigest()
 
 
 def _remove_write_permissions(path: Path) -> None:

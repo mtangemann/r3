@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import yaml
+from pyfakefs.fake_filesystem import FakeFilesystem
 
 import r3
 
@@ -21,3 +22,19 @@ def test_job_constructor_loads_metadata_file():
 
     job = r3.Job(str(job_path))
     assert job.metadata == job_metadata
+
+
+def test_job_hash_does_not_depend_on_metadata(fs: FakeFilesystem) -> None:
+    """Unit test for ``r3.Job.hash()``."""
+    job_path = DATA_PATH / "jobs" / "base"
+
+    fs.add_real_directory(job_path, read_only=False)
+    original_hash = r3.Job(job_path).hash()
+
+    with open(job_path / "metadata.yaml", "w") as metadata_file:
+        yaml.dump({"tags": ["changed"]}, metadata_file)
+
+    assert r3.Job(job_path).hash() == original_hash
+
+    fs.remove(job_path / "metadata.yaml")
+    assert r3.Job(job_path).hash() == original_hash
