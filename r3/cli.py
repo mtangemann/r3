@@ -95,9 +95,9 @@ def dev_checkout(path: str, repository_path: str) -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def rebuild_cache(repository_path: Path):
+def rebuild_index(repository_path: Path):
     repository = r3.Repository(repository_path)
-    repository.rebuild_cache()
+    repository.rebuild_index()
 
 
 if __name__ == "__main__":

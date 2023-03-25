@@ -10,7 +10,7 @@ import os
 import shutil
 import stat
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping, Optional, Union
@@ -43,6 +43,9 @@ class Repository:
         if not self.path.is_dir():
             raise NotADirectoryError(f"Not a directory: {self.path}")
 
+        self._index_path: Path = self.path / "index.yaml"
+        self._load_index()
+
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":
         """Creates a repository at the given path.
@@ -68,6 +71,11 @@ class Repository:
 
         return Repository(path)
 
+    def jobs(self) -> Iterable["Job"]:
+        """Returns an iterator over all jobs in this repository."""
+        for path in (self.path / "jobs").iterdir():
+            yield Job(path)
+
     def commit(self, job: "Job") -> "Job":
         target_path = self.path / "jobs" / job.hash()
 
@@ -81,8 +89,6 @@ class Repository:
 
         os.makedirs(target_path)
         os.makedirs(target_path / "output")
-
-        job.metadata["date"] = datetime.now().replace(microsecond=0).isoformat()
 
         with open(target_path / "r3.yaml", "w") as config_file:
             yaml.dump(job._config, config_file)
@@ -103,7 +109,12 @@ class Repository:
 
         _remove_write_permissions(target_path)
 
-        return Job(target_path)
+        committed_job = Job(target_path)
+
+        self._add_job_to_index(committed_job)
+        self._save_index()
+
+        return committed_job
 
     def checkout(
         self, item: Union["Dependency", "Job"], path: Union[str, os.PathLike]
@@ -178,18 +189,36 @@ class Repository:
             else:
                 return object_type == "commit"
 
-    def rebuild_cache(self):
-        """Aggregates all job metadata into 'metadata.json'."""
-        metadata = dict()
+    def _load_index(self) -> None:
+        if self._index_path.exists():
+            with open(self._index_path, "r") as index_file:
+                self._index = yaml.safe_load(index_file)
+        else:
+            self._index = dict()
 
-        for job in (self.path / "jobs").iterdir():
-            with open(job / "metadata.yaml", "r") as metadata_file:
-                job_metadata = yaml.safe_load(metadata_file)
+    def _save_index(self) -> None:
+        with open(self._index_path, "w") as index_file:
+            self._index = yaml.dump(self._index, index_file)
 
-            metadata[job.name] = job_metadata
+    def _add_job_to_index(self, job: "Job") -> None:
+        self._index[job.hash()] = {
+            "tags": job.metadata.get("tags", []),
+            "datetime": job.datetime,
+        }
 
-        with open(self.path / "index.yaml", "w") as cache_file:
-            yaml.dump(metadata, cache_file)
+    def rebuild_index(self):
+        """Rebuilds the job index.
+
+        The job index is used to efficiently query for jobs. The index is automatically
+        updated when committing job, so explicitely calling this should not be
+        necessary.
+        """
+        self._index = dict()
+
+        for job in self.jobs():
+            self._add_job_to_index(job)
+
+        self._save_index()
 
 
 class Job:
@@ -282,6 +311,12 @@ class Job:
     def dependencies(self) -> Iterable["Dependency"]:
         """Dependencies of this job."""
         return self._dependencies
+
+    @property
+    def datetime(self) -> datetime:
+        """Returns the date and time when this job was created (committed)."""
+        timestamp = self.path.stat().st_ctime
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
     def hash(self, recompute: bool = False) -> str:
         """Returns the hash of this job.
