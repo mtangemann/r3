@@ -84,7 +84,13 @@ class Repository:
 
         for dependency in job.dependencies:
             if dependency not in self:
-                raise ValueError(f"Missing dependency: {dependency}")
+                raise ValueError(
+                    "Missing dependency:"
+                    f"\n\titem = {dependency.item}"
+                    f"\n\tcommit = {dependency.commit}"
+                    f"\n\tsource = {dependency.source}"
+                    f"\n\tdestination = {dependency.destination}"
+                )
 
         os.makedirs(target_path)
         os.makedirs(target_path / "output")
@@ -126,21 +132,24 @@ class Repository:
     def _checkout_dependency(
         self, dependency: "Dependency", path: Union[str, os.PathLike]
     ) -> None:
-        if dependency.source_path != ".":
+        if dependency.item is None or dependency.destination is None:
+            raise NotImplementedError
+
+        if dependency.source != Path("."):
             raise NotImplementedError
 
         source = self.path / dependency.item
-        destination = path / dependency.target_path
+        destination = path / dependency.destination
 
         os.makedirs(destination.parent, exist_ok=True)
 
         if dependency.commit is None:
-            os.symlink(source / dependency.source_path, destination)
+            os.symlink(source / dependency.source, destination)
         else:
             with tempfile.TemporaryDirectory() as tempdir:
                 execute(f"git clone {source} {tempdir}")
                 execute(f"git checkout {dependency.commit}", directory=tempdir)
-                shutil.move(Path(tempdir) / dependency.source_path, destination)
+                shutil.move(Path(tempdir) / dependency.source, destination)
 
     def _checkout_job(self, job: "Job", path: Union[str, os.PathLike]) -> None:
         if job not in self:
@@ -169,6 +178,9 @@ class Repository:
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         if isinstance(item, Job):
             return (self.path / "jobs" / item.hash()).is_dir()
+
+        if item.item is None or item.destination is None:
+            raise NotImplementedError
 
         if not (self.path / item.item).exists():
             return False
@@ -346,31 +358,48 @@ class Job:
 
 
 class Dependency:
+    """A dependency on a job or a git repository."""
+
     def __init__(
         self,
-        item: Union[os.PathLike, str],
+        item: Optional[Union[os.PathLike, str]],
         commit: Optional[str] = None,
-        source_path: Optional[Union[os.PathLike, str]] = None,
-        target_path: Optional[Union[os.PathLike, str]] = None,
-        origin: Optional[str] = None,
+        source: Optional[Union[os.PathLike, str]] = None,
+        destination: Optional[Union[os.PathLike, str]] = None,
+        query: Optional[str] = None,
     ) -> None:
-        self.item = Path(item)
+        """Initializes the dependency.
+
+        Parameters
+        ----------
+        item
+            Path to the job or git repository, relative to the repository root. This
+            may be `None` if a query is specified.
+        commit
+            Full commit hash for dependencies to git repositories.
+        source
+            Path relative to the item (job / git repository) that is referenced by the
+            dependecy. Defaults to "." if no query is given.
+        destination
+            Path relative to the job to which the dependency will be checked out.
+        query
+            Optionally a query that will be dynamically resolved to a job, source and
+            destination.
+        """
+        if item is None and query is None:
+            raise ValueError("Either an item path or a query must be given.")
+
+        if source is None and query is None:
+            source = Path(".")
+
+        if destination is None and query is None:
+            raise ValueError("Destination must be specified if no query is given.")
+
+        self.item = item if item is None else Path(item)
         self.commit = commit
-        self.source_path = Path(".") if source_path is None else Path(source_path)
-
-        if target_path is None:
-            self.target_path = self.item / self.source_path
-        else:
-            self.target_path = Path(target_path)
-
-        self.origin = origin
-
-    @staticmethod
-    def from_string(string: str) -> "Dependency":
-        parts = string.split("@", maxsplit=1)
-        path = Path(parts[0])
-        commit = None if len(parts) < 2 else parts[1]
-        return Dependency(path, commit)
+        self.source = source if source is None else Path(source)
+        self.destination = destination if destination is None else Path(destination)
+        self.query = query
 
 
 def _remove_write_permissions(path: Path) -> None:
