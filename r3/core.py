@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterable, Mapping, Optional, Union
+from typing import Iterable, List, Mapping, Optional, Union
 
 import yaml
 from executor import ExternalCommandFailed, execute
@@ -200,6 +200,33 @@ class Repository:
                 return False
             else:
                 return object_type == "commit"
+
+    def find(self, tags: Iterable[str], latest: bool = False) -> List["Job"]:
+        """Searches for jobs with the given tags.
+
+        Parameters
+        ----------
+        tags
+            Return jobs that include all of this tags.
+        latest
+            If true, only return the latest matching job. Otherwise, return all jobs.
+
+        Returns
+        -------
+        List[Job]
+            List of job matching the search parameters.
+        """
+        tags = set(tags)
+        results = []
+
+        for hash, metadata in self._index.items():
+            if tags.issubset(metadata["tags"]):
+                results.append(Job(self.path / "jobs" / hash))
+
+        if latest:
+            return [max(results, key=lambda job: job.datetime)]
+        else:
+            return sorted(results, key=lambda job: job.datetime)
 
     def _load_index(self) -> None:
         if self._index_path.exists():

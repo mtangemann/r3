@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import Iterable
 
 import click
 
@@ -52,6 +53,26 @@ def checkout(job_path: Path, target_path) -> None:
         raise ValueError("Can only checkout commited jobs.")
 
     repository.checkout(job, target_path)
+
+
+@cli.command()
+@click.option("--tag", "-t", "tags", multiple=True, type=str)
+@click.option("--latest/--all", default=False)
+@click.option("--long/--short", "-l", default=False)
+@click.argument(
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -> None:
+    repository = r3.Repository(repository_path)
+    for job in repository.find(tags, latest):
+        if long:
+            datetime = job.datetime.strftime(r"%Y-%m-%d %H:%M:%S")
+            tags = " ".join(f"#{tag}" for tag in job.metadata.get("tags", []))
+            print(f"{job.hash()} | {datetime} | {tags}")
+        else:
+            print(job.path)
 
 
 @cli.group()
