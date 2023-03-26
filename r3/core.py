@@ -147,9 +147,10 @@ class Repository:
             os.symlink(source / dependency.source, destination)
         else:
             with tempfile.TemporaryDirectory() as tempdir:
-                execute(f"git clone {source} {tempdir}")
-                execute(f"git checkout {dependency.commit}", directory=tempdir)
-                shutil.move(Path(tempdir) / dependency.source, destination)
+                clone_path = Path(tempdir) / "clone"
+                execute(f"git clone {source} {clone_path}")
+                execute(f"git checkout {dependency.commit}", directory=clone_path)
+                shutil.move(clone_path / dependency.source, destination)
 
     def _checkout_job(self, job: "Job", path: Union[str, os.PathLike]) -> None:
         if job not in self:
