@@ -1,6 +1,6 @@
 # Repository Format
 
-Version: 1.0.0-beta.2
+Version: 1.0.0-beta.3
 
 This document describes the format that R3 uses internally for storing jobs. The format
 specification is intended to guide the development of R3's core features but is not part
@@ -30,18 +30,14 @@ for any interaction with repositories and stored jobs.
   - Other files and directories required by the job (write protected).
 
 - Job hashes are computed using SHA-256 as follows:
-  - The hash of the file `r3.yaml` is computed by converting the contents to
+  - The byte stream for all files is hashed, except for `r3.yaml`, `metadata.yaml` and
+    the `output/` folder.
+  - The contents from `r3.yaml` are loaded. The top level `ignore` key and any `query`
+    keys in dependencies are removed. A dictionary of relative file names mapping to
+    hashes for all files is added as `files`.
+  - The final hash is computed by converting the modifed contents of `r3.yaml` to
     [canonical json](https://gibson042.github.io/canonicaljson-spec/) and hashing the
-    resulting string. Any `query` keys in dependencies are ignored.
-  - The `metadata.yaml` file and the `output/` folder are ignored.
-  - For all other files, the original byte stream is hashed.
-  - To compute the final hash, a multiline string is hashed that contains in each line
-    first the relative file path and the respective hash, ordered lexicographically and
-    separated by a single space character. For example:
-    ```
-    r3.yaml 123abc...
-    some/nested/script.py 456def...
-    ```
+    resulting string.
 
 - The config file `r3.yaml` may contain the following keys.
   - `dependencies`: A list of other jobs or repositories that this job depends on. Each
@@ -55,6 +51,9 @@ for any interaction with repositories and stored jobs.
       out. The source will be symlinked given this mail. For example:
       `pretrained_weights.pth`. Default: the same as `source`.
     - `query`: Optional. The original query that was resolved to this dependency.
+  - `ignore`: A list of ignore patterns as used by git. The given patterns must not
+    match any file belonging to the job.
+  - `files`: The hash dictionary for all files as created for computing the job hash.
 
 - The custom metadata file may contain arbitrary metadata. Tools building on R3 may
   further specify parts of the information provided in that file but should fail
