@@ -4,8 +4,7 @@ This module provides the core functionality of R3. This module should not be use
 directly, but rather the public API exported by the top-level ``r3`` module.
 """
 
-import hashlib
-import json
+import copy
 import os
 import shutil
 import stat
@@ -21,7 +20,7 @@ from executor import ExternalCommandFailed, execute
 import r3
 import r3.utils
 
-R3_FORMAT_VERSION = "1.0.0-beta.2"
+R3_FORMAT_VERSION = "1.0.0-beta.3"
 
 
 class Repository:
@@ -253,6 +252,8 @@ class Job:
         else:
             config = dict()
 
+        config.setdefault("dependencies", [])
+
         self._config = config if self._repository is None else MappingProxyType(config)
 
     def _load_dependencies(self) -> None:
@@ -328,43 +329,20 @@ class Job:
             to `True`, this will recompute the job hash in any case.
         """
         if self._hash is None or recompute:
-            hashes = {
-                str(destination): self._hash_file(source)
+            self._config["files"] = {
+                str(destination): r3.utils.hash_file(source)
                 for destination, source in self.files.items()
                 if destination not in (Path("r3.yaml"), Path("metadata.yaml"))
             }
-            hashes["r3.yaml"] = self._hash_config()
 
-            index = "\n".join(
-                "{} {}".format(hashes[file], file) for file in sorted(hashes)
-            )
+            config = copy.deepcopy(self._config)
+            config.pop("ignore", None)
+            for dependency in config.get("dependencies", []):
+                dependency.pop("query", None)
 
-            self._hash = hashlib.sha256(index.encode("utf-8")).hexdigest()
+            self._hash = r3.utils.hash_dict(config)
 
         return self._hash
-
-    def _hash_config(self) -> str:
-        dependencies = []
-        for dependency in self._config.get("dependencies", []):
-            dependencies.append({k: v for k, v in dependency.items() if k != "query"})
-
-        config = {"dependencies": dependencies}
-
-        config_json = json.dumps(config, sort_keys=True, ensure_ascii=True)
-        return hashlib.sha256(bytes(config_json, encoding="utf-8")).hexdigest()
-
-    @staticmethod
-    def _hash_file(path: Path, chunk_size: int = 2**16) -> str:
-        hash = hashlib.sha256()
-
-        with open(path, "rb") as file:
-            while True:
-                chunk = file.read(chunk_size)
-                if not chunk:
-                    break
-                hash.update(chunk)
-
-        return hash.hexdigest()
 
 
 class Dependency:

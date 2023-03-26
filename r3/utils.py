@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from typing import Iterable, List
 
@@ -31,3 +33,21 @@ def _find_files(path: Path, ignore_patterns: Iterable[str]) -> Iterable[Path]:
 
 def _is_ignored(path: Path, ignore_patterns: Iterable[str]):
     return any(pattern == f"/{path.name}" for pattern in ignore_patterns)
+
+
+def hash_dict(dict_) -> str:
+    dict_json = json.dumps(dict_, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(bytes(dict_json, encoding="utf-8")).hexdigest()
+
+
+def hash_file(path: Path, chunk_size: int = 2**16) -> str:
+    hash = hashlib.sha256()
+
+    with open(path, "rb") as file:
+        while True:
+            chunk = file.read(chunk_size)
+            if not chunk:
+                break
+            hash.update(chunk)
+
+    return hash.hexdigest()
