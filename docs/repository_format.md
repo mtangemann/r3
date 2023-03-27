@@ -1,6 +1,6 @@
 # Repository Format
 
-Version: 1.0.0-beta.3
+Version: 1.0.0-beta.4
 
 This document describes the format that R3 uses internally for storing jobs. The format
 specification is intended to guide the development of R3's core features but is not part
@@ -41,16 +41,17 @@ for any interaction with repositories and stored jobs.
 
 - The config file `r3.yaml` may contain the following keys.
   - `dependencies`: A list of other jobs or repositories that this job depends on. Each
-    dependency is specified as a dict with the following keys:
-    - `item`: Relative path of the job or repository. E.g. `jobs/123abc...` or
-        `git/github.com/mtangemann/r3`.
-    - `commit`: Required if the item is a git repository. The full commit id.
+    dependency may be either a job or a git dependency, and is specified by the
+    following keys:
+    - `job` (job only): Job id.
+    - `repository` (git only): Repository url.
+    - `commit` (git only): Full commit id.
     - `source`: Optional. A path relative to the item if only a specific subfolder
       or file is needed. For example: `output/checkpoints/best.pth`. Defaults to `.`.
-    - `destination`: Optional. A path relative to the directory where the job is checked
-      out. The source will be symlinked given this mail. For example:
-      `pretrained_weights.pth`. Default: the same as `source`.
-    - `query`: Optional. The original query that was resolved to this dependency.
+    - `destination`: A path relative to the job directory where the dependency will be
+       checked out. For example: `pretrained_weights.pth`.
+    - `query` (job only): Optional. The original query that was resolved to this
+       dependency.
   - `ignore`: A list of ignore patterns as used by git. The given patterns must not
     match any file belonging to the job.
   - `files`: The hash dictionary for all files as created for computing the job hash.
