@@ -15,7 +15,7 @@ from types import MappingProxyType
 from typing import Iterable, List, Mapping, Optional, Union
 
 import yaml
-from executor import ExternalCommandFailed, execute
+from executor import execute
 
 import r3
 import r3.utils
@@ -135,22 +135,20 @@ class Repository:
         if dependency.item is None or dependency.destination is None:
             raise NotImplementedError
 
-        if dependency.source != Path("."):
-            raise NotImplementedError
-
-        source = self.path / dependency.item
+        item_path = self.path / dependency.item
         destination = path / dependency.destination
+        source = dependency.source or Path(".")
 
         os.makedirs(destination.parent, exist_ok=True)
 
         if dependency.commit is None:
-            os.symlink(source / dependency.source, destination)
+            os.symlink(item_path / source, destination)
         else:
             with tempfile.TemporaryDirectory() as tempdir:
                 clone_path = Path(tempdir) / "clone"
-                execute(f"git clone {source} {clone_path}")
+                execute(f"git clone {item_path} {clone_path}")
                 execute(f"git checkout {dependency.commit}", directory=clone_path)
-                shutil.move(clone_path / dependency.source, destination)
+                shutil.move(clone_path / source, destination)
 
     def _checkout_job(self, job: "Job", path: Union[str, os.PathLike]) -> None:
         if job not in self:
@@ -177,29 +175,21 @@ class Repository:
             self.checkout(dependency, path)
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
+        """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
             return (self.path / "jobs" / item.hash()).is_dir()
 
         if item.item is None or item.destination is None:
             raise NotImplementedError
+        dependency = item
 
-        if not (self.path / item.item).exists():
-            return False
+        path = self.path / dependency.item  # type: ignore
+        source = dependency.source or Path(".")
 
-        elif item.commit is None:
-            return True
-
+        if str(dependency.item).startswith("job"):
+            return (path / source).exists()
         else:
-            try:
-                object_type = execute(
-                    f"git cat-file -t {item.commit}",
-                    directory=self.path / item.item,
-                    capture=True,
-                )
-            except ExternalCommandFailed:
-                return False
-            else:
-                return object_type == "commit"
+            return r3.utils.git_path_exists(path, dependency.commit, source)
 
     def find(self, tags: Iterable[str], latest: bool = False) -> List["Job"]:
         """Searches for jobs with the given tags.

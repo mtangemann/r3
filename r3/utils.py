@@ -1,7 +1,9 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
+
+from executor import ExternalCommandFailed, execute
 
 
 def find_files(path: Path, ignore_patterns: Iterable[str]) -> List[Path]:
@@ -51,3 +53,37 @@ def hash_file(path: Path, chunk_size: int = 2**16) -> str:
             hash.update(chunk)
 
     return hash.hexdigest()
+
+
+def git_path_exists(
+    repository: Path,
+    commit: Optional[str] = None,
+    path: Optional[Path] = None,
+) -> bool:
+    commit = commit or "HEAD~1"
+    path = path or Path(".")
+
+    if not repository.is_dir():
+        return False
+
+    if path == Path("."):
+        try:
+            object_type = execute(
+                f"git cat-file -t {commit}", directory=repository, capture=True
+            )
+        except ExternalCommandFailed:
+            return False
+        else:
+            return object_type == "commit"
+
+    else:
+        try:
+            execute(
+                f"git ls-tree -r {commit} --name-only | grep '^{path}'",
+                directory=repository,
+                capture=True,
+            )
+        except ExternalCommandFailed:
+            return False
+
+        return True
