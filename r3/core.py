@@ -4,15 +4,17 @@ This module provides the core functionality of R3. This module should not be use
 directly, but rather the public API exported by the top-level ``r3`` module.
 """
 
+import abc
 import copy
 import os
+import re
 import shutil
 import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterable, List, Mapping, Optional, Union
+from typing import Dict, Iterable, List, Mapping, Optional, Union
 
 import yaml
 from executor import execute
@@ -84,13 +86,7 @@ class Repository:
 
         for dependency in job.dependencies:
             if dependency not in self:
-                raise ValueError(
-                    "Missing dependency:"
-                    f"\n\titem = {dependency.item}"
-                    f"\n\tcommit = {dependency.commit}"
-                    f"\n\tsource = {dependency.source}"
-                    f"\n\tdestination = {dependency.destination}"
-                )
+                raise ValueError(f"Missing dependency: {dependency}")
 
         os.makedirs(target_path)
         os.makedirs(target_path / "output")
@@ -124,40 +120,22 @@ class Repository:
     def checkout(
         self, item: Union["Dependency", "Job"], path: Union[str, os.PathLike]
     ) -> None:
-        if isinstance(item, Dependency):
-            return self._checkout_dependency(item, path)
-        else:
+        path = Path(path)
+
+        if isinstance(item, Job):
             return self._checkout_job(item, path)
+        if isinstance(item, JobDependency):
+            return self._checkout_job_dependency(item, path)
+        if isinstance(item, GitDependency):
+            return self._checkout_git_dependency(item, path)
 
-    def _checkout_dependency(
-        self, dependency: "Dependency", path: Union[str, os.PathLike]
-    ) -> None:
-        if dependency.item is None or dependency.destination is None:
-            raise NotImplementedError
-
-        item_path = self.path / dependency.item
-        destination = path / dependency.destination
-        source = dependency.source or Path(".")
-
-        os.makedirs(destination.parent, exist_ok=True)
-
-        if dependency.commit is None:
-            os.symlink(item_path / source, destination)
-        else:
-            with tempfile.TemporaryDirectory() as tempdir:
-                clone_path = Path(tempdir) / "clone"
-                execute(f"git clone {item_path} {clone_path}")
-                execute(f"git checkout {dependency.commit}", directory=clone_path)
-                shutil.move(clone_path / source, destination)
-
-    def _checkout_job(self, job: "Job", path: Union[str, os.PathLike]) -> None:
+    def _checkout_job(self, job: "Job", path: Path) -> None:
         if job not in self:
             raise FileNotFoundError(f"Cannot find job: {job.path}")
 
         if job.path is None:
             raise RuntimeError("Job is committed but doesn't have a path.")
 
-        path = Path(path)
         os.makedirs(path)
 
         # Copy files
@@ -174,22 +152,34 @@ class Repository:
         for dependency in job.dependencies:
             self.checkout(dependency, path)
 
+    def _checkout_job_dependency(self, dependency: "JobDependency", path: Path) -> None:
+        source = self.path / "jobs" / dependency.job / dependency.source
+        destination = path / dependency.destination
+
+        os.makedirs(destination.parent, exist_ok=True)
+        os.symlink(source, destination)
+
+    def _checkout_git_dependency(self, dependency: "GitDependency", path: Path) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            clone_path = Path(tempdir) / "clone"
+            execute(f"git clone {self.path / dependency.repository_path} {clone_path}")
+            execute(f"git checkout {dependency.commit}", directory=clone_path)
+            shutil.move(clone_path / dependency.source, path / dependency.destination)
+
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
             return (self.path / "jobs" / item.hash()).is_dir()
 
-        if item.item is None or item.destination is None:
-            raise NotImplementedError
-        dependency = item
+        if isinstance(item, JobDependency):
+            return (self.path / "jobs" / item.job / item.source).exists()
 
-        path = self.path / dependency.item  # type: ignore
-        source = dependency.source or Path(".")
+        if isinstance(item, GitDependency):
+            return r3.utils.git_path_exists(
+                self.path / item.repository_path, item.commit, item.source
+            )
 
-        if str(dependency.item).startswith("job"):
-            return (path / source).exists()
-        else:
-            return r3.utils.git_path_exists(path, dependency.commit, source)
+        return False
 
     def find(self, tags: Iterable[str], latest: bool = False) -> List["Job"]:
         """Searches for jobs with the given tags.
@@ -288,7 +278,7 @@ class Job:
 
     def _load_dependencies(self) -> None:
         dependencies = [
-            Dependency(**kwargs) for kwargs in self._config.get("dependencies", [])
+            Dependency.from_dict(kwargs) for kwargs in self._config["dependencies"]
         ]
 
         self._dependencies = (
@@ -299,7 +289,7 @@ class Job:
         ignore = self._config.get("ignore", [])
 
         for dependency in self.dependencies:
-            ignore.append(f"/{dependency.item}")
+            ignore.append(f"/{dependency.destination}")
 
         files = {
             file: (self.path / file).absolute()
@@ -375,49 +365,99 @@ class Job:
         return self._hash
 
 
-class Dependency:
-    """A dependency on a job or a git repository."""
+class Dependency(abc.ABC):
+    """Dependency base class."""
 
     def __init__(
         self,
-        item: Optional[Union[os.PathLike, str]],
-        commit: Optional[str] = None,
-        source: Optional[Union[os.PathLike, str]] = None,
-        destination: Optional[Union[os.PathLike, str]] = None,
-        query: Optional[str] = None,
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = ".",
     ) -> None:
         """Initializes the dependency.
 
         Parameters
         ----------
-        item
-            Path to the job or git repository, relative to the repository root. This
-            may be `None` if a query is specified.
-        commit
-            Full commit hash for dependencies to git repositories.
         source
             Path relative to the item (job / git repository) that is referenced by the
             dependecy. Defaults to "." if no query is given.
         destination
             Path relative to the job to which the dependency will be checked out.
-        query
-            Optionally a query that will be dynamically resolved to a job, source and
-            destination.
         """
-        if item is None and query is None:
-            raise ValueError("Either an item path or a query must be given.")
+        self.source = Path(source)
+        self.destination = Path(destination)
 
-        if source is None and query is None:
-            source = Path(".")
+    @abc.abstractmethod
+    def to_dict(self) -> Dict[str, str]:
+        raise NotImplementedError
 
-        if destination is None and query is None:
-            raise ValueError("Destination must be specified if no query is given.")
+    @staticmethod
+    def from_dict(dict_: Dict[str, str]) -> "Dependency":
+        if "job" in dict_:
+            return JobDependency(**dict_)
+        if "repository" in dict_:
+            return GitDependency(**dict_)
 
-        self.item = item if item is None else Path(item)
-        self.commit = commit
-        self.source = source if source is None else Path(source)
-        self.destination = destination if destination is None else Path(destination)
+        raise ValueError(f"Invalid dependency dict: {dict_}")
+
+
+class JobDependency(Dependency):
+    def __init__(
+        self,
+        job: Union[Job, str],
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = ".",
+        query: Optional[str] = None,
+    ) -> None:
+        super().__init__(destination, source)
+        self.job = job if isinstance(job, str) else job.hash()
         self.query = query
+
+    def to_dict(self) -> Dict[str, str]:
+        dict_ = {
+            "job": self.job,
+            "source": str(self.source),
+            "destination": str(self.destination),
+        }
+
+        if self.query is not None:
+            dict_["query"] = self.query
+
+        return dict_
+
+
+class GitDependency(Dependency):
+    def __init__(
+        self,
+        repository: str,
+        commit: str,
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = ".",
+    ) -> None:
+        super().__init__(destination, source)
+        self.repository = repository
+        self.commit = commit
+
+    @property
+    def repository_path(self) -> Path:
+        https_pattern = r"^https://github\.com/([^/]+)/([^/\.]+)(?:\.git)?$"
+        match = re.match(https_pattern, self.repository)
+        if match:
+            return Path("git") / "github.com" / match.group(1) / match.group(2)
+
+        ssh_pattern = r"^git@github\.com:([^/]+)/([^/\.]+)(?:\.git)?$"
+        match = re.match(ssh_pattern, self.repository)
+        if match:
+            return Path("git") / "github.com" / match.group(1) / match.group(2)
+
+        raise ValueError(f"Unrecognized git url: {self.repository}")
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "repository": self.repository,
+            "commit": self.commit,
+            "source": str(self.source),
+            "destination": str(self.destination),
+        }
 
 
 def _remove_write_permissions(path: Path) -> None:

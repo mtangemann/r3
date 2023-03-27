@@ -96,14 +96,13 @@ def dev_checkout(path: str, repository_path: str) -> None:
     repository = r3.Repository(repository_path)
 
     for dependency in job.dependencies:
-        if dependency.item is None or dependency.destination is None:
-            raise NotImplementedError
-
         if dependency not in repository:
-            print(f"ERROR: Missing dependency: {dependency}")
+            print(f"--> ERROR: Missing dependency: {dependency}")
             sys.exit(1)
 
-        target_path = Path(path) / dependency.item
+        print(dependency.destination)
+
+        target_path = Path(path) / dependency.destination
         if target_path.exists():
             print(
                 f"ERROR: Target path exists already. Use --force to override. {target_path}"
