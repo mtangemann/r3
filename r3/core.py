@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Dict, Iterable, List, Mapping, Optional, Union
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Union
 
 import yaml
 from executor import execute
@@ -78,6 +78,8 @@ class Repository:
             yield Job(path)
 
     def commit(self, job: "Job") -> "Job":
+        job.resolve(self)
+
         target_path = self.path / "jobs" / job.hash()
 
         if (self.path / target_path).is_dir():
@@ -124,6 +126,8 @@ class Repository:
 
         if isinstance(item, Job):
             return self._checkout_job(item, path)
+        if isinstance(item, QueryDependency):
+            item = item.resolve(self)
         if isinstance(item, JobDependency):
             return self._checkout_job_dependency(item, path)
         if isinstance(item, GitDependency):
@@ -170,6 +174,9 @@ class Repository:
         """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
             return (self.path / "jobs" / item.hash()).is_dir()
+
+        if isinstance(item, QueryDependency):
+            item = item.resolve(self)
 
         if isinstance(item, JobDependency):
             return (self.path / "jobs" / item.job / item.source).exists()
@@ -329,9 +336,18 @@ class Job:
         return self._files
 
     @property
-    def dependencies(self) -> Iterable["Dependency"]:
+    def dependencies(self) -> Sequence["Dependency"]:
         """Dependencies of this job."""
         return self._dependencies
+
+    def resolve(self, repository: Repository) -> None:
+        if not isinstance(self.dependencies, list):
+            raise ValueError("Dependencies are not writeable.")
+
+        for index in range(len(self.dependencies)):
+            if isinstance(self.dependencies[index], QueryDependency):
+                self.dependencies[index] = self.dependencies[index].resolve(repository)
+                self._config["dependencies"][index] = self.dependencies[index].to_dict()
 
     @property
     def datetime(self) -> datetime:
@@ -394,6 +410,8 @@ class Dependency(abc.ABC):
     def from_dict(dict_: Dict[str, str]) -> "Dependency":
         if "job" in dict_:
             return JobDependency(**dict_)
+        if "query" in dict_:
+            return QueryDependency(**dict_)
         if "repository" in dict_:
             return GitDependency(**dict_)
 
@@ -458,6 +476,38 @@ class GitDependency(Dependency):
             "source": str(self.source),
             "destination": str(self.destination),
         }
+
+
+class QueryDependency(Dependency):
+    def __init__(
+        self,
+        query: str,
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = ".",
+    ) -> None:
+        super().__init__(destination, source)
+        self.query = query
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "query": self.query,
+            "source": str(self.source),
+            "destination": str(self.destination),
+        }
+
+    def resolve(self, repository: Repository) -> JobDependency:
+        tags = self.query.strip().split(" ")
+
+        if not all(tag.startswith("#") for tag in tags):
+            raise ValueError(f"Invalid query: {self.query}")
+
+        tags = [tag[1:] for tag in tags]
+        result = repository.find(tags, latest=True)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {self.query}")
+
+        return JobDependency(result[0], self.destination, self.source, self.query)
 
 
 def _remove_write_permissions(path: Path) -> None:
