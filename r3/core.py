@@ -5,12 +5,12 @@ directly, but rather the public API exported by the top-level ``r3`` module.
 """
 
 import abc
-import copy
 import os
 import re
 import shutil
 import stat
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -22,7 +22,7 @@ from executor import execute
 import r3
 import r3.utils
 
-R3_FORMAT_VERSION = "1.0.0-beta.3"
+R3_FORMAT_VERSION = "1.0.0-beta.5"
 
 
 class Repository:
@@ -79,19 +79,17 @@ class Repository:
 
     def commit(self, job: "Job") -> "Job":
         job.resolve(self)
-
-        target_path = self.path / "jobs" / job.hash()
-
-        if (self.path / target_path).is_dir():
-            print(f"Job exists already: {target_path}")
-            return Job(target_path)
-
         for dependency in job.dependencies:
             if dependency not in self:
                 raise ValueError(f"Missing dependency: {dependency}")
 
+        job_id = uuid.uuid4()
+        target_path = self.path / "jobs" / str(job_id)
+
         os.makedirs(target_path)
         os.makedirs(target_path / "output")
+
+        job.hash(recompute=True)
 
         with open(target_path / "r3.yaml", "w") as config_file:
             yaml.dump(job._config, config_file)
@@ -173,7 +171,9 @@ class Repository:
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
-            return (self.path / "jobs" / item.hash()).is_dir()
+            return (
+                item.uuid is not None and (self.path / "jobs" / str(item.uuid)).is_dir()
+            )
 
         if isinstance(item, QueryDependency):
             item = item.resolve(self)
@@ -206,9 +206,9 @@ class Repository:
         tags = set(tags)
         results = []
 
-        for hash, metadata in self._index.items():
+        for job_id, metadata in self._index.items():
             if tags.issubset(metadata["tags"]):
-                results.append(Job(self.path / "jobs" / hash))
+                results.append(Job(self.path / "jobs" / job_id))
 
         if latest:
             return [max(results, key=lambda job: job.datetime)]
@@ -227,7 +227,7 @@ class Repository:
             self._index = yaml.dump(self._index, index_file)
 
     def _add_job_to_index(self, job: "Job") -> None:
-        self._index[job.hash()] = {
+        self._index[str(job.uuid)] = {
             "tags": job.metadata.get("tags", []),
             "datetime": job.datetime,
         }
@@ -262,10 +262,11 @@ class Job:
 
         self._repository: Optional[Repository] = None
         self._hash: Optional[str] = None
+        self._uuid: Optional[uuid.UUID] = None
 
         if (self._path.parent.parent / "r3.yaml").is_file():
             self._repository = Repository(self._path.parent.parent)
-            self._hash = self._path.name
+            self._uuid = uuid.UUID(self._path.name)
 
         self._load_config()
         self._load_dependencies()
@@ -313,6 +314,10 @@ class Job:
             metadata = dict()
 
         self.metadata = metadata
+
+    @property
+    def uuid(self) -> Optional[uuid.UUID]:
+        return self._uuid
 
     @property
     def path(self) -> Path:
@@ -365,18 +370,23 @@ class Job:
             to `True`, this will recompute the job hash in any case.
         """
         if self._hash is None or recompute:
-            self._config["files"] = {
-                str(destination): r3.utils.hash_file(source)
-                for destination, source in self.files.items()
-                if destination not in (Path("r3.yaml"), Path("metadata.yaml"))
-            }
+            hashes = dict()
 
-            config = copy.deepcopy(self._config)
-            config.pop("ignore", None)
-            for dependency in config.get("dependencies", []):
-                dependency.pop("query", None)
+            for destination, source in self.files.items():
+                if destination in (Path("r3.yaml"), Path("metadata.yaml")):
+                    continue
 
-            self._hash = r3.utils.hash_dict(config)
+                hashes[str(destination)] = r3.utils.hash_file(source)
+
+            for dependency in self._dependencies:
+                hashes[str(dependency.destination)] = dependency.hash()
+
+            index = "\n".join(f"{path} {hashes[path]}" for path in sorted(hashes))
+            print(index)
+            hashes["."] = r3.utils.hash_str(index)
+
+            self._config["hashes"] = hashes
+            self._hash = hashes["."]
 
         return self._hash
 
@@ -417,17 +427,21 @@ class Dependency(abc.ABC):
 
         raise ValueError(f"Invalid dependency dict: {dict_}")
 
+    @abc.abstractmethod
+    def hash(self) -> str:
+        raise NotImplementedError
+
 
 class JobDependency(Dependency):
     def __init__(
         self,
         job: Union[Job, str],
         destination: Union[os.PathLike, str],
-        source: Union[os.PathLike, str] = ".",
+        source: Union[os.PathLike, str] = "",
         query: Optional[str] = None,
     ) -> None:
         super().__init__(destination, source)
-        self.job = job if isinstance(job, str) else job.hash()
+        self.job = job if isinstance(job, str) else str(job.uuid)
         self.query = query
 
     def to_dict(self) -> Dict[str, str]:
@@ -442,6 +456,9 @@ class JobDependency(Dependency):
 
         return dict_
 
+    def hash(self) -> str:
+        return r3.utils.hash_str(f"jobs/{self.job}/{self.source}")
+
 
 class GitDependency(Dependency):
     def __init__(
@@ -449,7 +466,7 @@ class GitDependency(Dependency):
         repository: str,
         commit: str,
         destination: Union[os.PathLike, str],
-        source: Union[os.PathLike, str] = ".",
+        source: Union[os.PathLike, str] = "",
     ) -> None:
         super().__init__(destination, source)
         self.repository = repository
@@ -476,6 +493,9 @@ class GitDependency(Dependency):
             "source": str(self.source),
             "destination": str(self.destination),
         }
+
+    def hash(self) -> str:
+        return r3.utils.hash_str(f"{self.repository_path}@{self.commit}/{self.source}")
 
 
 class QueryDependency(Dependency):
@@ -508,6 +528,9 @@ class QueryDependency(Dependency):
             raise ValueError(f"Cannot resolve dependency: {self.query}")
 
         return JobDependency(result[0], self.destination, self.source, self.query)
+
+    def hash(self) -> str:
+        raise ValueError("Cannot hash QueryDependency")
 
 
 def _remove_write_permissions(path: Path) -> None:

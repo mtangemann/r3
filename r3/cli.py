@@ -70,7 +70,7 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
         if long:
             datetime = job.datetime.strftime(r"%Y-%m-%d %H:%M:%S")
             tags = " ".join(f"#{tag}" for tag in job.metadata.get("tags", []))
-            print(f"{job.hash()} | {datetime} | {tags}")
+            print(f"{job.uuid} | {datetime} | {tags}")
         else:
             print(job.path)
 

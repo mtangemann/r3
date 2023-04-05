@@ -1,5 +1,4 @@
 import hashlib
-import json
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -37,11 +36,6 @@ def _is_ignored(path: Path, ignore_patterns: Iterable[str]):
     return any(pattern == f"/{path.name}" for pattern in ignore_patterns)
 
 
-def hash_dict(dict_) -> str:
-    dict_json = json.dumps(dict_, sort_keys=True, ensure_ascii=True)
-    return hashlib.sha256(bytes(dict_json, encoding="utf-8")).hexdigest()
-
-
 def hash_file(path: Path, chunk_size: int = 2**16) -> str:
     hash = hashlib.sha256()
 
@@ -53,6 +47,10 @@ def hash_file(path: Path, chunk_size: int = 2**16) -> str:
             hash.update(chunk)
 
     return hash.hexdigest()
+
+
+def hash_str(string: str) -> str:
+    return hashlib.sha256(string.encode()).hexdigest()
 
 
 def git_path_exists(
