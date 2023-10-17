@@ -382,7 +382,6 @@ class Job:
                 hashes[str(dependency.destination)] = dependency.hash()
 
             index = "\n".join(f"{path} {hashes[path]}" for path in sorted(hashes))
-            print(index)
             hashes["."] = r3.utils.hash_str(index)
 
             self._config["hashes"] = hashes
