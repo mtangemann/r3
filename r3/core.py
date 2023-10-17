@@ -162,11 +162,21 @@ class Repository:
         os.symlink(source, destination)
 
     def _checkout_git_dependency(self, dependency: "GitDependency", path: Path) -> None:
+        origin = str(self.path / dependency.repository_path / ".git")
+
         with tempfile.TemporaryDirectory() as tempdir:
-            clone_path = Path(tempdir) / "clone"
-            execute(f"git clone {self.path / dependency.repository_path} {clone_path}")
-            execute(f"git checkout {dependency.commit}", directory=clone_path)
-            shutil.move(clone_path / dependency.source, path / dependency.destination)
+            # https://stackoverflow.com/a/43136160
+            commands = " && ".join([
+                "git init",
+                f"git remote add origin {origin}",
+                f"git fetch --depth=1 origin {dependency.commit}",
+                "git checkout FETCH_HEAD",
+            ])
+            execute(commands, directory=tempdir)
+            shutil.move(
+                Path(tempdir) / dependency.source,
+                path / dependency.destination,
+            )
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         """Checks if the given item is contained in this repository."""
