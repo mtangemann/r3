@@ -1,21 +1,12 @@
-.PHONY: black isort lint lint/black lint/flake8 lint/isort lint/mypy test
+.PHONY: fix lint lint/ruff lint/mypy test
 
-black:
-	black r3 test
+fix:
+	ruff --fix .
 
-isort:
-	isort r3 test
+lint: lint/ruff lint/mypy
 
-lint: lint/black lint/flake8 lint/isort lint/mypy
-
-lint/black:
-	black --check r3 test
-
-lint/flake8:
-	flake8 r3 test
-
-lint/isort:
-	isort --check r3 test
+lint/ruff:
+	ruff .
 
 lint/mypy:
 	mypy r3 test

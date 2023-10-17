@@ -77,7 +77,8 @@ def test_commit_returns_the_updated_job(
 ) -> None:
     """Unit test for ``r3.Repository.commit``.
 
-    ``r3.Repository.commit`` should return the ``r3.Job`` instance within the repository.
+    ``r3.Repository.commit`` should return the ``r3.Job`` instance within the
+    repository.
     """
     job = get_dummy_job(fs, "base")
     assert job.repository is None

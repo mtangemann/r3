@@ -1,4 +1,5 @@
 """R3 command line interface."""
+# ruff: noqa: T201
 
 import sys
 from pathlib import Path
@@ -105,7 +106,8 @@ def dev_checkout(path: str, repository_path: str) -> None:
         target_path = Path(path) / dependency.destination
         if target_path.exists():
             print(
-                f"ERROR: Target path exists already. Use --force to override. {target_path}"
+                "ERROR: Target path exists already. Use --force to override. "
+                f"{target_path}"
             )
             sys.exit(1)
 

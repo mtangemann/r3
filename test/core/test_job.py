@@ -36,5 +36,5 @@ def test_job_hash_does_not_depend_on_metadata(fs: FakeFilesystem) -> None:
 
     assert r3.Job(job_path).hash() == original_hash
 
-    fs.remove(job_path / "metadata.yaml")
+    fs.remove(job_path / "metadata.yaml")  # type: ignore
     assert r3.Job(job_path).hash() == original_hash
