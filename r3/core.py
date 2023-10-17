@@ -11,6 +11,7 @@ import shutil
 import stat
 import tempfile
 import uuid
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -23,6 +24,8 @@ import r3
 import r3.utils
 
 R3_FORMAT_VERSION = "1.0.0-beta.5"
+
+DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
 
 class Repository:
@@ -86,10 +89,14 @@ class Repository:
         job_id = uuid.uuid4()
         target_path = self.path / "jobs" / str(job_id)
 
+        job.hash(recompute=True)
+
+        if "committed_at" in job.metadata:
+            warnings.warn("Overwriting `committed_at` in job metadata.", stacklevel=2)
+        job.metadata["committed_at"] = datetime.now().strftime(DATE_FORMAT)
+
         os.makedirs(target_path)
         os.makedirs(target_path / "output")
-
-        job.hash(recompute=True)
 
         with open(target_path / "r3.yaml", "w") as config_file:
             yaml.dump(job._config, config_file)
@@ -239,7 +246,7 @@ class Repository:
     def _add_job_to_index(self, job: "Job") -> None:
         self._index[str(job.uuid)] = {
             "tags": job.metadata.get("tags", []),
-            "datetime": job.datetime,
+            "datetime": job.datetime.strftime(DATE_FORMAT),
         }
 
     def rebuild_index(self):
@@ -367,8 +374,16 @@ class Job:
     @property
     def datetime(self) -> datetime:
         """Returns the date and time when this job was created (committed)."""
-        timestamp = self.path.stat().st_ctime
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        if "committed_at" in self.metadata:
+            return datetime.strptime(self.metadata["committed_at"], DATE_FORMAT)
+        else:
+            warnings.warn(
+                "Job metadata doesn't include `datetime`. Falling back to using the "
+                "directory creation data (deprecated).",
+                stacklevel=2,
+            )
+            timestamp = self.path.stat().st_ctime
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
     def hash(self, recompute: bool = False) -> str:
         """Returns the hash of this job.
