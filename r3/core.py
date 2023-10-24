@@ -172,18 +172,40 @@ class Repository:
         origin = str(self.path / dependency.repository_path / ".git")
 
         with tempfile.TemporaryDirectory() as tempdir:
-            # https://stackoverflow.com/a/43136160
-            commands = " && ".join([
-                "git init",
-                f"git remote add origin {origin}",
-                f"git fetch --depth=1 origin {dependency.commit}",
-                "git checkout FETCH_HEAD",
-            ])
-            execute(commands, directory=tempdir)
-            shutil.move(
-                Path(tempdir) / dependency.source,
-                path / dependency.destination,
-            )
+            git_version_str = execute("git --version", capture=True).rsplit(" ", 1)[-1]
+            git_version = tuple(int(part) for part in git_version_str.split("."))
+
+            if git_version < (2, 5):
+                warnings.warn(
+                    f"Git is outdated ({git_version_str}). Falling back to cloning the "
+                    "entire repository for git dependencies.",
+                    stacklevel=1,
+                )
+                clone_path = Path(tempdir) / "clone"
+                execute(
+                    f"git clone {self.path / dependency.repository_path} {clone_path}"
+                )
+                execute(
+                    f"git checkout {dependency.commit}", directory=clone_path
+                )
+                shutil.move(
+                    clone_path / dependency.source,
+                    path / dependency.destination,
+                )
+
+            else:
+                # https://stackoverflow.com/a/43136160
+                commands = " && ".join([
+                    "git init",
+                    f"git remote add origin {origin}",
+                    f"git fetch --depth=1 origin {dependency.commit}",
+                    "git checkout FETCH_HEAD",
+                ])
+                execute(commands, directory=tempdir)
+                shutil.move(
+                    Path(tempdir) / dependency.source,
+                    path / dependency.destination,
+                )
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         """Checks if the given item is contained in this repository."""
