@@ -207,6 +207,24 @@ class Repository:
                     path / dependency.destination,
                 )
 
+    def remove(self, job: "Job") -> None:
+        if job not in self:
+            raise ValueError("Job is not contained in this repository.")
+
+        for job_id, metadata in self._index.items():
+            for dependency in metadata.get("dependencies", []):
+                if dependency.get("job", None) == str(job.uuid):
+                    raise ValueError(f"Another job depends on this job: {job_id}")
+
+        for path in job.files:
+            _add_write_permission(job.path / path)
+        _add_write_permission(job.path)
+
+        shutil.rmtree(job.path)
+
+        del self._index[job.uuid]
+        self._save_index()
+
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
@@ -269,6 +287,7 @@ class Repository:
         self._index[str(job.uuid)] = {
             "tags": job.metadata.get("tags", []),
             "datetime": job.datetime.strftime(DATE_FORMAT),
+            "dependencies": job._config["dependencies"],
         }
 
     def rebuild_index(self):
@@ -582,4 +601,10 @@ class QueryDependency(Dependency):
 def _remove_write_permissions(path: Path) -> None:
     mode = stat.S_IMODE(os.lstat(path).st_mode)
     mode = mode & ~stat.S_IWOTH & ~stat.S_IWGRP & ~stat.S_IWUSR
+    os.chmod(path, mode)
+
+
+def _add_write_permission(path: Path) -> None:
+    mode = stat.S_IMODE(os.lstat(path).st_mode)
+    mode = mode | stat.S_IWOTH | stat.S_IWGRP | stat.S_IWUSR
     os.chmod(path, mode)
