@@ -5,3 +5,4 @@
     :command: cli
     :prog_name: r3
     :style: table
+    :list_subcommands: True
