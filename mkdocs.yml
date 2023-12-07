@@ -17,6 +17,7 @@ theme:
 
 nav:
 - Home: index.md
+- tutorial.md
 - cli.md
 - python_api.md
 - repository_format.md

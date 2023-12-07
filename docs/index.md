@@ -2,6 +2,9 @@
 
 Welcome to the documentation of R3!
 
+- [Tutorial](tutorial.md)<br>
+  Start here if you are new to R3.
+
 - [CLI](cli.md)<br>
   Documentation of the R3 command line interface.
 
