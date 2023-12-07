@@ -222,7 +222,7 @@ class Repository:
 
         shutil.rmtree(job.path)
 
-        del self._index[job.uuid]
+        del self._index[str(job.uuid)]
         self._save_index()
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
