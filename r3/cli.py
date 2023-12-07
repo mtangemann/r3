@@ -56,6 +56,24 @@ def checkout(job_path: Path, target_path) -> None:
 
 
 @cli.command()
+@click.argument(
+    "job_path", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+def remove(job_path: Path) -> None:
+    job = r3.Job(job_path)
+    repository = job.repository
+
+    if repository is None:
+        print("Error removing job: Can only remove commited jobs.")
+        return
+
+    try:
+        repository.remove(job)
+    except ValueError as error:
+        print(f"Error removing job: {error}")
+
+
+@cli.command()
 @click.option("--tag", "-t", "tags", multiple=True, type=str)
 @click.option("--latest/--all", default=False)
 @click.option("--long/--short", "-l", default=False)
