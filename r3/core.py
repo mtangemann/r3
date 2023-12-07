@@ -32,12 +32,9 @@ class Repository:
     def __init__(self, path: Union[str, os.PathLike]) -> None:
         """Initializes the repository instance.
 
-        Raises
-        ------
-        FileNotFoundError
-            If the given path does not exist.
-        NotADirectoryError
-            If the given path exists but is not a directory.
+        Raises:
+            FileNotFoundError: If the given path does not exist.
+            NotADirectoryError: If the given path exists but is not a directory.
         """
         self.path = Path(path)
 
@@ -54,10 +51,8 @@ class Repository:
     def init(path: Union[str, os.PathLike]) -> "Repository":
         """Creates a repository at the given path.
 
-        Raises
-        ------
-        FileExistsError
-            If the given path exists alreay.
+        Raises:
+            FileExistsError: If the given path exists alreay.
         """
         path = Path(path)
 
@@ -248,16 +243,12 @@ class Repository:
     def find(self, tags: Iterable[str], latest: bool = False) -> List["Job"]:
         """Searches for jobs with the given tags.
 
-        Parameters
-        ----------
-        tags
-            Return jobs that include all of this tags.
-        latest
-            If true, only return the latest matching job. Otherwise, return all jobs.
+        Parameters:
+            tags: Return jobs that include all of this tags.
+            latest: If true, only return the latest matching job. Otherwise, return all
+                jobs.
 
-        Returns
-        -------
-        List[Job]
+        Returns:
             List of job matching the search parameters.
         """
         tags = set(tags)
@@ -311,10 +302,8 @@ class Job:
     def __init__(self, path: Union[str, os.PathLike]) -> None:
         """Initializes a job instance.
 
-        Parameters
-        ----------
-        path
-            Path to the job's root directory.
+        Parameters:
+            path: Path to the job's root directory.
         """
         self._path = Path(path).absolute()
 
@@ -385,11 +374,9 @@ class Job:
     def repository(self) -> Optional[Repository]:
         """Optionally returns the repository in which this job is contained.
 
-        Returns
-        -------
-        Repository or None
+        Returns:
             This returns the repository in which this job is contained. If this job is
-            not part of any repository, this returns ``None``.
+                not part of any repository, this returns ``None``.
         """
         return self._repository
 
@@ -429,11 +416,10 @@ class Job:
     def hash(self, recompute: bool = False) -> str:
         """Returns the hash of this job.
 
-        Parameters
-        ----------
-        recompute
-            This method uses cashing to compute the job hash only when necessary. If set
-            to `True`, this will recompute the job hash in any case.
+        Parameters:
+            recompute: This method uses cashing to compute the job hash only when
+                necessary. If set to `True`, this will recompute the job hash in any
+                case.
         """
         if self._hash is None or recompute:
             hashes = dict()
@@ -466,13 +452,11 @@ class Dependency(abc.ABC):
     ) -> None:
         """Initializes the dependency.
 
-        Parameters
-        ----------
-        source
-            Path relative to the item (job / git repository) that is referenced by the
-            dependecy. Defaults to "." if no query is given.
-        destination
-            Path relative to the job to which the dependency will be checked out.
+        Parameters:
+            source: Path relative to the item (job / git repository) that is referenced
+                by the dependecy. Defaults to "." if no query is given.
+            destination: Path relative to the job to which the dependency will be
+                checked out.
         """
         self.source = Path(source)
         self.destination = Path(destination)

@@ -22,6 +22,9 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 dev = [
+    "mkdocs~=1.5.3",
+    "mkdocs-click~=0.8.1",
+    "mkdocs-material~=9.4.8",
     "mypy==0.991",
     "pyfakefs==5.0.0",
     "pytest==7.2.0",
