@@ -1,0 +1,22 @@
+site_name: R3
+repo_url: https://github.com/mtangemann/r3
+
+plugins:
+- mkdocstrings
+- search
+
+markdown_extensions:
+- admonition
+- mkdocs-click
+
+theme:
+  name: material
+  features:
+    - navigation.indexes
+    - navigation.sections
+
+nav:
+- Home: index.md
+- cli.md
+- python_api.md
+- repository_format.md
