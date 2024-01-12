@@ -394,10 +394,24 @@ class Job:
         if not isinstance(self.dependencies, list):
             raise ValueError("Dependencies are not writeable.")
 
+        resolved_dependencies = []
+
         for index in range(len(self.dependencies)):
             if isinstance(self.dependencies[index], QueryDependency):
-                self.dependencies[index] = self.dependencies[index].resolve(repository)
-                self._config["dependencies"][index] = self.dependencies[index].to_dict()
+                dependency = self.dependencies[index].resolve(repository)
+                resolved_dependencies.append(dependency)
+            
+            elif isinstance(self.dependencies[index], QueryAllDependency):
+                dependencies = self.dependencies[index].resolve(repository)
+                resolved_dependencies.extend(dependencies)
+            
+            else:
+                resolved_dependencies.append(self.dependencies[index])
+
+        self._dependencies = resolved_dependencies
+        self._config["dependencies"] = [
+            dependency.to_dict() for dependency in self.dependencies
+        ]
 
     @property
     def datetime(self) -> datetime:
@@ -471,6 +485,8 @@ class Dependency(abc.ABC):
             return JobDependency(**dict_)
         if "query" in dict_:
             return QueryDependency(**dict_)
+        if "query_all" in dict_:
+            return QueryAllDependency(**dict_)
         if "repository" in dict_:
             return GitDependency(**dict_)
 
@@ -488,10 +504,12 @@ class JobDependency(Dependency):
         destination: Union[os.PathLike, str],
         source: Union[os.PathLike, str] = "",
         query: Optional[str] = None,
+        query_all: Optional[str] = None,
     ) -> None:
         super().__init__(destination, source)
         self.job = job if isinstance(job, str) else str(job.uuid)
         self.query = query
+        self.query_all = query_all
 
     def to_dict(self) -> Dict[str, str]:
         dict_ = {
@@ -502,6 +520,9 @@ class JobDependency(Dependency):
 
         if self.query is not None:
             dict_["query"] = self.query
+        
+        if self.query_all is not None:
+            dict_["query_all"] = self.query_all
 
         return dict_
 
@@ -580,6 +601,44 @@ class QueryDependency(Dependency):
 
     def hash(self) -> str:
         raise ValueError("Cannot hash QueryDependency")
+
+
+class QueryAllDependency(Dependency):
+    def __init__(
+        self,
+        query_all: str,
+        destination: Union[os.PathLike, str],
+    ) -> None:
+        super().__init__(destination, ".")
+        self.query_all = query_all
+    
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "query_all": self.query_all,
+            "destination": str(self.destination),
+        }
+
+    def resolve(self, repository: Repository) -> List[JobDependency]:
+        tags = self.query_all.strip().split(" ")
+
+        if not all(tag.startswith("#") for tag in tags):
+            raise ValueError(f"Invalid query: {self.query_all}")
+
+        tags = [tag[1:] for tag in tags]
+        result = repository.find(tags)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {self.query_all}")
+
+        return [
+            JobDependency(
+                job, self.destination / str(job.uuid), query_all=self.query_all
+            )
+            for job in result
+        ]
+
+    def hash(self) -> str:
+        raise ValueError("Cannot hash QueryAllDependency")
 
 
 def _remove_write_permissions(path: Path) -> None:
