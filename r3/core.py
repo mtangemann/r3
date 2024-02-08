@@ -315,9 +315,10 @@ class Job:
             self._repository = Repository(self._path.parent.parent)
             self._uuid = uuid.UUID(self._path.name)
 
+        self._files: Mapping[Path, Path] | None = None
+
         self._load_config()
         self._load_dependencies()
-        self._load_files()
         self._load_metadata()
 
     def _load_config(self) -> None:
@@ -383,7 +384,9 @@ class Job:
     @property
     def files(self) -> Mapping[Path, Path]:
         """Files belonging to this job."""
-        return self._files
+        if self._files is None:
+            self._load_files()
+        return self._files  # type: ignore
 
     @property
     def dependencies(self) -> Sequence["Dependency"]:
