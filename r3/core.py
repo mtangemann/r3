@@ -325,9 +325,18 @@ class Job:
 
         self._files: Mapping[Path, Path] | None = None
         self._metadata: Dict[str, str] | None = None
+        self.__config: Mapping[str, Any] | None = None
+        self._dependencies: Sequence["Dependency"] | None = None
 
-        self._load_config()
-        self._load_dependencies()
+    @property
+    def _config(self) -> Mapping[str, Any]:
+        if self.__config is None:
+            self._load_config()
+        return self.__config  # type: ignore
+
+    @_config.setter
+    def _config(self, config: Mapping[str, Any]) -> None:
+        self.__config = config
 
     def _load_config(self) -> None:
         if (self.path / "r3.yaml").is_file():
@@ -390,7 +399,9 @@ class Job:
     @property
     def dependencies(self) -> Sequence["Dependency"]:
         """Dependencies of this job."""
-        return self._dependencies
+        if self._dependencies is None:
+            self._load_dependencies()
+        return self._dependencies  # type: ignore
 
     @property
     def metadata(self) -> Dict[str, str]:
@@ -426,7 +437,7 @@ class Job:
                 resolved_dependencies.append(self.dependencies[index])
 
         self._dependencies = resolved_dependencies
-        self._config["dependencies"] = [
+        self._config["dependencies"] = [  # type: ignore
             dependency.to_dict() for dependency in self.dependencies
         ]
 
@@ -461,13 +472,13 @@ class Job:
 
                 hashes[str(destination)] = r3.utils.hash_file(source)
 
-            for dependency in self._dependencies:
+            for dependency in self.dependencies:
                 hashes[str(dependency.destination)] = dependency.hash()
 
             index = "\n".join(f"{path} {hashes[path]}" for path in sorted(hashes))
             hashes["."] = r3.utils.hash_str(index)
 
-            self._config["hashes"] = hashes
+            self._config["hashes"] = hashes  # type: ignore
             self._hash = hashes["."]
 
         return self._hash
