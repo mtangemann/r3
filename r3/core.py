@@ -15,7 +15,7 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Union
 
 import yaml
 from executor import execute
@@ -45,7 +45,7 @@ class Repository:
             raise NotADirectoryError(f"Not a directory: {self.path}")
 
         self._index_path: Path = self.path / "index.yaml"
-        self._load_index()
+        self.__index: Dict[str, Dict[str, Union[str, List[str]]]] | None = None
 
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":
@@ -263,12 +263,20 @@ class Repository:
         else:
             return sorted(results, key=lambda job: job.datetime)
 
-    def _load_index(self) -> None:
-        if self._index_path.exists():
-            with open(self._index_path, "r") as index_file:
-                self._index = yaml.safe_load(index_file)
-        else:
-            self._index = dict()
+    @property
+    def _index(self) -> Dict[str, Any]:
+        if self.__index is None:
+            if self._index_path.exists():
+                with open(self._index_path, "r") as index_file:
+                    self.__index = yaml.safe_load(index_file)
+            else:
+                self.__index = dict()
+
+        return self.__index
+
+    @_index.setter
+    def _index(self, index: Dict[str, Any]) -> None:
+        self.__index = index
 
     def _save_index(self) -> None:
         with open(self._index_path, "w") as index_file:
