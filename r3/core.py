@@ -280,7 +280,7 @@ class Repository:
 
     def _save_index(self) -> None:
         with open(self._index_path, "w") as index_file:
-            self._index = yaml.dump(self._index, index_file)
+            yaml.dump(self._index, index_file)
 
     def _add_job_to_index(self, job: "Job") -> None:
         self._index[str(job.uuid)] = {
