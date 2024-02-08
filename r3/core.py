@@ -316,10 +316,10 @@ class Job:
             self._uuid = uuid.UUID(self._path.name)
 
         self._files: Mapping[Path, Path] | None = None
+        self._metadata: Dict[str, str] | None = None
 
         self._load_config()
         self._load_dependencies()
-        self._load_metadata()
 
     def _load_config(self) -> None:
         if (self.path / "r3.yaml").is_file():
@@ -354,15 +354,6 @@ class Job:
 
         self._files = files if self._repository is None else MappingProxyType(files)
 
-    def _load_metadata(self) -> None:
-        if (self.path / "metadata.yaml").is_file():
-            with open(self.path / "metadata.yaml", "r") as metadata_file:
-                metadata = yaml.safe_load(metadata_file)
-        else:
-            metadata = dict()
-
-        self.metadata = metadata
-
     @property
     def uuid(self) -> Optional[uuid.UUID]:
         return self._uuid
@@ -392,6 +383,21 @@ class Job:
     def dependencies(self) -> Sequence["Dependency"]:
         """Dependencies of this job."""
         return self._dependencies
+
+    @property
+    def metadata(self) -> Dict[str, str]:
+        """Job metadata.
+
+        Changes to this dictionary are not written to the job's metadata file.
+        """
+        if self._metadata is None:
+            if (self.path / "metadata.yaml").is_file():
+                with open(self.path / "metadata.yaml", "r") as metadata_file:
+                    self._metadata = yaml.safe_load(metadata_file)
+            else:
+                self._metadata = dict()
+
+        return self._metadata
 
     def resolve(self, repository: Repository) -> None:
         if not isinstance(self.dependencies, list):
