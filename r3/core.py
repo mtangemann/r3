@@ -15,7 +15,7 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Union
 
 import yaml
 from executor import execute
@@ -45,7 +45,7 @@ class Repository:
             raise NotADirectoryError(f"Not a directory: {self.path}")
 
         self._index_path: Path = self.path / "index.yaml"
-        self._load_index()
+        self.__index: Dict[str, Dict[str, Union[str, List[str]]]] | None = None
 
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":
@@ -263,16 +263,24 @@ class Repository:
         else:
             return sorted(results, key=lambda job: job.datetime)
 
-    def _load_index(self) -> None:
-        if self._index_path.exists():
-            with open(self._index_path, "r") as index_file:
-                self._index = yaml.safe_load(index_file)
-        else:
-            self._index = dict()
+    @property
+    def _index(self) -> Dict[str, Any]:
+        if self.__index is None:
+            if self._index_path.exists():
+                with open(self._index_path, "r") as index_file:
+                    self.__index = yaml.safe_load(index_file)
+            else:
+                self.__index = dict()
+
+        return self.__index
+
+    @_index.setter
+    def _index(self, index: Dict[str, Any]) -> None:
+        self.__index = index
 
     def _save_index(self) -> None:
         with open(self._index_path, "w") as index_file:
-            self._index = yaml.dump(self._index, index_file)
+            yaml.dump(self._index, index_file)
 
     def _add_job_to_index(self, job: "Job") -> None:
         self._index[str(job.uuid)] = {
@@ -315,10 +323,20 @@ class Job:
             self._repository = Repository(self._path.parent.parent)
             self._uuid = uuid.UUID(self._path.name)
 
-        self._load_config()
-        self._load_dependencies()
-        self._load_files()
-        self._load_metadata()
+        self._files: Mapping[Path, Path] | None = None
+        self._metadata: Dict[str, str] | None = None
+        self.__config: Mapping[str, Any] | None = None
+        self._dependencies: Sequence["Dependency"] | None = None
+
+    @property
+    def _config(self) -> Mapping[str, Any]:
+        if self.__config is None:
+            self._load_config()
+        return self.__config  # type: ignore
+
+    @_config.setter
+    def _config(self, config: Mapping[str, Any]) -> None:
+        self.__config = config
 
     def _load_config(self) -> None:
         if (self.path / "r3.yaml").is_file():
@@ -353,15 +371,6 @@ class Job:
 
         self._files = files if self._repository is None else MappingProxyType(files)
 
-    def _load_metadata(self) -> None:
-        if (self.path / "metadata.yaml").is_file():
-            with open(self.path / "metadata.yaml", "r") as metadata_file:
-                metadata = yaml.safe_load(metadata_file)
-        else:
-            metadata = dict()
-
-        self.metadata = metadata
-
     @property
     def uuid(self) -> Optional[uuid.UUID]:
         return self._uuid
@@ -383,12 +392,31 @@ class Job:
     @property
     def files(self) -> Mapping[Path, Path]:
         """Files belonging to this job."""
-        return self._files
+        if self._files is None:
+            self._load_files()
+        return self._files  # type: ignore
 
     @property
     def dependencies(self) -> Sequence["Dependency"]:
         """Dependencies of this job."""
-        return self._dependencies
+        if self._dependencies is None:
+            self._load_dependencies()
+        return self._dependencies  # type: ignore
+
+    @property
+    def metadata(self) -> Dict[str, str]:
+        """Job metadata.
+
+        Changes to this dictionary are not written to the job's metadata file.
+        """
+        if self._metadata is None:
+            if (self.path / "metadata.yaml").is_file():
+                with open(self.path / "metadata.yaml", "r") as metadata_file:
+                    self._metadata = yaml.safe_load(metadata_file)
+            else:
+                self._metadata = dict()
+
+        return self._metadata
 
     def resolve(self, repository: Repository) -> None:
         if not isinstance(self.dependencies, list):
@@ -409,7 +437,7 @@ class Job:
                 resolved_dependencies.append(self.dependencies[index])
 
         self._dependencies = resolved_dependencies
-        self._config["dependencies"] = [
+        self._config["dependencies"] = [  # type: ignore
             dependency.to_dict() for dependency in self.dependencies
         ]
 
@@ -444,13 +472,13 @@ class Job:
 
                 hashes[str(destination)] = r3.utils.hash_file(source)
 
-            for dependency in self._dependencies:
+            for dependency in self.dependencies:
                 hashes[str(dependency.destination)] = dependency.hash()
 
             index = "\n".join(f"{path} {hashes[path]}" for path in sorted(hashes))
             hashes["."] = r3.utils.hash_str(index)
 
-            self._config["hashes"] = hashes
+            self._config["hashes"] = hashes  # type: ignore
             self._hash = hashes["."]
 
         return self._hash

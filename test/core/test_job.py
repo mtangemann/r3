@@ -10,8 +10,7 @@ import r3
 DATA_PATH = Path(__file__).parent.parent / "data"
 
 
-def test_job_constructor_loads_metadata_file():
-    """Unit test for ``r3.Job``."""
+def test_job_metadata_returns_metadata_yaml_contents():
     job_path = DATA_PATH / "jobs" / "base"
 
     with open(job_path / "metadata.yaml", "r") as metadata_file:
@@ -22,6 +21,16 @@ def test_job_constructor_loads_metadata_file():
 
     job = r3.Job(str(job_path))
     assert job.metadata == job_metadata
+
+
+def test_job_metadata_returns_empty_dict_when_metadata_yaml_does_not_exist():
+    job_path = DATA_PATH / "jobs" / "no_metadata"
+
+    job = r3.Job(job_path)
+    assert job.metadata == {}
+
+    job = r3.Job(str(job_path))
+    assert job.metadata == {}
 
 
 def test_job_hash_does_not_depend_on_metadata(fs: FakeFilesystem) -> None:
