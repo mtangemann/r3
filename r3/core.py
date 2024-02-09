@@ -76,7 +76,7 @@ class Repository:
             yield Job(path)
 
     def commit(self, job: "Job") -> "Job":
-        job.resolve(self)
+        job = self.resolve(job)  # type: ignore
         for dependency in job.dependencies:
             if dependency not in self:
                 raise ValueError(f"Missing dependency: {dependency}")
@@ -127,7 +127,7 @@ class Repository:
         if isinstance(item, Job):
             return self._checkout_job(item, path)
         if isinstance(item, QueryDependency):
-            item = item.resolve(self)
+            item = self.resolve(item)  # type: ignore
         if isinstance(item, JobDependency):
             return self._checkout_job_dependency(item, path)
         if isinstance(item, GitDependency):
@@ -228,7 +228,7 @@ class Repository:
             )
 
         if isinstance(item, QueryDependency):
-            item = item.resolve(self)
+            item = self.resolve(item)  # type: ignore
 
         if isinstance(item, JobDependency):
             return (self.path / "jobs" / item.job / item.source).exists()
@@ -302,6 +302,88 @@ class Repository:
             self._add_job_to_index(job)
 
         self._save_index()
+
+    def resolve(
+        self,
+        item: Union["Job", "Dependency"],
+    ) -> Union["Job", "Dependency", List["JobDependency"]]:
+        if isinstance(item, Job):
+            return self._resolve_job(item)
+        if isinstance(item, QueryDependency):
+            return self._resolve_query_dependency(item)
+        if isinstance(item, QueryAllDependency):
+            return self._resolve_query_all_dependency(item)
+
+        raise ValueError(f"Cannot resolve {item}")
+
+    def _resolve_job(self, job: "Job") -> "Job":
+        if not isinstance(job.dependencies, list):
+            raise ValueError("Dependencies are not writeable.")
+
+        resolved_dependencies = []
+
+        for index in range(len(job.dependencies)):
+            if isinstance(job.dependencies[index], QueryDependency):
+                dependency = self._resolve_query_dependency(job.dependencies[index])
+                resolved_dependencies.append(dependency)
+            
+            elif isinstance(job.dependencies[index], QueryAllDependency):
+                dependencies = self._resolve_query_all_dependency(
+                    job.dependencies[index]
+                )
+                resolved_dependencies.extend(dependencies)
+
+            else:
+                resolved_dependencies.append(job.dependencies[index])
+
+        job._dependencies = resolved_dependencies
+        job._config["dependencies"] = [  # type: ignore
+            dependency.to_dict() for dependency in job.dependencies
+        ]
+        return job
+
+    def _resolve_query_dependency(
+        self,
+        dependency: "QueryDependency",
+    ) -> "JobDependency":
+        tags = dependency.query.strip().split(" ")
+
+        if not all(tag.startswith("#") for tag in tags):
+            raise ValueError(f"Invalid query: {dependency.query}")
+
+        tags = [tag[1:] for tag in tags]
+        result = self.find(tags, latest=True)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {dependency.query}")
+
+        return JobDependency(
+            result[0], dependency.destination, dependency.source, dependency.query
+        )
+
+    def _resolve_query_all_dependency(
+        self,
+        dependency: "QueryAllDependency",
+    ) -> List["JobDependency"]:
+        tags = dependency.query_all.strip().split(" ")
+
+        if not all(tag.startswith("#") for tag in tags):
+            raise ValueError(f"Invalid query: {dependency.query_all}")
+
+        tags = [tag[1:] for tag in tags]
+        result = self.find(tags)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {dependency.query_all}")
+
+        return [
+            JobDependency(
+                job,
+                dependency.destination / str(job.uuid),
+                query_all=dependency.query_all,
+            )
+            for job in result
+        ]
 
 
 class Job:
@@ -417,29 +499,6 @@ class Job:
                 self._metadata = dict()
 
         return self._metadata
-
-    def resolve(self, repository: Repository) -> None:
-        if not isinstance(self.dependencies, list):
-            raise ValueError("Dependencies are not writeable.")
-
-        resolved_dependencies = []
-
-        for index in range(len(self.dependencies)):
-            if isinstance(self.dependencies[index], QueryDependency):
-                dependency = self.dependencies[index].resolve(repository)
-                resolved_dependencies.append(dependency)
-            
-            elif isinstance(self.dependencies[index], QueryAllDependency):
-                dependencies = self.dependencies[index].resolve(repository)
-                resolved_dependencies.extend(dependencies)
-            
-            else:
-                resolved_dependencies.append(self.dependencies[index])
-
-        self._dependencies = resolved_dependencies
-        self._config["dependencies"] = [  # type: ignore
-            dependency.to_dict() for dependency in self.dependencies
-        ]
 
     @property
     def datetime(self) -> datetime:
@@ -613,20 +672,6 @@ class QueryDependency(Dependency):
             "destination": str(self.destination),
         }
 
-    def resolve(self, repository: Repository) -> JobDependency:
-        tags = self.query.strip().split(" ")
-
-        if not all(tag.startswith("#") for tag in tags):
-            raise ValueError(f"Invalid query: {self.query}")
-
-        tags = [tag[1:] for tag in tags]
-        result = repository.find(tags, latest=True)
-
-        if len(result) < 1:
-            raise ValueError(f"Cannot resolve dependency: {self.query}")
-
-        return JobDependency(result[0], self.destination, self.source, self.query)
-
     def hash(self) -> str:
         raise ValueError("Cannot hash QueryDependency")
 
@@ -645,25 +690,6 @@ class QueryAllDependency(Dependency):
             "query_all": self.query_all,
             "destination": str(self.destination),
         }
-
-    def resolve(self, repository: Repository) -> List[JobDependency]:
-        tags = self.query_all.strip().split(" ")
-
-        if not all(tag.startswith("#") for tag in tags):
-            raise ValueError(f"Invalid query: {self.query_all}")
-
-        tags = [tag[1:] for tag in tags]
-        result = repository.find(tags)
-
-        if len(result) < 1:
-            raise ValueError(f"Cannot resolve dependency: {self.query_all}")
-
-        return [
-            JobDependency(
-                job, self.destination / str(job.uuid), query_all=self.query_all
-            )
-            for job in result
-        ]
 
     def hash(self) -> str:
         raise ValueError("Cannot hash QueryAllDependency")
