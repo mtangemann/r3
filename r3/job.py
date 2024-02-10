@@ -148,20 +148,13 @@ class Job:
 class Dependency(abc.ABC):
     """Dependency base class."""
 
-    def __init__(
-        self,
-        destination: Union[os.PathLike, str],
-        source: Union[os.PathLike, str] = ".",
-    ) -> None:
+    def __init__(self, destination: os.PathLike | str) -> None:
         """Initializes the dependency.
 
         Parameters:
-            source: Path relative to the item (job / git repository) that is referenced
-                by the dependecy. Defaults to "." if no query is given.
             destination: Path relative to the job to which the dependency will be
                 checked out.
         """
-        self.source = Path(source)
         self.destination = Path(destination)
 
     @abc.abstractmethod
@@ -195,7 +188,7 @@ class JobDependency(Dependency):
         query: Optional[str] = None,
         query_all: Optional[str] = None,
     ) -> None:
-        super().__init__(destination, source)
+        super().__init__(destination)
 
         if isinstance(job, Job):
             if job.id is None:
@@ -204,6 +197,7 @@ class JobDependency(Dependency):
         else:
             self.job = job
 
+        self.source = Path(source)
         self.query = query
         self.query_all = query_all
 
@@ -234,7 +228,8 @@ class GitDependency(Dependency):
         destination: Union[os.PathLike, str],
         source: Union[os.PathLike, str] = "",
     ) -> None:
-        super().__init__(destination, source)
+        super().__init__(destination)
+        self.source = Path(source)
         self.repository = repository
         self.commit = commit
 
@@ -271,7 +266,8 @@ class QueryDependency(Dependency):
         destination: Union[os.PathLike, str],
         source: Union[os.PathLike, str] = ".",
     ) -> None:
-        super().__init__(destination, source)
+        super().__init__(destination)
+        self.source = Path(source)
         self.query = query
 
     def to_dict(self) -> Dict[str, str]:
@@ -291,7 +287,7 @@ class QueryAllDependency(Dependency):
         query_all: str,
         destination: Union[os.PathLike, str],
     ) -> None:
-        super().__init__(destination, ".")
+        super().__init__(destination)
         self.query_all = query_all
     
     def to_dict(self) -> Dict[str, str]:
