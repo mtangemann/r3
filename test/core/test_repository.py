@@ -81,11 +81,11 @@ def test_commit_returns_the_updated_job(
     repository.
     """
     job = get_dummy_job(fs, "base")
-    assert job.repository is None
+    assert job.id is None
     assert not str(job.path).startswith(str(repository.path))
 
     job = repository.commit(job)
-    assert job.repository is not None
+    assert job.id is not None
     assert str(job.path).startswith(str(repository.path))
 
 

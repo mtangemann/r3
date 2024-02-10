@@ -14,7 +14,6 @@ import uuid
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Union
 
 import yaml
@@ -43,6 +42,9 @@ class Repository:
 
         if not self.path.is_dir():
             raise NotADirectoryError(f"Not a directory: {self.path}")
+
+        if not (self.path / "r3.yaml").exists():
+            raise ValueError(f"Invalid repository: {self.path}")
 
         self._index_path: Path = self.path / "index.yaml"
         self.__index: Dict[str, Dict[str, Union[str, List[str]]]] | None = None
@@ -73,7 +75,7 @@ class Repository:
     def jobs(self) -> Iterable["Job"]:
         """Returns an iterator over all jobs in this repository."""
         for path in (self.path / "jobs").iterdir():
-            yield Job(path)
+            yield Job(path, path.name)
 
     def commit(self, job: "Job") -> "Job":
         job = self.resolve(job)  # type: ignore
@@ -112,7 +114,7 @@ class Repository:
 
         _remove_write_permissions(target_path)
 
-        committed_job = Job(target_path)
+        committed_job = Job(target_path, target_path.name)
 
         self._add_job_to_index(committed_job)
         self._save_index()
@@ -206,9 +208,11 @@ class Repository:
         if job not in self:
             raise ValueError("Job is not contained in this repository.")
 
+        assert job.id is not None
+
         for job_id, metadata in self._index.items():
             for dependency in metadata.get("dependencies", []):
-                if dependency.get("job", None) == str(job.uuid):
+                if dependency.get("job", None) == job.id:
                     raise ValueError(f"Another job depends on this job: {job_id}")
 
         for path in job.files:
@@ -217,14 +221,14 @@ class Repository:
 
         shutil.rmtree(job.path)
 
-        del self._index[str(job.uuid)]
+        del self._index[job.id]
         self._save_index()
 
     def __contains__(self, item: Union["Job", "Dependency"]) -> bool:
         """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
             return (
-                item.uuid is not None and (self.path / "jobs" / str(item.uuid)).is_dir()
+                item.id is not None and (self.path / "jobs" / item.id).is_dir()
             )
 
         if isinstance(item, QueryDependency):
@@ -256,7 +260,7 @@ class Repository:
 
         for job_id, metadata in self._index.items():
             if tags.issubset(metadata["tags"]):
-                results.append(Job(self.path / "jobs" / job_id))
+                results.append(Job(self.path / "jobs" / job_id, job_id))
 
         if latest:
             return [max(results, key=lambda job: job.datetime)]
@@ -283,7 +287,10 @@ class Repository:
             yaml.dump(self._index, index_file)
 
     def _add_job_to_index(self, job: "Job") -> None:
-        self._index[str(job.uuid)] = {
+        if job.id is None:
+            raise ValueError("Job id not set. Cannot add to index.")
+
+        self._index[job.id] = {
             "tags": job.metadata.get("tags", []),
             "datetime": job.datetime.strftime(DATE_FORMAT),
             "dependencies": job._config["dependencies"],
@@ -376,35 +383,30 @@ class Repository:
         if len(result) < 1:
             raise ValueError(f"Cannot resolve dependency: {dependency.query_all}")
 
-        return [
-            JobDependency(
-                job,
-                dependency.destination / str(job.uuid),
-                query_all=dependency.query_all,
+        resolved_dependencies = []
+        for job in result:
+            assert job.id is not None
+            resolved_dependencies.append(JobDependency(
+                job, dependency.destination, query_all=dependency.query_all)
             )
-            for job in result
-        ]
+
+        return resolved_dependencies
 
 
 class Job:
     """A job that may or may not be part of a repository."""
 
-    def __init__(self, path: Union[str, os.PathLike]) -> None:
+    def __init__(self, path: Union[str, os.PathLike], id: str | None = None) -> None:
         """Initializes a job instance.
 
         Parameters:
             path: Path to the job's root directory.
+            id: Job id for committed jobs.
         """
         self._path = Path(path).absolute()
+        self.id = id
 
-        self._repository: Optional[Repository] = None
         self._hash: Optional[str] = None
-        self._uuid: Optional[uuid.UUID] = None
-
-        if (self._path.parent.parent / "r3.yaml").is_file():
-            self._repository = Repository(self._path.parent.parent)
-            self._uuid = uuid.UUID(self._path.name)
-
         self._files: Mapping[Path, Path] | None = None
         self._metadata: Dict[str, str] | None = None
         self.__config: Mapping[str, Any] | None = None
@@ -429,16 +431,12 @@ class Job:
 
         config.setdefault("dependencies", [])
 
-        self._config = config if self._repository is None else MappingProxyType(config)
+        self._config = config
 
     def _load_dependencies(self) -> None:
-        dependencies = [
+        self._dependencies = [
             Dependency.from_dict(kwargs) for kwargs in self._config["dependencies"]
         ]
-
-        self._dependencies = (
-            dependencies if self._repository is None else tuple(dependencies)
-        )
 
     def _load_files(self) -> None:
         ignore = self._config.get("ignore", [])
@@ -446,30 +444,14 @@ class Job:
         for dependency in self.dependencies:
             ignore.append(f"/{dependency.destination}")
 
-        files = {
+        self._files = {
             file: (self.path / file).absolute()
             for file in r3.utils.find_files(self.path, ignore)
         }
 
-        self._files = files if self._repository is None else MappingProxyType(files)
-
-    @property
-    def uuid(self) -> Optional[uuid.UUID]:
-        return self._uuid
-
     @property
     def path(self) -> Path:
         return self._path
-
-    @property
-    def repository(self) -> Optional[Repository]:
-        """Optionally returns the repository in which this job is contained.
-
-        Returns:
-            This returns the repository in which this job is contained. If this job is
-                not part of any repository, this returns ``None``.
-        """
-        return self._repository
 
     @property
     def files(self) -> Mapping[Path, Path]:
@@ -594,7 +576,14 @@ class JobDependency(Dependency):
         query_all: Optional[str] = None,
     ) -> None:
         super().__init__(destination, source)
-        self.job = job if isinstance(job, str) else str(job.uuid)
+
+        if isinstance(job, Job):
+            if job.id is None:
+                raise ValueError("Job is not committed.")
+            self.job = job.id
+        else:
+            self.job = job
+
         self.query = query
         self.query_all = query_all
 
