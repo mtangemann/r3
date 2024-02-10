@@ -351,7 +351,7 @@ class Repository:
 
         job._dependencies = resolved_dependencies
         job._config["dependencies"] = [  # type: ignore
-            dependency.to_dict() for dependency in job.dependencies
+            dependency.to_config() for dependency in job.dependencies
         ]
         return job
 

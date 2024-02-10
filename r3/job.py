@@ -55,7 +55,7 @@ class Job:
 
     def _load_dependencies(self) -> None:
         self._dependencies = [
-            Dependency.from_dict(kwargs) for kwargs in self._config["dependencies"]
+            Dependency.from_config(kwargs) for kwargs in self._config["dependencies"]
         ]
 
     def _load_files(self) -> None:
@@ -157,39 +157,66 @@ class Dependency(abc.ABC):
         """
         self.destination = Path(destination)
 
-    @abc.abstractmethod
-    def to_dict(self) -> Dict[str, str]:
-        raise NotImplementedError
-
     @staticmethod
-    def from_dict(dict_: Dict[str, str]) -> "Dependency":
-        if "job" in dict_:
-            return JobDependency(**dict_)
-        if "query" in dict_:
-            return QueryDependency(**dict_)
-        if "query_all" in dict_:
-            return QueryAllDependency(**dict_)
-        if "repository" in dict_:
-            return GitDependency(**dict_)
+    def from_config(config: Dict[str, str]) -> "Dependency":
+        """Returns a dependency instance from a config dictionary.
 
-        raise ValueError(f"Invalid dependency dict: {dict_}")
+        This method determines the type of dependency from config and delegates the
+        instantiation to the appropriate class.
+
+        Parameters:
+            config: A dictionary representing the dependency. The format of the
+                dictionary depends on the type of dependency. See the documentation of
+                the specific dependency class for more information.
+        """
+        if "job" in config:
+            return JobDependency.from_config(config)
+        if "query" in config:
+            return QueryDependency.from_config(config)
+        if "query_all" in config:
+            return QueryAllDependency.from_config(config)
+        if "repository" in config:
+            return GitDependency.from_config(config)
+
+        raise ValueError(f"Unrecognized dependency config: {config}")
+
+    @abc.abstractmethod
+    def to_config(self) -> Dict[str, str]:
+        """Returns a config dictionary representing the dependency."""
+        raise NotImplementedError
 
     @abc.abstractmethod
     def hash(self) -> str:
+        """Returns the hash of the dependency."""
         raise NotImplementedError
 
 
 class JobDependency(Dependency):
+    """A dependency on another job."""
+
     def __init__(
         self,
-        job: Union[Job, str],
-        destination: Union[os.PathLike, str],
-        source: Union[os.PathLike, str] = "",
-        query: Optional[str] = None,
-        query_all: Optional[str] = None,
+        job: Job | str,
+        destination: os.PathLike | str,
+        source: os.PathLike | str = ".",
+        query: str | None = None,
+        query_all: str | None = None,
     ) -> None:
+        """Initializes the job dependency.
+        
+        Parameters:
+            job: Job instance or job id.
+            destination: Path relative to the job to which the dependency will be
+                checked out.
+            source: Path relative to the source job to be checked out.
+            query: If this job was resolved from a QueryDependency, this is the query
+                that was used.
+            query_all: If this job was resolved from a QueryAllDependency, this is the
+                query that was used.
+        """
         super().__init__(destination)
 
+        # REVIEW: Should we allow job to be a Job instance?
         if isinstance(job, Job):
             if job.id is None:
                 raise ValueError("Job is not committed.")
@@ -201,40 +228,212 @@ class JobDependency(Dependency):
         self.query = query
         self.query_all = query_all
 
-    def to_dict(self) -> Dict[str, str]:
-        dict_ = {
+    @staticmethod
+    def from_config(config: Dict[str, str]) -> "JobDependency":
+        """Creates a JobDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "job": "123abc...",     # Job id
+                "source": "output",     # Checkout <source_job>/output (default: .)
+                "destination": "data",  # to <dependent_job>/data
+                "query": "#data/xyz",   # Query used when committing the job (optional)
+            }
+
+            dependency = JobDependency.from_config(config)
+
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+        
+        Returns:
+            A JobDependency instance.
+        """
+        return JobDependency(**config)
+
+    def to_config(self) -> Dict[str, str]:
+        """Returns a config dictionary representing the dependency.
+        
+        See `from_config` for an example.
+        """
+        config = {
             "job": self.job,
             "source": str(self.source),
             "destination": str(self.destination),
         }
 
         if self.query is not None:
-            dict_["query"] = self.query
-        
-        if self.query_all is not None:
-            dict_["query_all"] = self.query_all
+            config["query"] = self.query
 
-        return dict_
+        if self.query_all is not None:
+            config["query_all"] = self.query_all
+
+        return config
 
     def hash(self) -> str:
+        """Returns the hash of the dependency."""
         return r3.utils.hash_str(f"jobs/{self.job}/{self.source}")
 
 
+class QueryDependency(Dependency):
+    """A dependency to the latest job determined by a query."""
+
+    def __init__(
+        self,
+        query: str,
+        destination: os.PathLike | str,
+        source: os.PathLike | str = ".",
+    ) -> None:
+        """Initializes the query dependency.
+
+        Parameters:
+            query: A query that will be used to determine the job.
+            destination: Path relative to the job to which the dependency will be
+                checked out.
+            source: Path relative to the source job to be checked out.
+        """
+        super().__init__(destination)
+        self.source = Path(source)
+        self.query = query
+
+    @staticmethod
+    def from_config(config: Dict[str, str]) -> "QueryDependency":
+        """Creates a QueryDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "query": "#data/xyz",
+                "source": "output",
+                "destination": "data",
+            }
+
+            dependency = QueryDependency.from_config(config)
+        
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+        """
+        return QueryDependency(**config)
+
+    def to_config(self) -> Dict[str, str]:
+        """Returns a config dictionary representing the dependency.
+        
+        See `from_config` for an example.
+        """
+        return {
+            "query": self.query,
+            "source": str(self.source),
+            "destination": str(self.destination),
+        }
+
+    def hash(self) -> str:
+        """Raises an error.
+        
+        QueryDependencies cannot be hashed because the hash would depend on the result
+        of the query, which is not known at the time of creating the dependency.
+
+        Raises:
+            ValueError: Always.
+        """
+        raise ValueError("Cannot hash QueryDependency")
+
+
+class QueryAllDependency(Dependency):
+    """A dependency to all jobs determined by a query."""
+
+    def __init__(
+        self,
+        query_all: str,
+        destination: os.PathLike | str,
+    ) -> None:
+        """Initializes the query all dependency.
+
+        This does not specifying a source, since all jobs need to be checked out to
+        directories with different names. The source is always the root of the job,
+        and the destination directory name is always the job id.
+
+        Parameters:
+            query_all: A query that will be used to determine the jobs.
+            destination: Base path relative to the job to which the jobs will be checked
+                out. Each job will be checked out to a subdirectory of this path with
+                the job id as the name of the subdirectory.
+        """
+        super().__init__(destination)
+        self.query_all = query_all
+
+    @staticmethod
+    def from_config(config: Dict[str, str]) -> "QueryAllDependency":
+        """Creates a QueryAllDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "query_all": "#data/xyz",
+                "destination": "data",
+            }
+
+            dependency = QueryAllDependency.from_config(config)
+        
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+        """
+        return QueryAllDependency(**config)
+
+    def to_config(self) -> Dict[str, str]:
+        """Returns a config dictionary representing the dependency.
+
+        See `from_config` for an example.
+        """
+        return {
+            "query_all": self.query_all,
+            "destination": str(self.destination),
+        }
+
+    def hash(self) -> str:
+        """Raises an error.
+
+        QueryAllDependencies cannot be hashed because the hash would depend on the
+        result of the query, which is not known at the time of creating the dependency.
+
+        Raises:
+            ValueError: Always.
+        """
+        raise ValueError("Cannot hash QueryAllDependency")
+
+
 class GitDependency(Dependency):
+    """A dependency to a git repository."""
+
     def __init__(
         self,
         repository: str,
         commit: str,
-        destination: Union[os.PathLike, str],
-        source: Union[os.PathLike, str] = "",
+        destination: os.PathLike | str,
+        source: os.PathLike | str = "",
     ) -> None:
+        """Initializes the git dependency.
+        
+        Parameters:
+            repository: URL of the git repository. Currently, only github.com is
+                supported.
+            commit: Commit hash.
+            destination: Path relative to the job to which the repository will be
+                checked out.
+            source: Path relative to the repository root to be checked out.
+        """
         super().__init__(destination)
         self.source = Path(source)
         self.repository = repository
         self.commit = commit
 
+    # REVIEW: This should not be a method of this class. Instead, the git manager in the
+    #         repository class should be responsible for this.
     @property
     def repository_path(self) -> Path:
+        """Returns the path where the repository will stored in R3."""
         https_pattern = r"^https://github\.com/([^/]+)/([^/\.]+)(?:\.git)?$"
         match = re.match(https_pattern, self.repository)
         if match:
@@ -247,7 +446,35 @@ class GitDependency(Dependency):
 
         raise ValueError(f"Unrecognized git url: {self.repository}")
 
-    def to_dict(self) -> Dict[str, str]:
+    @staticmethod
+    def from_config(config: Dict[str, str]) -> "GitDependency":
+        """Creates a GitDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "repository": "https://github.com/user/model.git",
+                "commit": "123abc...",
+                "source": "src/model",
+                "destination": "model",
+            }
+        
+            dependency = GitDependency.from_config(config)
+        
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+
+        Returns:
+            A GitDependency instance.        
+        """
+        return GitDependency(**config)
+
+    def to_config(self) -> Dict[str, str]:
+        """Returns a config dictionary representing the dependency.
+
+        See `from_config` for an example.
+        """
         return {
             "repository": self.repository,
             "commit": self.commit,
@@ -256,45 +483,5 @@ class GitDependency(Dependency):
         }
 
     def hash(self) -> str:
+        """Returns the hash of the dependency."""
         return r3.utils.hash_str(f"{self.repository_path}@{self.commit}/{self.source}")
-
-
-class QueryDependency(Dependency):
-    def __init__(
-        self,
-        query: str,
-        destination: Union[os.PathLike, str],
-        source: Union[os.PathLike, str] = ".",
-    ) -> None:
-        super().__init__(destination)
-        self.source = Path(source)
-        self.query = query
-
-    def to_dict(self) -> Dict[str, str]:
-        return {
-            "query": self.query,
-            "source": str(self.source),
-            "destination": str(self.destination),
-        }
-
-    def hash(self) -> str:
-        raise ValueError("Cannot hash QueryDependency")
-
-
-class QueryAllDependency(Dependency):
-    def __init__(
-        self,
-        query_all: str,
-        destination: Union[os.PathLike, str],
-    ) -> None:
-        super().__init__(destination)
-        self.query_all = query_all
-    
-    def to_dict(self) -> Dict[str, str]:
-        return {
-            "query_all": self.query_all,
-            "destination": str(self.destination),
-        }
-
-    def hash(self) -> str:
-        raise ValueError("Cannot hash QueryAllDependency")
