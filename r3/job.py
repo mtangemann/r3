@@ -14,84 +14,36 @@ DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
 
 class Job:
-    """A job that may or may not be part of a repository."""
+    """A computational job."""
 
     def __init__(self, path: Union[str, os.PathLike], id: str | None = None) -> None:
         """Initializes a job instance.
 
         Parameters:
             path: Path to the job's root directory.
-            id: Job id for committed jobs.
+            id: Job id for committed jobs. This is set automatically for jobs retrieved
+                from a repository.
         """
         self._path = Path(path).absolute()
         self.id = id
 
-        self._hash: Optional[str] = None
-        self._files: Mapping[Path, Path] | None = None
-        self._metadata: Dict[str, str] | None = None
-        self.__config: Mapping[str, Any] | None = None
+        self._metadata: Dict[str, Any] | None = None
+        self._files: Dict[Path, Path] | None = None
+        self.__config: Dict[str, Any] | None = None
         self._dependencies: Sequence["Dependency"] | None = None
-
-    @property
-    def _config(self) -> Mapping[str, Any]:
-        if self.__config is None:
-            self._load_config()
-        return self.__config  # type: ignore
-
-    @_config.setter
-    def _config(self, config: Mapping[str, Any]) -> None:
-        self.__config = config
-
-    def _load_config(self) -> None:
-        if (self.path / "r3.yaml").is_file():
-            with open(self.path / "r3.yaml", "r") as config_file:
-                config = yaml.safe_load(config_file)
-        else:
-            config = dict()
-
-        config.setdefault("dependencies", [])
-
-        self._config = config
-
-    def _load_dependencies(self) -> None:
-        self._dependencies = [
-            Dependency.from_config(kwargs) for kwargs in self._config["dependencies"]
-        ]
-
-    def _load_files(self) -> None:
-        ignore = self._config.get("ignore", [])
-
-        for dependency in self.dependencies:
-            ignore.append(f"/{dependency.destination}")
-
-        self._files = {
-            file: (self.path / file).absolute()
-            for file in r3.utils.find_files(self.path, ignore)
-        }
+        self._hash: Optional[str] = None
 
     @property
     def path(self) -> Path:
+        """Path to the job's root directory."""
         return self._path
 
     @property
-    def files(self) -> Mapping[Path, Path]:
-        """Files belonging to this job."""
-        if self._files is None:
-            self._load_files()
-        return self._files  # type: ignore
-
-    @property
-    def dependencies(self) -> Sequence["Dependency"]:
-        """Dependencies of this job."""
-        if self._dependencies is None:
-            self._load_dependencies()
-        return self._dependencies  # type: ignore
-
-    @property
-    def metadata(self) -> Dict[str, str]:
+    def metadata(self) -> Dict[str, Any]:
         """Job metadata.
 
-        Changes to this dictionary are not written to the job's metadata file.
+        Changes to this dictionary are not automatically written to the job's metadata
+        file. Use `save_metadata` to save changes to the metadata file.
         """
         if self._metadata is None:
             if (self.path / "metadata.yaml").is_file():
@@ -102,19 +54,85 @@ class Job:
 
         return self._metadata
 
+    @metadata.setter
+    def metadata(self, metadata: Dict[str, Any]) -> None:
+        self._metadata = metadata
+
+    def save_metadata(self) -> None:
+        """Saves the job metadata to the metadata file.
+        
+        This method has to be called after modifying the metadata dictionary.
+        """
+        with open(self.path / "metadata.yaml", "w") as metadata_file:
+            yaml.dump(self.metadata, metadata_file)
+
     @property
-    def datetime(self) -> datetime:
-        """Returns the date and time when this job was created (committed)."""
+    def datetime(self) -> datetime | None:
+        """Returns the date and time when this job was committed.
+        
+        Returns:
+            A datetime object representing the date and time when this job was
+            committed. If the job is not committed, this returns `None`.
+        """
         if "committed_at" in self.metadata:
             return datetime.strptime(self.metadata["committed_at"], DATE_FORMAT)
-        else:
+
+        if self.id is not None:
+            # REVIEW: This is deprecated. Can we remove this?
             warnings.warn(
-                "Job metadata doesn't include `datetime`. Falling back to using the "
-                "directory creation data (deprecated).",
+                "Job metadata doesn't include `committed_at`. Falling back to using "
+                "the directory creation data (deprecated).",
                 stacklevel=2,
             )
             timestamp = self.path.stat().st_ctime
             return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        
+        return None
+
+    # REVIEW: Replace with a method that returns an iterator?
+    @property
+    def files(self) -> Mapping[Path, Path]:
+        """Files belonging to this job."""
+        if self._files is None:
+            ignore = self._config.get("ignore", [])
+
+            for dependency in self.dependencies:
+                ignore.append(f"/{dependency.destination}")
+
+            self._files = {
+                file: (self.path / file).absolute()
+                for file in r3.utils.find_files(self.path, ignore)
+            }
+
+        return self._files
+
+    @property
+    def dependencies(self) -> Sequence["Dependency"]:
+        """Dependencies of this job."""
+        if self._dependencies is None:
+            self._dependencies = [
+                Dependency.from_config(config)
+                for config in self._config["dependencies"]
+            ]
+
+        return self._dependencies
+
+    @property
+    def _config(self) -> Dict[str, Any]:
+        if self.__config is None:
+            if (self.path / "r3.yaml").is_file():
+                with open(self.path / "r3.yaml", "r") as config_file:
+                    self.__config = yaml.safe_load(config_file)
+            else:
+                self.__config = dict()
+
+            self.__config.setdefault("dependencies", [])
+
+        return self.__config
+
+    @_config.setter
+    def _config(self, config: Dict[str, Any]) -> None:
+        self.__config = config
 
     def hash(self, recompute: bool = False) -> str:
         """Returns the hash of this job.

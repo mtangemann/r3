@@ -269,9 +269,9 @@ class Repository:
                 results.append(Job(self.path / "jobs" / job_id, job_id))
 
         if latest:
-            return [max(results, key=lambda job: job.datetime)]
+            return [max(results, key=lambda job: job.datetime or datetime.min)]
         else:
-            return sorted(results, key=lambda job: job.datetime)
+            return sorted(results, key=lambda job: job.datetime or datetime.min)
 
     @property
     def _index(self) -> Dict[str, Any]:
@@ -295,6 +295,8 @@ class Repository:
     def _add_job_to_index(self, job: "Job") -> None:
         if job.id is None:
             raise ValueError("Job id not set. Cannot add to index.")
+
+        assert job.datetime is not None
 
         self._index[job.id] = {
             "tags": job.metadata.get("tags", []),

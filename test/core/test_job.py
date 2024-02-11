@@ -1,5 +1,6 @@
 """Unit tests for ``r3.Job``."""
 
+import datetime
 import uuid
 from pathlib import Path
 
@@ -33,6 +34,54 @@ def test_job_metadata_returns_empty_dict_when_metadata_yaml_does_not_exist():
 
     job = r3.Job(str(job_path))
     assert job.metadata == {}
+
+
+def test_job_save_metadata_updates_metadata_yaml(fs: FakeFilesystem) -> None:
+    job_path = DATA_PATH / "jobs" / "base"
+
+    fs.add_real_directory(job_path, read_only=False)
+    job = r3.Job(job_path)
+
+    job.metadata = {"tags": ["changed"]}
+    job.save_metadata()
+
+    with open(job_path / "metadata.yaml", "r") as metadata_file:
+        assert yaml.safe_load(metadata_file) == job.metadata
+
+    job.metadata["tags"].append("added")
+    job.save_metadata()
+
+    with open(job_path / "metadata.yaml", "r") as metadata_file:
+        assert yaml.safe_load(metadata_file) == job.metadata
+
+
+def test_job_save_metadata_creates_metadata_yaml(fs: FakeFilesystem) -> None:
+    job_path = DATA_PATH / "jobs" / "no_metadata"
+
+    fs.add_real_directory(job_path, read_only=False)
+    job = r3.Job(job_path)
+
+    job.metadata = {"tags": ["changed"]}
+    job.save_metadata()
+
+    with open(job_path / "metadata.yaml", "r") as metadata_file:
+        assert yaml.safe_load(metadata_file) == job.metadata
+
+
+def test_job_datetime_returns_none_if_id_is_none() -> None:
+    job_path = DATA_PATH / "jobs" / "base"
+    job = r3.Job(job_path)
+    job.metadata = {"datetime": "2024-02-11 23:29:10"}
+
+    assert job.datetime is None
+
+
+def test_job_datetime_returns_datetime_from_metadata_if_id_is_not_none() -> None:
+    job_path = DATA_PATH / "jobs" / "base"
+    job = r3.Job(job_path, str(uuid.uuid4()))
+    job.metadata = {"committed_at": "2024-02-11 23:29:10"}
+
+    assert job.datetime == datetime.datetime(2024, 2, 11, 23, 29, 10)
 
 
 def test_job_hash_does_not_depend_on_metadata(fs: FakeFilesystem) -> None:
