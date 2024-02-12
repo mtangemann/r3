@@ -12,7 +12,7 @@ import uuid
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import yaml
 from executor import execute
@@ -53,7 +53,7 @@ class Repository:
             raise ValueError(f"Invalid repository: {self.path}")
 
         self._index_path: Path = self.path / "index.yaml"
-        self.__index: Dict[str, Dict[str, Union[str, List[str]]]] | None = None
+        self.__index: Optional[Dict[str, Dict[str, Union[str, List[str]]]]] = None
 
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":

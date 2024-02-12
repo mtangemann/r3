@@ -16,7 +16,7 @@ DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 class Job:
     """A computational job."""
 
-    def __init__(self, path: Union[str, os.PathLike], id: str | None = None) -> None:
+    def __init__(self, path: Union[str, os.PathLike], id: Optional[str] = None) -> None:
         """Initializes a job instance.
 
         Parameters:
@@ -27,10 +27,10 @@ class Job:
         self._path = Path(path).absolute()
         self.id = id
 
-        self._metadata: Dict[str, Any] | None = None
-        self._files: Dict[Path, Path] | None = None
-        self.__config: Dict[str, Any] | None = None
-        self._dependencies: Sequence["Dependency"] | None = None
+        self._metadata: Optional[Dict[str, Any]] = None
+        self._files: Optional[Dict[Path, Path]] = None
+        self.__config: Optional[Dict[str, Any]] = None
+        self._dependencies: Optional[Sequence["Dependency"]] = None
         self._hash: Optional[str] = None
 
     @property
@@ -67,7 +67,7 @@ class Job:
             yaml.dump(self.metadata, metadata_file)
 
     @property
-    def datetime(self) -> datetime | None:
+    def datetime(self) -> Optional[datetime]:
         """Returns the date and time when this job was committed.
         
         Returns:
@@ -166,7 +166,7 @@ class Job:
 class Dependency(abc.ABC):
     """Dependency base class."""
 
-    def __init__(self, destination: os.PathLike | str) -> None:
+    def __init__(self, destination: Union[os.PathLike, str]) -> None:
         """Initializes the dependency.
 
         Parameters:
@@ -214,11 +214,11 @@ class JobDependency(Dependency):
 
     def __init__(
         self,
-        job: Job | str,
-        destination: os.PathLike | str,
-        source: os.PathLike | str = ".",
-        query: str | None = None,
-        query_all: str | None = None,
+        job: Union[Job, str],
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = ".",
+        query: Optional[str] = None,
+        query_all: Optional[str] = None,
     ) -> None:
         """Initializes the job dependency.
         
@@ -300,8 +300,8 @@ class QueryDependency(Dependency):
     def __init__(
         self,
         query: str,
-        destination: os.PathLike | str,
-        source: os.PathLike | str = ".",
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = ".",
     ) -> None:
         """Initializes the query dependency.
 
@@ -364,7 +364,7 @@ class QueryAllDependency(Dependency):
     def __init__(
         self,
         query_all: str,
-        destination: os.PathLike | str,
+        destination: Union[os.PathLike, str]
     ) -> None:
         """Initializes the query all dependency.
 
@@ -429,8 +429,8 @@ class GitDependency(Dependency):
         self,
         repository: str,
         commit: str,
-        destination: os.PathLike | str,
-        source: os.PathLike | str = "",
+        destination: Union[os.PathLike, str],
+        source: Union[os.PathLike, str] = "",
     ) -> None:
         """Initializes the git dependency.
         
