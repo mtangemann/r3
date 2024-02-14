@@ -6,9 +6,7 @@ directly, but rather the public API exported by the top-level ``r3`` module.
 
 import os
 import shutil
-import stat
 import tempfile
-import uuid
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +25,7 @@ from r3.job import (
     QueryAllDependency,
     QueryDependency,
 )
+from r3.storage import Storage
 
 R3_FORMAT_VERSION = "1.0.0-beta.5"
 
@@ -52,6 +51,8 @@ class Repository:
         if not (self.path / "r3.yaml").exists():
             raise ValueError(f"Invalid repository: {self.path}")
 
+        self._storage = Storage(self.path)
+
         self._index_path: Path = self.path / "index.yaml"
         self.__index: Optional[Dict[str, Dict[str, Union[str, List[str]]]]] = None
 
@@ -68,8 +69,7 @@ class Repository:
             raise FileExistsError(f"Path exists already: {path}")
 
         os.makedirs(path)
-        os.makedirs(path / "git")
-        os.makedirs(path / "jobs")
+        Storage.init(path)
 
         r3config = {"version": R3_FORMAT_VERSION}
 
@@ -80,8 +80,7 @@ class Repository:
 
     def jobs(self) -> Iterable[Job]:
         """Returns an iterator over all jobs in this repository."""
-        for path in (self.path / "jobs").iterdir():
-            yield Job(path, path.name)
+        yield from self._storage.jobs()
 
     def commit(self, job: Job) -> Job:
         job = self.resolve(job)  # type: ignore
@@ -89,43 +88,16 @@ class Repository:
             if dependency not in self:
                 raise ValueError(f"Missing dependency: {dependency}")
 
-        job_id = uuid.uuid4()
-        target_path = self.path / "jobs" / str(job_id)
-
-        job.hash(recompute=True)
-
         if "committed_at" in job.metadata:
             warnings.warn("Overwriting `committed_at` in job metadata.", stacklevel=2)
         job.metadata["committed_at"] = datetime.now().strftime(DATE_FORMAT)
 
-        os.makedirs(target_path)
-        os.makedirs(target_path / "output")
+        job = self._storage.add(job)
 
-        with open(target_path / "r3.yaml", "w") as config_file:
-            yaml.dump(job._config, config_file)
-        _remove_write_permissions(target_path / "r3.yaml")
-
-        with open(target_path / "metadata.yaml", "w") as metadata_file:
-            yaml.dump(job.metadata, metadata_file)
-
-        for destination, source in job.files.items():
-            if destination in [Path("r3.yaml"), Path("metadata.yaml")]:
-                continue
-
-            target = target_path / destination
-
-            os.makedirs(target.parent, exist_ok=True)
-            shutil.copy(source, target)
-            _remove_write_permissions(target)
-
-        _remove_write_permissions(target_path)
-
-        committed_job = Job(target_path, target_path.name)
-
-        self._add_job_to_index(committed_job)
+        self._add_job_to_index(job)
         self._save_index()
 
-        return committed_job
+        return job
 
     def checkout(
         self, item: Union[Dependency, Job], path: Union[str, os.PathLike]
@@ -221,11 +193,7 @@ class Repository:
                 if dependency.get("job", None) == job.id:
                     raise ValueError(f"Another job depends on this job: {job_id}")
 
-        for path in job.files:
-            _add_write_permission(job.path / path)
-        _add_write_permission(job.path)
-
-        shutil.rmtree(job.path)
+        self._storage.remove(job)
 
         del self._index[job.id]
         self._save_index()
@@ -233,9 +201,7 @@ class Repository:
     def __contains__(self, item: Union[Job, Dependency]) -> bool:
         """Checks if the given item is contained in this repository."""
         if isinstance(item, Job):
-            return (
-                item.id is not None and (self.path / "jobs" / item.id).is_dir()
-            )
+            return item in self._storage
 
         if isinstance(item, QueryDependency):
             item = self.resolve(item)  # type: ignore
@@ -266,7 +232,7 @@ class Repository:
 
         for job_id, metadata in self._index.items():
             if tags.issubset(metadata["tags"]):
-                results.append(Job(self.path / "jobs" / job_id, job_id))
+                results.append(self._storage.get(job_id))
 
         if latest:
             return [max(results, key=lambda job: job.datetime or datetime.min)]
@@ -399,15 +365,3 @@ class Repository:
             )
 
         return resolved_dependencies
-
-
-def _remove_write_permissions(path: Path) -> None:
-    mode = stat.S_IMODE(os.lstat(path).st_mode)
-    mode = mode & ~stat.S_IWOTH & ~stat.S_IWGRP & ~stat.S_IWUSR
-    os.chmod(path, mode)
-
-
-def _add_write_permission(path: Path) -> None:
-    mode = stat.S_IMODE(os.lstat(path).st_mode)
-    mode = mode | stat.S_IWOTH | stat.S_IWGRP | stat.S_IWUSR
-    os.chmod(path, mode)
