@@ -10,13 +10,14 @@ import tempfile
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Iterable, List, Union
 
 import yaml
 from executor import execute
 
 import r3
 import r3.utils
+from r3.index import Index
 from r3.job import (
     Dependency,
     GitDependency,
@@ -52,9 +53,7 @@ class Repository:
             raise ValueError(f"Invalid repository: {self.path}")
 
         self._storage = Storage(self.path)
-
-        self._index_path: Path = self.path / "index.yaml"
-        self.__index: Optional[Dict[str, Dict[str, Union[str, List[str]]]]] = None
+        self._index = Index(self._storage)
 
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":
@@ -93,9 +92,7 @@ class Repository:
         job.metadata["committed_at"] = datetime.now().strftime(DATE_FORMAT)
 
         job = self._storage.add(job)
-
-        self._add_job_to_index(job)
-        self._save_index()
+        self._index.add(job)
 
         return job
 
@@ -188,15 +185,15 @@ class Repository:
 
         assert job.id is not None
 
-        for job_id, metadata in self._index.items():
-            for dependency in metadata.get("dependencies", []):
-                if dependency.get("job", None) == job.id:
-                    raise ValueError(f"Another job depends on this job: {job_id}")
+        dependents = self._index.find_dependents(job)
+        if len(dependents) > 0:
+            raise ValueError(
+                "Cannot remove job since other jobs depend on it: \n"
+                "\n".join(f"  - {dependent.id}" for dependent in dependents)
+            )
 
         self._storage.remove(job)
-
-        del self._index[job.id]
-        self._save_index()
+        self._index.remove(job)
 
     def __contains__(self, item: Union[Job, Dependency]) -> bool:
         """Checks if the given item is contained in this repository."""
@@ -217,72 +214,26 @@ class Repository:
         return False
 
     def find(self, tags: Iterable[str], latest: bool = False) -> List[Job]:
-        """Searches for jobs with the given tags.
-
+        """Finds jobs by tags.
+        
         Parameters:
-            tags: Return jobs that include all of this tags.
-            latest: If true, only return the latest matching job. Otherwise, return all
-                jobs.
+            tags: The tags to search for. Jobs are matched if they contain all the given
+                tags.
+            latest: Whether to return the latest job or all jobs with the given tags.
 
         Returns:
-            List of job matching the search parameters.
+            The jobs that match the given tags.
         """
-        tags = set(tags)
-        results = []
-
-        for job_id, metadata in self._index.items():
-            if tags.issubset(metadata["tags"]):
-                results.append(self._storage.get(job_id))
-
-        if latest:
-            return [max(results, key=lambda job: job.datetime or datetime.min)]
-        else:
-            return sorted(results, key=lambda job: job.datetime or datetime.min)
-
-    @property
-    def _index(self) -> Dict[str, Any]:
-        if self.__index is None:
-            if self._index_path.exists():
-                with open(self._index_path, "r") as index_file:
-                    self.__index = yaml.safe_load(index_file)
-            else:
-                self.__index = dict()
-
-        return self.__index
-
-    @_index.setter
-    def _index(self, index: Dict[str, Any]) -> None:
-        self.__index = index
-
-    def _save_index(self) -> None:
-        with open(self._index_path, "w") as index_file:
-            yaml.dump(self._index, index_file)
-
-    def _add_job_to_index(self, job: "Job") -> None:
-        if job.id is None:
-            raise ValueError("Job id not set. Cannot add to index.")
-
-        assert job.datetime is not None
-
-        self._index[job.id] = {
-            "tags": job.metadata.get("tags", []),
-            "datetime": job.datetime.strftime(DATE_FORMAT),
-            "dependencies": job._config["dependencies"],
-        }
+        return self._index.find(tags, latest)
 
     def rebuild_index(self):
         """Rebuilds the job index.
 
         The job index is used to efficiently query for jobs. The index is automatically
-        updated when committing job, so explicitely calling this should not be
-        necessary.
+        updated when jobs are added or removed. This method has to be called manually
+        if the metadata of a job is changed.
         """
-        self._index = dict()
-
-        for job in self.jobs():
-            self._add_job_to_index(job)
-
-        self._save_index()
+        self._index.rebuild()
 
     def resolve(
         self,
