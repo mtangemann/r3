@@ -117,6 +117,10 @@ class Job:
 
         return self._dependencies
 
+    def is_resolved(self) -> bool:
+        """Returns `True` if all dependencies are resolved."""
+        return all(dependency.is_resolved() for dependency in self.dependencies)
+
     @property
     def _config(self) -> Dict[str, Any]:
         if self.__config is None:
@@ -201,6 +205,14 @@ class Dependency(abc.ABC):
     @abc.abstractmethod
     def to_config(self) -> Dict[str, str]:
         """Returns a config dictionary representing the dependency."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved.
+        
+        A dependency is resolved if it references a specific job or commit.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -289,6 +301,10 @@ class JobDependency(Dependency):
 
         return config
 
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return True
+
     def hash(self) -> str:
         """Returns the hash of the dependency."""
         return r3.utils.hash_str(f"jobs/{self.job}/{self.source}")
@@ -345,6 +361,10 @@ class QueryDependency(Dependency):
             "source": str(self.source),
             "destination": str(self.destination),
         }
+
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return False
 
     def hash(self) -> str:
         """Raises an error.
@@ -409,6 +429,10 @@ class QueryAllDependency(Dependency):
             "query_all": self.query_all,
             "destination": str(self.destination),
         }
+
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return False
 
     def hash(self) -> str:
         """Raises an error.
@@ -499,6 +523,10 @@ class GitDependency(Dependency):
             "source": str(self.source),
             "destination": str(self.destination),
         }
+
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return True
 
     def hash(self) -> str:
         """Returns the hash of the dependency."""
