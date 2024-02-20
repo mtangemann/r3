@@ -5,15 +5,12 @@ directly, but rather the public API exported by the top-level ``r3`` module.
 """
 
 import os
-import shutil
-import tempfile
 import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Union
 
 import yaml
-from executor import execute
 
 import r3
 import r3.utils
@@ -100,84 +97,13 @@ class Repository:
         self, item: Union[Dependency, Job], path: Union[str, os.PathLike]
     ) -> None:
         path = Path(path)
+        resolved_item = self.resolve(item)
 
-        if isinstance(item, Job):
-            return self._checkout_job(item, path)
-        if isinstance(item, QueryDependency):
-            item = self.resolve(item)  # type: ignore
-        if isinstance(item, JobDependency):
-            return self._checkout_job_dependency(item, path)
-        if isinstance(item, GitDependency):
-            return self._checkout_git_dependency(item, path)
-
-    def _checkout_job(self, job: Job, path: Path) -> None:
-        if job not in self:
-            raise FileNotFoundError(f"Cannot find job: {job.path}")
-
-        if job.path is None:
-            raise RuntimeError("Job is committed but doesn't have a path.")
-
-        os.makedirs(path)
-
-        # Copy files
-        for child in job.path.iterdir():
-            if child.name not in ["r3.yaml", "metadata.yaml", "output"]:
-                if child.is_dir():
-                    shutil.copytree(child, path / child.name)
-                else:
-                    shutil.copy(child, path / child.name)
-
-        # Symlink output directory
-        os.symlink(job.path / "output", path / "output")
-
-        for dependency in job.dependencies:
-            self.checkout(dependency, path)
-
-    def _checkout_job_dependency(self, dependency: JobDependency, path: Path) -> None:
-        source = self.path / "jobs" / dependency.job / dependency.source
-        destination = path / dependency.destination
-
-        os.makedirs(destination.parent, exist_ok=True)
-        os.symlink(source, destination)
-
-    def _checkout_git_dependency(self, dependency: GitDependency, path: Path) -> None:
-        origin = str(self.path / dependency.repository_path / ".git")
-
-        with tempfile.TemporaryDirectory() as tempdir:
-            git_version_str = execute("git --version", capture=True).rsplit(" ", 1)[-1]
-            git_version = tuple(int(part) for part in git_version_str.split("."))
-
-            if git_version < (2, 5):
-                warnings.warn(
-                    f"Git is outdated ({git_version_str}). Falling back to cloning the "
-                    "entire repository for git dependencies.",
-                    stacklevel=1,
-                )
-                clone_path = Path(tempdir) / "clone"
-                execute(
-                    f"git clone {self.path / dependency.repository_path} {clone_path}"
-                )
-                execute(
-                    f"git checkout {dependency.commit}", directory=clone_path
-                )
-                shutil.move(
-                    clone_path / dependency.source,
-                    path / dependency.destination,
-                )
-
-            else:
-                # https://stackoverflow.com/a/43136160
-                commands = " && ".join([
-                    "git init",
-                    f"git remote add origin {origin}",
-                    f"git fetch --depth=1 origin {dependency.commit}",
-                    "git checkout FETCH_HEAD",
-                ])
-                execute(commands, directory=tempdir)
-                shutil.move(
-                    Path(tempdir) / dependency.source,
-                    path / dependency.destination,
-                )
+        if isinstance(resolved_item, list):
+            for dependency in resolved_item:
+                self._storage.checkout(dependency, path)
+        else:
+            self._storage.checkout(resolved_item, path)
 
     def remove(self, job: Job) -> None:
         if job not in self:
@@ -239,6 +165,9 @@ class Repository:
         self,
         item: Union[Job, Dependency],
     ) -> Union[Job, Dependency, List[JobDependency]]:
+        if item.is_resolved():
+            return item
+
         if isinstance(item, Job):
             return self._resolve_job(item)
         if isinstance(item, QueryDependency):
