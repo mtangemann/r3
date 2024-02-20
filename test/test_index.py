@@ -9,7 +9,7 @@ from r3.index import Index
 from r3.job import Job, JobDependency
 from r3.storage import Storage
 
-DATA_PATH = Path(__file__).parent.parent / "data"
+DATA_PATH = Path(__file__).parent / "data"
 
 
 # REVIEW: This should be offered centrally.

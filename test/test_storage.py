@@ -13,7 +13,7 @@ from pyfakefs.fake_filesystem import FakeFilesystem
 from r3.job import GitDependency, Job, JobDependency
 from r3.storage import Storage
 
-DATA_PATH = Path(__file__).parent.parent / "data"
+DATA_PATH = Path(__file__).parent / "data"
 
 
 # REVIEW: This should be offered centrally.
@@ -360,7 +360,7 @@ def test_checkout_git_dependency_clones_repository():
         os.mkdir(f"{tempdir}/repository")
         storage = Storage.init(f"{tempdir}/repository")
 
-        r3_path = Path(__file__).parent.parent.parent
+        r3_path = Path(__file__).parent.parent
         assert (r3_path / ".git").is_dir()
         repository_path = Path(f"{tempdir}/repository/git/github.com/mtangemann/r3")
         execute(f"git clone {r3_path} {repository_path}")
@@ -386,14 +386,14 @@ def test_checkout_git_dependency_clones_repository():
             repository="https://github.com/mtangemann/r3.git",
             commit="5ffadd3c2c47eb0d8649ad28025df76f699a70e5",
             destination="destination",
-            source="test/core",
+            source="test",
         )
 
         checkout_path = Path(tempdir) / "checkout2"
         os.mkdir(checkout_path)
         storage.checkout_git_dependency(dependency, checkout_path)
         assert (checkout_path / "destination").is_dir()
-        for child in (repository_path / "test" / "core").iterdir():
+        for child in (repository_path / "test").iterdir():
             assert (checkout_path / "destination" / child.name).exists()
             if child.is_dir():
                 assert (checkout_path / "destination" / child.name).is_dir()
@@ -404,7 +404,7 @@ def test_checkout_git_dependency_clones_repository():
             repository="https://github.com/mtangemann/r3.git",
             commit="5ffadd3c2c47eb0d8649ad28025df76f699a70e5",
             destination="destination",
-            source="test/core/test_storage.py",
+            source="test/test_storage.py",
         )
 
         checkout_path = Path(tempdir) / "checkout3"
@@ -412,6 +412,6 @@ def test_checkout_git_dependency_clones_repository():
         storage.checkout_git_dependency(dependency, checkout_path)
         assert (checkout_path / "destination").is_file()
         assert filecmp.cmp(
-            repository_path / "test" / "core" / "test_storage.py",
+            repository_path / "test" / "test_storage.py",
             checkout_path / "destination",
         )
