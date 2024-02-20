@@ -367,7 +367,7 @@ def test_checkout_git_dependency_clones_repository():
 
         dependency = GitDependency(
             repository="https://github.com/mtangemann/r3.git",
-            commit="5ffadd3c2c47eb0d8649ad28025df76f699a70e5",
+            commit="c2397aac3fbdca682150faf721098b6f5a47806b",
             destination="destination",
         )
 
@@ -384,7 +384,7 @@ def test_checkout_git_dependency_clones_repository():
 
         dependency = GitDependency(
             repository="https://github.com/mtangemann/r3.git",
-            commit="5ffadd3c2c47eb0d8649ad28025df76f699a70e5",
+            commit="c2397aac3fbdca682150faf721098b6f5a47806b",
             destination="destination",
             source="test",
         )
@@ -402,7 +402,7 @@ def test_checkout_git_dependency_clones_repository():
         
         dependency = GitDependency(
             repository="https://github.com/mtangemann/r3.git",
-            commit="5ffadd3c2c47eb0d8649ad28025df76f699a70e5",
+            commit="c2397aac3fbdca682150faf721098b6f5a47806b",
             destination="destination",
             source="test/test_storage.py",
         )
