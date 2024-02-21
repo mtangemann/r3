@@ -365,6 +365,13 @@ def test_checkout_git_dependency_clones_repository():
         repository_path = Path(f"{tempdir}/repository/git/github.com/mtangemann/r3")
         execute(f"git clone {r3_path} {repository_path}")
 
+        expected_content_path = Path(f"{tempdir}/expected_content")
+        execute(f"git clone {r3_path} {expected_content_path}")
+        execute(
+            "git checkout c2397aac3fbdca682150faf721098b6f5a47806b",
+            directory=expected_content_path,
+        )
+
         dependency = GitDependency(
             repository="https://github.com/mtangemann/r3.git",
             commit="c2397aac3fbdca682150faf721098b6f5a47806b",
@@ -375,7 +382,7 @@ def test_checkout_git_dependency_clones_repository():
         os.mkdir(checkout_path)
         storage.checkout_git_dependency(dependency, checkout_path)
         assert (checkout_path / "destination").is_dir()
-        for child in repository_path.iterdir():
+        for child in expected_content_path.iterdir():
             assert (checkout_path / "destination" / child.name).exists()
             if child.is_dir():
                 assert (checkout_path / "destination" / child.name).is_dir()
@@ -393,7 +400,7 @@ def test_checkout_git_dependency_clones_repository():
         os.mkdir(checkout_path)
         storage.checkout_git_dependency(dependency, checkout_path)
         assert (checkout_path / "destination").is_dir()
-        for child in (repository_path / "test").iterdir():
+        for child in (expected_content_path / "test").iterdir():
             assert (checkout_path / "destination" / child.name).exists()
             if child.is_dir():
                 assert (checkout_path / "destination" / child.name).is_dir()
@@ -412,6 +419,6 @@ def test_checkout_git_dependency_clones_repository():
         storage.checkout_git_dependency(dependency, checkout_path)
         assert (checkout_path / "destination").is_file()
         assert filecmp.cmp(
-            repository_path / "test" / "test_storage.py",
+            expected_content_path / "test" / "test_storage.py",
             checkout_path / "destination",
         )
