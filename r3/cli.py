@@ -87,6 +87,7 @@ def checkout(job_path: Path, target_path) -> None:
     output/ -> /repository/jobs/4b2146f3-5594-4f05-ae13-2e053ef7bfda/output
     ```
     """
+    job_path = job_path.resolve()
     repository = r3.Repository(job_path.parent.parent)
     job = r3.Job(job_path, id=job_path.name)
     repository.checkout(job, target_path)
@@ -102,6 +103,7 @@ def remove(job_path: Path) -> None:
     If any other job in the R3 repository depends on the job at JOB_PATH, removing the
     job will fail.
     """
+    job_path = job_path.resolve()
     repository = r3.Repository(job_path.parent.parent)
     job = r3.Job(job_path, id=job_path.name)
 
