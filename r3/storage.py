@@ -22,7 +22,7 @@ class Storage:
         Parameters:
             root: The root directory of the storage (the repository root).
         """
-        self.root = Path(root)
+        self.root = Path(root).resolve()
 
         if not self.root.exists():
             raise FileNotFoundError(f"Root directory does not exist: {self.root}")

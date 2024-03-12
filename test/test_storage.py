@@ -136,6 +136,22 @@ def test_storage_contains(fs: FakeFilesystem):
     assert committed_job.id in storage
 
 
+def test_storage_contains_works_with_relative_paths(fs: FakeFilesystem):
+    fs.create_dir("/path")
+    storage = Storage.init("/path/repository")
+    job = get_dummy_job(fs, "base")
+    job = storage.add(job)
+    assert job in storage
+    assert job.path.is_absolute()
+
+    os.chdir("/path")
+    storage = Storage("repository")
+    assert job in storage
+
+    os.chdir("/")
+    assert job in storage
+
+
 def test_storage_get(fs: FakeFilesystem):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
