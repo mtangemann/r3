@@ -149,40 +149,6 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
             print(job.path)
 
 
-@cli.group()
-def dev():
-    pass
-
-
-@dev.command(name="checkout")
-@click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.argument(
-    "repository_path",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    envvar="R3_REPOSITORY",
-)
-def dev_checkout(path: str, repository_path: str) -> None:
-    job = r3.Job(path)
-    repository = r3.Repository(repository_path)
-
-    for dependency in job.dependencies:
-        if dependency not in repository:
-            print(f"--> ERROR: Missing dependency: {dependency}")
-            sys.exit(1)
-
-        print(dependency.destination)
-
-        target_path = Path(path) / dependency.destination
-        if target_path.exists():
-            print(
-                "ERROR: Target path exists already. Use --force to override. "
-                f"{target_path}"
-            )
-            sys.exit(1)
-
-        repository.checkout(dependency, path)
-
-
 @cli.command()
 @click.argument(
     "repository_path",
