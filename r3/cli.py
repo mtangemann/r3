@@ -87,12 +87,9 @@ def checkout(job_path: Path, target_path) -> None:
     output/ -> /repository/jobs/4b2146f3-5594-4f05-ae13-2e053ef7bfda/output
     ```
     """
-    job = r3.Job(job_path)
-    repository = job.repository
-
-    if repository is None:
-        raise ValueError("Can only checkout commited jobs.")
-
+    job_path = job_path.resolve()
+    repository = r3.Repository(job_path.parent.parent)
+    job = r3.Job(job_path, id=job_path.name)
     repository.checkout(job, target_path)
 
 
@@ -106,12 +103,9 @@ def remove(job_path: Path) -> None:
     If any other job in the R3 repository depends on the job at JOB_PATH, removing the
     job will fail.
     """
-    job = r3.Job(job_path)
-    repository = job.repository
-
-    if repository is None:
-        print("Error removing job: Can only remove commited jobs.")
-        return
+    job_path = job_path.resolve()
+    repository = r3.Repository(job_path.parent.parent)
+    job = r3.Job(job_path, id=job_path.name)
 
     try:
         repository.remove(job)
@@ -147,9 +141,10 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
     repository = r3.Repository(repository_path)
     for job in repository.find(tags, latest):
         if long:
+            assert job.datetime is not None
             datetime = job.datetime.strftime(r"%Y-%m-%d %H:%M:%S")
             tags = " ".join(f"#{tag}" for tag in job.metadata.get("tags", []))
-            print(f"{job.uuid} | {datetime} | {tags}")
+            print(f"{job.id} | {datetime} | {tags}")
         else:
             print(job.path)
 
@@ -168,10 +163,6 @@ def dev():
 )
 def dev_checkout(path: str, repository_path: str) -> None:
     job = r3.Job(path)
-    if job.repository is not None:
-        print("ERROR: Can only dev checkout jobs that are not committed.")
-        sys.exit(1)
-
     repository = r3.Repository(repository_path)
 
     for dependency in job.dependencies:

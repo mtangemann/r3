@@ -1,5 +1,0 @@
-dependencies: []
-
-commit:
-  root: ..
-  ignore: [/config]
