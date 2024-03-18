@@ -1,0 +1,7 @@
+# History
+
+## v0.2 (2024-03-18)
+- Major refactoring of the code
+- Major extension of the test suite
+- CLI: Make `--repository` an option for all commands
+- CLI: Remove `dev checkout` command
