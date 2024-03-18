@@ -296,7 +296,7 @@ class Repository:
         for job in result:
             assert job.id is not None
             resolved_dependencies.append(JobDependency(
-                job, dependency.destination, query_all=dependency.query_all)
+                job, dependency.destination / job.id, query_all=dependency.query_all)
             )
 
         return resolved_dependencies
