@@ -38,7 +38,8 @@ def init(path: Path):
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.argument(
+@click.option(
+    "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
@@ -131,7 +132,8 @@ def remove(job_path: Path) -> None:
         "information (--long)."
     )
 )
-@click.argument(
+@click.option(
+    "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
@@ -150,7 +152,8 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
 
 
 @cli.command()
-@click.argument(
+@click.option(
+    "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
