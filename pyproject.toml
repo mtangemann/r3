@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "r3"
-description = "Repository of Reproducible Research"
+description = "Repository for Reliable Research"
 authors = [
     {name = "Matthias Tangemann", email = "matthias.tangemann@bethgelab.org"}
 ]

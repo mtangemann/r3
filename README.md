@@ -1,4 +1,4 @@
-# R3 - **R**epository of **R**eproducible **R**esearch
+# R3 - **R**epository for **R**eliable **R**esearch
 
 ## Usage
 Have a look at the documentation:

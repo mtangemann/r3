@@ -1,4 +1,4 @@
-# R3 – Repository of Reproducible Research
+# R3 – Repository for Reliable Research
 
 Welcome to the documentation of R3!
 

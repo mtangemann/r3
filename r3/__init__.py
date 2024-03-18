@@ -1,4 +1,4 @@
-"""Repository of Reproducible Research."""
+"""Repository for Reliable Research."""
 
 from pathlib import Path
 
