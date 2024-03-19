@@ -115,7 +115,9 @@ class Repository:
             repository_path = self.path / resolved_item.repository_path
 
             if not repository_path.exists():
-                execute(f"git clone {resolved_item.repository} {repository_path}")
+                execute(
+                    f"git clone --bare {resolved_item.repository} {repository_path}"
+                )
 
             if not r3.utils.git_commit_exists(repository_path, resolved_item.commit):
                 execute("git fetch --all", directory=repository_path)
