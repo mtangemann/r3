@@ -99,6 +99,14 @@ class Storage:
 
         job.hash(recompute=True)
 
+        for dependency in job.dependencies:
+            if isinstance(dependency, GitDependency):
+                repository_path = self.root / dependency.repository_path
+                execute(
+                    f"git tag r3/{job_id} {dependency.commit}",
+                    directory=repository_path,
+                )
+
         os.mkdir(job_path)
         os.mkdir(job_path / "output")
 

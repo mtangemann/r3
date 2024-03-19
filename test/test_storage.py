@@ -9,6 +9,7 @@ import pytest
 import yaml
 from executor import execute
 from pyfakefs.fake_filesystem import FakeFilesystem
+from pytest_mock import MockerFixture
 
 from r3.job import GitDependency, Job, JobDependency
 from r3.storage import Storage
@@ -316,7 +317,9 @@ def test_checkout_job_checks_out_job_dependencies(fs: FakeFilesystem):
     assert calls_to_checkout[0][1] == checkout_path
 
 
-def test_checkout_job_checks_out_git_dependencies(fs: FakeFilesystem):
+def test_checkout_job_checks_out_git_dependencies(
+    fs: FakeFilesystem, mocker: MockerFixture,
+):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
 
@@ -326,6 +329,13 @@ def test_checkout_job_checks_out_git_dependencies(fs: FakeFilesystem):
         "commit": "123abc",
         "destination": "dependency_path",
     }]
+
+    # Prevent calling `git tag` when using the fake filesystem.
+    def patched_execute(command: str, **kwargs):
+        if command.startswith("git tag"):
+            return
+        return execute(command, **kwargs)
+    mocker.patch("r3.storage.execute", new=patched_execute)
 
     committed_job = storage.add(original_job)
 

@@ -120,7 +120,7 @@ class Repository:
                 )
 
             if not r3.utils.git_commit_exists(repository_path, resolved_item.commit):
-                execute("git fetch --all", directory=repository_path)
+                execute("git fetch origin *:* --force", directory=repository_path)
 
             return r3.utils.git_path_exists(
                 repository_path,

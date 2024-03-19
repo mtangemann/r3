@@ -49,6 +49,12 @@ class ExampleGitRepository:
         execute("git add test.txt", directory=self.path)
         execute("git commit -m 'Branch commit'", directory=self.path)
 
+    def force_update(self) -> None:
+        with open(self.path / "test.txt", "w") as file:
+            file.write("forced content")
+        execute("git add test.txt", directory=self.path)
+        execute("git commit --amend -m 'Force update'", directory=self.path)
+
 
 @pytest.fixture
 def repository(fs: FakeFilesystem) -> Repository:
@@ -372,6 +378,59 @@ def test_commit_copies_nested_files(
         original_job.path / "code" / "run.py",
         shallow=False,
     )
+
+
+def test_commit_adds_git_tags_to_prevent_garbage_collection(
+    mocker: MockerFixture,
+) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        origin.update()
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=origin.head_commit(),
+            destination="destination",
+        )
+
+        job_path = Path(tempdir) / "job"
+        job_path.mkdir()
+        with open(job_path / "r3.yaml", "w") as file:
+            yaml.dump({"dependencies": [dependency.to_config()]}, file)
+        with open(job_path / "run.py", "w") as file:
+            file.write("print('Hello, world!')")
+        job = Job(job_path)
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        job = repository.commit(job)
+
+        clone_path = repository.path / dependency.repository_path
+        tags = execute("git tag", directory=clone_path, capture=True)
+        assert f"r3/{job.id}" in tags.splitlines()
+        ref = execute(f"git rev-parse r3/{job.id}", directory=clone_path, capture=True)
+        assert ref.strip() == dependency.commit
+
+        origin.force_update()
+
+        updated_dependency = GitDependency(
+            repository=origin_url,
+            commit=origin.head_commit(),
+            destination="destination",
+        )
+        assert updated_dependency in repository
+
+        execute("git gc --prune=now", directory=clone_path)
+
+        assert updated_dependency in repository
+        assert dependency in repository
 
 
 def test_repository_remove_fails_if_other_jobs_depend_on_job(
