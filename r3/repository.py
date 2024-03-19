@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, List, Union
 
 import yaml
+from executor import execute
 
 import r3
 import r3.utils
@@ -111,8 +112,16 @@ class Repository:
             return target.exists()
 
         if isinstance(resolved_item, GitDependency):
+            repository_path = self.path / resolved_item.repository_path
+
+            if not repository_path.exists():
+                execute(f"git clone {resolved_item.repository} {repository_path}")
+
+            if not r3.utils.git_commit_exists(repository_path, resolved_item.commit):
+                execute("git fetch --all", directory=repository_path)
+
             return r3.utils.git_path_exists(
-                self.path / resolved_item.repository_path,
+                repository_path,
                 resolved_item.commit,
                 resolved_item.source,
             )

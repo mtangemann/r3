@@ -53,6 +53,17 @@ def hash_str(string: str) -> str:
     return hashlib.sha256(string.encode()).hexdigest()
 
 
+def git_commit_exists(repository: Path, commit: str) -> bool:
+    try:
+        object_type = execute(
+            f"git cat-file -t {commit}", directory=repository, capture=True
+        )
+    except ExternalCommandFailed:
+        return False
+
+    return object_type == "commit"
+
+
 def git_path_exists(
     repository: Path,
     commit: Optional[str] = None,
@@ -65,14 +76,7 @@ def git_path_exists(
         return False
 
     if path == Path("."):
-        try:
-            object_type = execute(
-                f"git cat-file -t {commit}", directory=repository, capture=True
-            )
-        except ExternalCommandFailed:
-            return False
-        else:
-            return object_type == "commit"
+        return git_commit_exists(repository, commit)
 
     else:
         try:
