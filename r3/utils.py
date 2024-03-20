@@ -97,3 +97,31 @@ def git_get_remote_head(repository: Path, remote: str = "origin") -> str:
         directory=repository,
         capture=True,
     ).split()[0]
+
+
+def git_get_remote_branch_head(
+    repository: Path, branch: str, remote: str = "origin"
+) -> Optional[str]:
+    output = execute(
+        f"git ls-remote --heads {remote} {branch}",
+        directory=repository,
+        capture=True,
+    )
+    if len(output.split()) == 0:
+        return None
+    return output.split()[0]
+
+
+def git_get_remote_tag_head(
+    repository: Path, tag: str, remote: str = "origin"
+) -> Optional[str]:
+    execute(f"git fetch --tags {remote}", directory=repository, capture=True)
+    try:
+        output = execute(
+            f"git rev-list --tags --max-count=1 {tag}",
+            directory=repository,
+            capture=True,
+        )
+    except ExternalCommandFailed:
+        return None
+    return output.split()[0]

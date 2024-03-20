@@ -319,7 +319,20 @@ class Repository:
         repository_path = self.path / dependency.repository_path
         if not repository_path.exists():
             execute(f"git clone --bare {dependency.repository} {repository_path}")
-        commit = r3.utils.git_get_remote_head(repository_path)
+        
+        if dependency.branch is not None:
+            commit = r3.utils.git_get_remote_branch_head(
+                repository_path, dependency.branch
+            )
+            if commit is None:
+                raise ValueError(f"Branch not found: {dependency.branch}")
+        elif dependency.tag is not None:
+            commit = r3.utils.git_get_remote_tag_head(repository_path, dependency.tag)
+            if commit is None:
+                raise ValueError(f"Tag not found: {dependency.tag}")
+        else:
+            commit = r3.utils.git_get_remote_head(repository_path)
+        
         return GitDependency(
             dependency.repository,
             commit,

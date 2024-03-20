@@ -37,6 +37,7 @@ class ExampleGitRepository:
         return execute("git rev-parse HEAD", directory=self.path, capture=True).strip()
 
     def update(self) -> None:
+        execute("git switch main", directory=self.path)
         with open(self.path / "test.txt", "w") as file:
             file.write("updated content")
         execute("git add test.txt", directory=self.path)
@@ -54,6 +55,9 @@ class ExampleGitRepository:
             file.write("forced content")
         execute("git add test.txt", directory=self.path)
         execute("git commit --amend -m 'Force update'", directory=self.path)
+    
+    def add_tag(self, tag: str) -> None:
+        execute(f"git tag {tag} -m 'Test tag'", directory=self.path)
 
 
 @pytest.fixture
@@ -523,6 +527,92 @@ def test_resolve_git_dependency_from_url(mocker: MockerFixture) -> None:
         assert isinstance(resolved_dependency, GitDependency)
         assert resolved_dependency.is_resolved()
         assert resolved_dependency.commit == origin.head_commit()
+
+
+def test_resolve_git_dependency_from_branch(mocker: MockerFixture) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        origin.update_branch()
+        branch_commit = origin.head_commit()
+        origin.update()
+        main_commit = origin.head_commit()
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=None,
+            branch="main",
+            destination="destination",
+        )
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == main_commit
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=None,
+            branch="branch",
+            destination="destination",
+        )
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == branch_commit
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=None,
+            branch="does-not-exist",
+            destination="destination",
+        )
+        with pytest.raises(ValueError):
+            repository.resolve(dependency)
+
+
+def test_resolve_git_dependency_from_tag(mocker: MockerFixture) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        origin.add_tag("test")
+        tag_commit = origin.head_commit()
+        origin.update()
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=None,
+            tag="test",
+            destination="destination",
+        )
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == tag_commit
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=None,
+            tag="does-not-exist",
+            destination="destination",
+        )
+        with pytest.raises(ValueError):
+            repository.resolve(dependency)
 
 
 def test_resolve_job(fs: FakeFilesystem, repository: Repository) -> None:
