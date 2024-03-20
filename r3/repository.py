@@ -112,6 +112,7 @@ class Repository:
             return target.exists()
 
         if isinstance(resolved_item, GitDependency):
+            assert resolved_item.commit is not None
             repository_path = self.path / resolved_item.repository_path
 
             if not repository_path.exists():
@@ -246,6 +247,8 @@ class Repository:
             return self._resolve_query_dependency(item)
         if isinstance(item, QueryAllDependency):
             return self._resolve_query_all_dependency(item)
+        if isinstance(item, GitDependency):
+            return self._resolve_git_dependency(item)
 
         raise ValueError(f"Cannot resolve {item}")
 
@@ -311,3 +314,15 @@ class Repository:
             )
 
         return resolved_dependencies
+
+    def _resolve_git_dependency(self, dependency: GitDependency) -> GitDependency:
+        repository_path = self.path / dependency.repository_path
+        if not repository_path.exists():
+            execute(f"git clone --bare {dependency.repository} {repository_path}")
+        commit = r3.utils.git_get_remote_head(repository_path)
+        return GitDependency(
+            dependency.repository,
+            commit,
+            destination=dependency.destination,
+            source=dependency.source,
+        )

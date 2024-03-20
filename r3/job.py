@@ -452,7 +452,7 @@ class GitDependency(Dependency):
     def __init__(
         self,
         repository: str,
-        commit: str,
+        commit: str | None,
         destination: Union[os.PathLike, str],
         source: Union[os.PathLike, str] = "",
     ) -> None:
@@ -517,16 +517,18 @@ class GitDependency(Dependency):
 
         See `from_config` for an example.
         """
-        return {
+        config = {
             "repository": self.repository,
-            "commit": self.commit,
             "source": str(self.source),
             "destination": str(self.destination),
         }
+        if self.commit is not None:
+            config["commit"] = self.commit
+        return config
 
     def is_resolved(self) -> bool:
         """Returns `True` if the dependency is resolved."""
-        return True
+        return self.commit is not None
 
     def hash(self) -> str:
         """Returns the hash of the dependency."""

@@ -89,3 +89,11 @@ def git_path_exists(
             return False
 
         return True
+
+
+def git_get_remote_head(repository: Path, remote: str = "origin") -> str:
+    return execute(
+        f"git ls-remote {remote} HEAD",
+        directory=repository,
+        capture=True,
+    ).split()[0]

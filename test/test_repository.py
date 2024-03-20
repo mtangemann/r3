@@ -493,6 +493,38 @@ def test_resolve_query_all_dependency(
     }
 
 
+def test_resolve_git_dependency_from_url(mocker: MockerFixture) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=None,
+            destination="destination",
+        )
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == origin.head_commit()
+
+        origin.update()
+
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == origin.head_commit()
+
+
 def test_resolve_job(fs: FakeFilesystem, repository: Repository) -> None:
     job = get_dummy_job(fs, "base")
     job.metadata["tags"] = ["test"]
