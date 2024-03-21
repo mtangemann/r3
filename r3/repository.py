@@ -26,7 +26,7 @@ from r3.job import (
 )
 from r3.storage import Storage
 
-R3_FORMAT_VERSION = "1.0.0-beta.5"
+R3_FORMAT_VERSION = "1.0.0-beta.6"
 
 DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
@@ -54,6 +54,14 @@ class Repository:
 
         if not (self.path / "r3.yaml").exists():
             raise ValueError(f"Invalid repository: {self.path}")
+
+        with open(self.path / "r3.yaml") as config_file:
+            config = yaml.safe_load(config_file)
+            if config["version"] != R3_FORMAT_VERSION:
+                raise ValueError(
+                    f"Invalid repository version: {config['version']}. Please migrate "
+                    f"to {R3_FORMAT_VERSION}."
+                )
 
         self._storage = Storage(self.path)
         self._index = Index(self._storage)

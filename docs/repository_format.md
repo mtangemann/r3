@@ -1,6 +1,6 @@
 # Repository Format
 
-Version: 1.0.0-beta.5
+Version: 1.0.0-beta.6
 
 This document describes the format that R3 uses internally for storing jobs. The format
 specification is intended to guide the development of R3's core features but is not part
@@ -17,8 +17,8 @@ for any interaction with repositories and stored jobs.
   - `jobs/`: Committed jobs.
 
 - The `git` directory contains cloned git repositories, structured by their url (e.g.,
-  `git/github.com/mtangemann/r3`). Repositories may be pulled, but only if no commit is
-  removed that any job depends on.
+  `git/github.com/mtangemann/r3`). All clones are bare repositories. A lightweight tag
+  `r3/$job_id` is present for each commit that is used by a job.
 
 - The `jobs` directory contains all committed jobs structured by their uuid (i.e. 
   `jobs/$uuid/`). Each job is assigned a uuid version 4 when committed to the
