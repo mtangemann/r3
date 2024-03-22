@@ -452,9 +452,11 @@ class GitDependency(Dependency):
     def __init__(
         self,
         repository: str,
-        commit: str,
+        commit: Optional[str],
         destination: Union[os.PathLike, str],
         source: Union[os.PathLike, str] = "",
+        branch: Optional[str] = None,
+        tag: Optional[str] = None,
     ) -> None:
         """Initializes the git dependency.
         
@@ -465,11 +467,21 @@ class GitDependency(Dependency):
             destination: Path relative to the job to which the repository will be
                 checked out.
             source: Path relative to the repository root to be checked out.
+            branch: Branch name. If no commit id is given, the dependency will be
+                resolved to the latest commit on this branch.
+            tag: Tag name. If no commit id is given, the dependency will be resolved to
+                the commit pointed to by this tag.
         """
+        if branch is not None and tag is not None:
+            raise ValueError("Cannot specify both branch and tag.")
+
         super().__init__(destination)
         self.source = Path(source)
         self.repository = repository
         self.commit = commit
+        self.branch = branch
+        self.tag = tag
+
 
     # REVIEW: This should not be a method of this class. Instead, the git manager in the
     #         repository class should be responsible for this.
@@ -517,16 +529,18 @@ class GitDependency(Dependency):
 
         See `from_config` for an example.
         """
-        return {
+        config = {
             "repository": self.repository,
-            "commit": self.commit,
             "source": str(self.source),
             "destination": str(self.destination),
         }
+        if self.commit is not None:
+            config["commit"] = self.commit
+        return config
 
     def is_resolved(self) -> bool:
         """Returns `True` if the dependency is resolved."""
-        return True
+        return self.commit is not None
 
     def hash(self) -> str:
         """Returns the hash of the dependency."""

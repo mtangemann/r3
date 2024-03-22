@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, List, Union
 
 import yaml
+from executor import execute
 
 import r3
 import r3.utils
@@ -25,7 +26,7 @@ from r3.job import (
 )
 from r3.storage import Storage
 
-R3_FORMAT_VERSION = "1.0.0-beta.5"
+R3_FORMAT_VERSION = "1.0.0-beta.6"
 
 DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
@@ -53,6 +54,14 @@ class Repository:
 
         if not (self.path / "r3.yaml").exists():
             raise ValueError(f"Invalid repository: {self.path}")
+
+        with open(self.path / "r3.yaml") as config_file:
+            config = yaml.safe_load(config_file)
+            if config["version"] != R3_FORMAT_VERSION:
+                raise ValueError(
+                    f"Invalid repository version: {config['version']}. Please migrate "
+                    f"to {R3_FORMAT_VERSION}."
+                )
 
         self._storage = Storage(self.path)
         self._index = Index(self._storage)
@@ -111,8 +120,19 @@ class Repository:
             return target.exists()
 
         if isinstance(resolved_item, GitDependency):
+            assert resolved_item.commit is not None
+            repository_path = self.path / resolved_item.repository_path
+
+            if not repository_path.exists():
+                execute(
+                    f"git clone --bare {resolved_item.repository} {repository_path}"
+                )
+
+            if not r3.utils.git_commit_exists(repository_path, resolved_item.commit):
+                execute("git fetch origin *:* --force", directory=repository_path)
+
             return r3.utils.git_path_exists(
-                self.path / resolved_item.repository_path,
+                repository_path,
                 resolved_item.commit,
                 resolved_item.source,
             )
@@ -235,6 +255,8 @@ class Repository:
             return self._resolve_query_dependency(item)
         if isinstance(item, QueryAllDependency):
             return self._resolve_query_all_dependency(item)
+        if isinstance(item, GitDependency):
+            return self._resolve_git_dependency(item)
 
         raise ValueError(f"Cannot resolve {item}")
 
@@ -300,3 +322,28 @@ class Repository:
             )
 
         return resolved_dependencies
+
+    def _resolve_git_dependency(self, dependency: GitDependency) -> GitDependency:
+        repository_path = self.path / dependency.repository_path
+        if not repository_path.exists():
+            execute(f"git clone --bare {dependency.repository} {repository_path}")
+        
+        if dependency.branch is not None:
+            commit = r3.utils.git_get_remote_branch_head(
+                repository_path, dependency.branch
+            )
+            if commit is None:
+                raise ValueError(f"Branch not found: {dependency.branch}")
+        elif dependency.tag is not None:
+            commit = r3.utils.git_get_remote_tag_head(repository_path, dependency.tag)
+            if commit is None:
+                raise ValueError(f"Tag not found: {dependency.tag}")
+        else:
+            commit = r3.utils.git_get_remote_head(repository_path)
+        
+        return GitDependency(
+            dependency.repository,
+            commit,
+            destination=dependency.destination,
+            source=dependency.source,
+        )

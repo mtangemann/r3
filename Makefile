@@ -9,7 +9,7 @@ lint/ruff:
 	ruff .
 
 lint/mypy:
-	mypy r3 test
+	mypy r3 test migration
 
 test:
 	python -m pytest --cov=r3

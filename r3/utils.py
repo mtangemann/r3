@@ -53,6 +53,17 @@ def hash_str(string: str) -> str:
     return hashlib.sha256(string.encode()).hexdigest()
 
 
+def git_commit_exists(repository: Path, commit: str) -> bool:
+    try:
+        object_type = execute(
+            f"git cat-file -t {commit}", directory=repository, capture=True
+        )
+    except ExternalCommandFailed:
+        return False
+
+    return object_type == "commit"
+
+
 def git_path_exists(
     repository: Path,
     commit: Optional[str] = None,
@@ -65,14 +76,7 @@ def git_path_exists(
         return False
 
     if path == Path("."):
-        try:
-            object_type = execute(
-                f"git cat-file -t {commit}", directory=repository, capture=True
-            )
-        except ExternalCommandFailed:
-            return False
-        else:
-            return object_type == "commit"
+        return git_commit_exists(repository, commit)
 
     else:
         try:
@@ -85,3 +89,39 @@ def git_path_exists(
             return False
 
         return True
+
+
+def git_get_remote_head(repository: Path, remote: str = "origin") -> str:
+    return execute(
+        f"git ls-remote {remote} HEAD",
+        directory=repository,
+        capture=True,
+    ).split()[0]
+
+
+def git_get_remote_branch_head(
+    repository: Path, branch: str, remote: str = "origin"
+) -> Optional[str]:
+    output = execute(
+        f"git ls-remote --heads {remote} {branch}",
+        directory=repository,
+        capture=True,
+    )
+    if len(output.split()) == 0:
+        return None
+    return output.split()[0]
+
+
+def git_get_remote_tag_head(
+    repository: Path, tag: str, remote: str = "origin"
+) -> Optional[str]:
+    execute(f"git fetch --tags {remote}", directory=repository, capture=True)
+    try:
+        output = execute(
+            f"git rev-list --tags --max-count=1 {tag}",
+            directory=repository,
+            capture=True,
+        )
+    except ExternalCommandFailed:
+        return None
+    return output.split()[0]
