@@ -8,7 +8,7 @@ import os
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Union
+from typing import Iterable, List, Set, Union
 
 import yaml
 from executor import execute
@@ -220,6 +220,18 @@ class Repository:
             The jobs that match the given tags.
         """
         return self._index.find(tags, latest)
+
+    def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
+        """Finds jobs that depend on the given job.
+        
+        Parameters:
+            job: The job to find dependents for.
+            recursive: Whether to find dependents recursively.
+        
+        Returns:
+            The jobs that depend on the given job.
+        """
+        return self._index.find_dependents(job, recursive)
 
     def rebuild_index(self):
         """Rebuilds the job index.

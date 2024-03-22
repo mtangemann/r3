@@ -141,7 +141,7 @@ def test_index_find_dependents(storage_with_jobs: Storage):
     job = index.find(["test-again"], latest=True)[0]
     dependents = index.find_dependents(job)
     assert len(dependents) == 1
-    assert "test-latest" in dependents[0].metadata["tags"]
+    assert "test-latest" in next(iter(dependents)).metadata["tags"]
 
     job = index.find(["test-latest"], latest=True)[0]
     dependents = index.find_dependents(job)
