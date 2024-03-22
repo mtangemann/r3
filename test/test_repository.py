@@ -5,6 +5,7 @@ import os
 import stat
 import tempfile
 from pathlib import Path
+from typing import Union
 
 import pytest
 import yaml
@@ -25,7 +26,7 @@ DATA_PATH = Path(__file__).parent / "data"
 
 
 class ExampleGitRepository:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: Union[str, Path]) -> None:
         self.path = Path(path)
         execute(f"git init {self.path}")
         with open(self.path / "test.txt", "w") as file:

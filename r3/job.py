@@ -452,7 +452,7 @@ class GitDependency(Dependency):
     def __init__(
         self,
         repository: str,
-        commit: str | None,
+        commit: Optional[str],
         destination: Union[os.PathLike, str],
         source: Union[os.PathLike, str] = "",
         branch: Optional[str] = None,
