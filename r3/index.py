@@ -1,7 +1,7 @@
 """Job index for efficient searching."""
 
 import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import yaml
 
@@ -106,23 +106,36 @@ class Index:
 
         return jobs
 
-    def find_dependents(self, job: Job) -> List[Job]:
+    def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that directly depend on the given job.
 
         Parameters:
             job: The job to find dependents for.
+            recursive: Whether to find dependents recursively.
         
         Returns:
             The jobs that directly depend on the given job.
         """
-        dependents = list()
+        if job.id is None:
+            raise ValueError("Job ID is not set")
+
+        dependents = dict()
 
         for job_id, job_info in self._entries.items():
             for dependency in job_info["dependencies"]:
                 if "job" in dependency and dependency["job"] == job.id:
-                    dependents.append(self.storage.get(job_id))
+                    dependents[job_id] = self.storage.get(job_id)
 
-        return dependents
+                    if recursive:
+                        indirect_dependents = self.find_dependents(
+                            dependents[job_id], recursive=True
+                        )
+                        dependents.update({
+                            dependent.id: dependent  # type: ignore
+                            for dependent in indirect_dependents
+                        })
+
+        return set(dependents.values())
 
     def rebuild(self) -> None:
         """Rebuilds the index from the storage."""

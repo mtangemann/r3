@@ -458,6 +458,67 @@ def test_repository_remove_fails_if_other_jobs_depend_on_job(
     repository.remove(job)
 
 
+def test_find_dependents_requires_job_id(
+    fs: FakeFilesystem, repository: Repository,
+) -> None:
+    job = get_dummy_job(fs, "base")
+    job = repository.commit(job)
+
+    repository.find_dependents(job)
+
+    job.id = None
+    with pytest.raises(ValueError):
+        repository.find_dependents(job)
+
+
+def test_find_dependents(fs: FakeFilesystem, repository: Repository) -> None:
+    job1 = get_dummy_job(fs, "base")
+    job1 = repository.commit(job1)
+    assert job1.id is not None
+
+    job2 = get_dummy_job(fs, "base")
+    dependency = JobDependency(job1.id, "destination1")
+    job2._dependencies = [dependency]
+    job2._config["dependencies"] = [dependency.to_config()]
+    job2 = repository.commit(job2)
+    assert job2.id is not None
+
+    job3 = get_dummy_job(fs, "base")
+    dependency = JobDependency(job1.id, "destination2")
+    job3._dependencies = [dependency]
+    job3._config["dependencies"] = [dependency.to_config()]
+    job3 = repository.commit(job3)
+    assert job3.id is not None
+
+    job4 = get_dummy_job(fs, "base")
+    dependency = JobDependency(job2.id, "destination3")
+    job4._dependencies = [dependency]
+    job4._config["dependencies"] = [dependency.to_config()]
+    dependency = JobDependency(job3.id, "destination4")
+    job4._dependencies.append(dependency)
+    job4._config["dependencies"].append(dependency.to_config())
+    job4 = repository.commit(job4)
+
+    dependents = repository.find_dependents(job4)
+    assert len(dependents) == 0
+
+    dependents = repository.find_dependents(job3)
+    assert len(dependents) == 1
+    assert {dependent.id for dependent in dependents} == {job4.id}
+
+    dependents = repository.find_dependents(job2)
+    assert len(dependents) == 1
+    assert {dependent.id for dependent in dependents} == {job4.id}
+
+    dependents = repository.find_dependents(job1)
+    assert len(dependents) == 2
+    assert {dependent.id for dependent in dependents} == {job2.id, job3.id}
+
+    dependents = repository.find_dependents(job1, recursive=True)
+    assert len(dependents) == 3
+    assert {dependent.id for dependent in dependents} == {job2.id, job3.id, job4.id}
+
+
 def test_resolve_query_dependency(fs: FakeFilesystem, repository: Repository) -> None:
     job = get_dummy_job(fs, "base")
     job.metadata["tags"] = ["test"]
