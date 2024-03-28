@@ -1,5 +1,22 @@
 # History
 
+## v0.3 (2024-03-28)
+- Git dependencies are now automatically managed by R3
+- Git dependencies do not require a `commit` key anymore. If not specified, the remote
+  HEAD is used. Moreover, git dependencies might be specified by a branch or tag name.
+- `find_dependents` has been added to the public API
+- The commit timestamp is not stored in the job metadata anymore, but in the r3 config
+  file.
+
+BREAKING CHANGES:
+- `Job.datetime` has been renamed to `Job.timestamp`
+- The order of the constructor arguments for all dependency classes has been changed so
+  that `destination` is always the first argument.
+
+The repository format has been updated. Migrations scripts are provided in the
+`migrations` directory.
+
+
 ## v0.2 (2024-03-18)
 - Major refactoring of the code
 - Major extension of the test suite
