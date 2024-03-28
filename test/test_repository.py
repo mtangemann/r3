@@ -131,20 +131,20 @@ def test_repository_contains_job_calls_storage_contains(
 def test_repository_contains_job_dependency(fs: FakeFilesystem) -> None:
     repository = Repository.init("/repository")
 
-    dependency = JobDependency("123abc", "destination")
+    dependency = JobDependency("destination", "123abc")
     assert dependency not in repository
 
     job = get_dummy_job(fs, "base")
     job = repository.commit(job)
     assert job.id is not None
 
-    dependency = JobDependency(job.id, "destination")
+    dependency = JobDependency("destination", job.id)
     assert dependency in repository
 
-    dependency = JobDependency(job.id, "destination.py", "run.py")
+    dependency = JobDependency("destination.py", job.id, "run.py")
     assert dependency in repository
 
-    dependency = JobDependency(job.id, "destination.py", "does_not_exist.py")
+    dependency = JobDependency("destination.py", job.id, "does_not_exist.py")
     assert dependency not in repository
 
 
@@ -282,7 +282,7 @@ def test_repository_contains_git_dependency_checks_whether_source_exists(
 def test_repository_contains_query_dependency(fs: FakeFilesystem) -> None:
     repository = Repository.init("/repository")
 
-    dependency = QueryDependency("#test", "destination")
+    dependency = QueryDependency("destination", "#test")
     assert dependency not in repository
 
     job = get_dummy_job(fs, "base")
@@ -291,20 +291,20 @@ def test_repository_contains_query_dependency(fs: FakeFilesystem) -> None:
 
     assert dependency in repository
 
-    dependency = QueryDependency("#test #does-not-exist", "destination")
+    dependency = QueryDependency("destination", "#test #does-not-exist")
     assert dependency not in repository
 
-    dependency = QueryDependency("#test", "destination.py", "run.py")
+    dependency = QueryDependency("destination.py", "#test", "run.py")
     assert dependency in repository
 
-    dependency = QueryDependency("#test", "destination.py", "does_not_exist.py")
+    dependency = QueryDependency("destination.py", "#test", "does_not_exist.py")
     assert dependency not in repository
 
 
 def test_repository_contains_query_all_dependency(fs: FakeFilesystem) -> None:
     repository = Repository.init("/repository")
 
-    dependency = QueryAllDependency("#test", "destination")
+    dependency = QueryAllDependency("destination", "#test")
     assert dependency not in repository
 
     job = get_dummy_job(fs, "base")
@@ -459,7 +459,7 @@ def test_repository_remove_fails_if_other_jobs_depend_on_job(
     job = repository.commit(base_job)
     assert job.id is not None
 
-    dependency = JobDependency(job.id, "destination")
+    dependency = JobDependency("destination", job.id)
     base_job._dependencies = [dependency]
     base_job._config["dependencies"] = [dependency.to_config()]
     dependent_job = repository.commit(base_job)
@@ -490,24 +490,24 @@ def test_find_dependents(fs: FakeFilesystem, repository: Repository) -> None:
     assert job1.id is not None
 
     job2 = get_dummy_job(fs, "base")
-    dependency = JobDependency(job1.id, "destination1")
+    dependency = JobDependency("destination1", job1.id)
     job2._dependencies = [dependency]
     job2._config["dependencies"] = [dependency.to_config()]
     job2 = repository.commit(job2)
     assert job2.id is not None
 
     job3 = get_dummy_job(fs, "base")
-    dependency = JobDependency(job1.id, "destination2")
+    dependency = JobDependency("destination2", job1.id)
     job3._dependencies = [dependency]
     job3._config["dependencies"] = [dependency.to_config()]
     job3 = repository.commit(job3)
     assert job3.id is not None
 
     job4 = get_dummy_job(fs, "base")
-    dependency = JobDependency(job2.id, "destination3")
+    dependency = JobDependency("destination3", job2.id)
     job4._dependencies = [dependency]
     job4._config["dependencies"] = [dependency.to_config()]
-    dependency = JobDependency(job3.id, "destination4")
+    dependency = JobDependency("destination4", job3.id)
     job4._dependencies.append(dependency)
     job4._config["dependencies"].append(dependency.to_config())
     job4 = repository.commit(job4)
@@ -537,13 +537,13 @@ def test_resolve_query_dependency(fs: FakeFilesystem, repository: Repository) ->
     job.metadata["tags"] = ["test"]
     job = repository.commit(job)
 
-    dependency = QueryDependency("#test", "destination")
+    dependency = QueryDependency("destination", "#test")
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == job.id
 
     with pytest.raises(ValueError):
-        repository.resolve(QueryDependency("#does-not-exist", "destination"))
+        repository.resolve(QueryDependency("destination", "#does-not-exist"))
 
 
 def test_resolve_query_all_dependency(
@@ -554,7 +554,7 @@ def test_resolve_query_all_dependency(
     job.metadata["tags"] = ["test"]
     commited_job_1 = repository.commit(job)
 
-    dependency = QueryAllDependency("#test", "destination")
+    dependency = QueryAllDependency("destination", "#test")
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, list)
     assert len(resolved_dependency) == 1
@@ -579,11 +579,7 @@ def test_resolve_git_dependency_from_url(mocker: MockerFixture) -> None:
 
         repository = Repository.init(f"{tempdir}/r3")
 
-        dependency = GitDependency(
-            repository=origin_url,
-            commit=None,
-            destination="destination",
-        )
+        dependency = GitDependency("destination", origin_url)
 
         def patched_execute(command, **kwargs):
             command = command.replace(origin_url, str(origin.path))
@@ -621,34 +617,19 @@ def test_resolve_git_dependency_from_branch(mocker: MockerFixture) -> None:
 
         mocker.patch("r3.repository.execute", new=patched_execute)
 
-        dependency = GitDependency(
-            repository=origin_url,
-            commit=None,
-            branch="main",
-            destination="destination",
-        )
+        dependency = GitDependency("destination", origin_url, branch="main")
         resolved_dependency = repository.resolve(dependency)
         assert isinstance(resolved_dependency, GitDependency)
         assert resolved_dependency.is_resolved()
         assert resolved_dependency.commit == main_commit
 
-        dependency = GitDependency(
-            repository=origin_url,
-            commit=None,
-            branch="branch",
-            destination="destination",
-        )
+        dependency = GitDependency("destination", origin_url, branch="branch")
         resolved_dependency = repository.resolve(dependency)
         assert isinstance(resolved_dependency, GitDependency)
         assert resolved_dependency.is_resolved()
         assert resolved_dependency.commit == branch_commit
 
-        dependency = GitDependency(
-            repository=origin_url,
-            commit=None,
-            branch="does-not-exist",
-            destination="destination",
-        )
+        dependency = GitDependency("destination", origin_url, branch="does-not-exist")
         with pytest.raises(ValueError):
             repository.resolve(dependency)
 
@@ -669,23 +650,13 @@ def test_resolve_git_dependency_from_tag(mocker: MockerFixture) -> None:
 
         mocker.patch("r3.repository.execute", new=patched_execute)
 
-        dependency = GitDependency(
-            repository=origin_url,
-            commit=None,
-            tag="test",
-            destination="destination",
-        )
+        dependency = GitDependency("destination", origin_url, tag="test")
         resolved_dependency = repository.resolve(dependency)
         assert isinstance(resolved_dependency, GitDependency)
         assert resolved_dependency.is_resolved()
         assert resolved_dependency.commit == tag_commit
 
-        dependency = GitDependency(
-            repository=origin_url,
-            commit=None,
-            tag="does-not-exist",
-            destination="destination",
-        )
+        dependency = GitDependency("destination", origin_url, tag="does-not-exist")
         with pytest.raises(ValueError):
             repository.resolve(dependency)
 
@@ -695,7 +666,7 @@ def test_resolve_job(fs: FakeFilesystem, repository: Repository) -> None:
     job.metadata["tags"] = ["test"]
     committed_job = repository.commit(job)
 
-    dependency = QueryDependency("#test", "destination")
+    dependency = QueryDependency("destination", "#test")
     job._dependencies = [dependency]
     job._config["dependencies"] = [dependency.to_config()]
 
