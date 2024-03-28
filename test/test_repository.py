@@ -4,6 +4,7 @@ import filecmp
 import os
 import stat
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Union
 
@@ -340,6 +341,18 @@ def test_commit_returns_the_updated_job(
     job = repository.commit(job)
     assert job.id is not None
     assert str(job.path).startswith(str(repository.path))
+
+
+def test_commit_sets_timestamp(fs: FakeFilesystem, repository: Repository) -> None:
+    before = datetime.now()
+
+    job = get_dummy_job(fs, "base")
+    job = repository.commit(job)
+
+    assert job.timestamp is not None
+    assert isinstance(job.timestamp, datetime)
+    assert job.timestamp >= before
+    assert job.timestamp <= datetime.now()
 
 
 def test_commit_copies_files_write_protected(

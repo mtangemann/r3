@@ -5,8 +5,6 @@ The `Repository` class should be imported not from this module but from the top-
 """
 
 import os
-import warnings
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Set, Union
 
@@ -26,9 +24,7 @@ from r3.job import (
 )
 from r3.storage import Storage
 
-R3_FORMAT_VERSION = "1.0.0-beta.6"
-
-DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
+R3_FORMAT_VERSION = "1.0.0-beta.7"
 
 
 class Repository:
@@ -156,10 +152,6 @@ class Repository:
         for dependency in job.dependencies:
             if dependency not in self:
                 raise ValueError(f"Missing dependency: {dependency}")
-
-        if "committed_at" in job.metadata:
-            warnings.warn("Overwriting `committed_at` in job metadata.", stacklevel=2)
-        job.metadata["committed_at"] = datetime.now().strftime(DATE_FORMAT)
 
         job = self._storage.add(job)
         self._index.add(job)

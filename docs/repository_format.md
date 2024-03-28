@@ -1,6 +1,6 @@
 # Repository Format
 
-Version: 1.0.0-beta.6
+Version: 1.0.0-beta.7
 
 This document describes the format that R3 uses internally for storing jobs. The format
 specification is intended to guide the development of R3's core features but is not part
@@ -62,6 +62,7 @@ for any interaction with repositories and stored jobs.
     match any file belonging to the job.
   - `hashes`: A dictionary apping paths to hashes (as specified aboce). The key `.`
     maps to the overall job hash.
+  - `timestamp`: The timestamp when the job was created as an ISO 8601 string.
 
 - The custom metadata file may contain arbitrary metadata. Tools building on R3 may
   further specify parts of the information provided in that file but should fail

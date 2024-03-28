@@ -6,6 +6,7 @@ import stat
 import tempfile
 import uuid
 import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Union
 
@@ -97,6 +98,7 @@ class Storage:
         if job_path.exists():
             raise FileExistsError(f"Congrats, you found a UUID collision: {job_id}")
 
+        job.timestamp = datetime.now()
         job.hash(recompute=True)
 
         for dependency in job.dependencies:

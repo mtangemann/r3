@@ -1,16 +1,13 @@
 import abc
 import os
 import re
-import warnings
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import yaml
 
 import r3.utils
-
-DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
 
 class Job:
@@ -67,27 +64,21 @@ class Job:
             yaml.dump(self.metadata, metadata_file)
 
     @property
-    def datetime(self) -> Optional[datetime]:
+    def timestamp(self) -> Optional[datetime]:
         """Returns the date and time when this job was committed.
         
         Returns:
             A datetime object representing the date and time when this job was
             committed. If the job is not committed, this returns `None`.
         """
-        if "committed_at" in self.metadata:
-            return datetime.strptime(self.metadata["committed_at"], DATE_FORMAT)
-
-        if self.id is not None:
-            # REVIEW: This is deprecated. Can we remove this?
-            warnings.warn(
-                "Job metadata doesn't include `committed_at`. Falling back to using "
-                "the directory creation data (deprecated).",
-                stacklevel=2,
-            )
-            timestamp = self.path.stat().st_ctime
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        if "timestamp" in self._config:
+            return datetime.fromisoformat(self._config["timestamp"])
         
         return None
+
+    @timestamp.setter
+    def timestamp(self, timestamp: datetime) -> None:
+        self._config["timestamp"] = timestamp.isoformat()
 
     # REVIEW: Replace with a method that returns an iterator?
     @property
