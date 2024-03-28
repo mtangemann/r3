@@ -246,7 +246,7 @@ class Storage:
 
             else:
                 # https://stackoverflow.com/a/43136160
-                origin = str(self.root / dependency.repository_path / ".git")
+                origin = str(self.root / dependency.repository_path)
                 commands = " && ".join([
                     "git init",
                     f"git remote add origin {origin}",
