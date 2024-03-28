@@ -300,7 +300,7 @@ class Repository:
             raise ValueError(f"Cannot resolve dependency: {dependency.query}")
 
         return JobDependency(
-            result[0], dependency.destination, dependency.source, dependency.query
+            dependency.destination, result[0], dependency.source, dependency.query
         )
 
     def _resolve_query_all_dependency(
@@ -322,7 +322,7 @@ class Repository:
         for job in result:
             assert job.id is not None
             resolved_dependencies.append(JobDependency(
-                job, dependency.destination / job.id, query_all=dependency.query_all)
+                dependency.destination / job.id, job, query_all=dependency.query_all)
             )
 
         return resolved_dependencies
@@ -346,8 +346,8 @@ class Repository:
             commit = r3.utils.git_get_remote_head(repository_path)
         
         return GitDependency(
+            dependency.destination,
             dependency.repository,
             commit,
-            destination=dependency.destination,
             source=dependency.source,
         )

@@ -360,19 +360,19 @@ def test_checkout_job_dependency_symlinks_files(fs: FakeFilesystem):
     job = storage.add(job)
     assert job.id is not None
 
-    dependency = JobDependency(job.id, "destination")
+    dependency = JobDependency("destination", job.id)
     fs.makedir("/checkout1")
     storage.checkout_job_dependency(dependency, "/checkout1")
     assert Path("/checkout1/destination").is_symlink()
     assert Path("/checkout1/destination").resolve() == job.path.resolve()
 
-    dependency = JobDependency(job.id, "original_run.py", "run.py")
+    dependency = JobDependency("original_run.py", job.id, "run.py")
     fs.makedir("/checkout2")
     storage.checkout_job_dependency(dependency, "/checkout2")
     assert Path("/checkout2/original_run.py").is_symlink()
     assert Path("/checkout2/original_run.py").resolve() == job.path.resolve() / "run.py"
 
-    dependency = JobDependency(job.id, "destination", "output")
+    dependency = JobDependency("destination", job.id, "output")
     fs.makedir("/checkout3")
     storage.checkout_job_dependency(dependency, "/checkout3")
     assert Path("/checkout3/destination").is_symlink()

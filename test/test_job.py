@@ -215,7 +215,7 @@ def test_job_dependency_to_config():
 
 
 def test_job_dependency_hash_does_not_depend_on_destination() -> None:
-    dependency = r3.JobDependency(str(uuid.uuid4()), Path("data"))
+    dependency = r3.JobDependency(Path("data"), str(uuid.uuid4()))
 
     original_hash = dependency.hash()
 
@@ -386,9 +386,9 @@ def test_git_dependency_to_config():
 
 def test_git_dependency_hash_does_not_depend_on_destination() -> None:
     dependency = r3.GitDependency(
+        Path("model"),
         "https://github.com/user/model.git",
         "2ef52fde13642372a262fd9618159fe72835c813",
-        Path("model"),
     )
 
     original_hash = dependency.hash()
@@ -399,15 +399,14 @@ def test_git_dependency_hash_does_not_depend_on_destination() -> None:
 
 def test_git_dependency_is_resolved_if_commit_is_not_none() -> None:
     dependency = r3.GitDependency(
+        Path("model"),
         "https://github.com/user/model.git",
         "2ef52fde13642372a262fd9618159fe72835c813",
-        Path("model"),
     )
     assert dependency.is_resolved()
 
     dependency = r3.GitDependency(
+        Path("model"),
         "https://github.com/user/model.git",
-        None,
-        destination=Path("model"),
     )
     assert not dependency.is_resolved()

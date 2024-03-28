@@ -217,8 +217,8 @@ class JobDependency(Dependency):
 
     def __init__(
         self,
-        job: Union[Job, str],
         destination: Union[os.PathLike, str],
+        job: Union[Job, str],
         source: Union[os.PathLike, str] = ".",
         query: Optional[str] = None,
         query_all: Optional[str] = None,
@@ -306,8 +306,8 @@ class QueryDependency(Dependency):
 
     def __init__(
         self,
-        query: str,
         destination: Union[os.PathLike, str],
+        query: str,
         source: Union[os.PathLike, str] = ".",
     ) -> None:
         """Initializes the query dependency.
@@ -374,8 +374,8 @@ class QueryAllDependency(Dependency):
 
     def __init__(
         self,
+        destination: Union[os.PathLike, str],
         query_all: str,
-        destination: Union[os.PathLike, str]
     ) -> None:
         """Initializes the query all dependency.
 
@@ -442,9 +442,9 @@ class GitDependency(Dependency):
 
     def __init__(
         self,
-        repository: str,
-        commit: Optional[str],
         destination: Union[os.PathLike, str],
+        repository: str,
+        commit: Optional[str] = None,
         source: Union[os.PathLike, str] = "",
         branch: Optional[str] = None,
         tag: Optional[str] = None,

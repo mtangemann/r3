@@ -40,7 +40,7 @@ def storage_with_jobs(fs: FakeFilesystem) -> Storage:
     committed_job = storage.add(job)
 
     job._config["dependencies"] = [
-        JobDependency(committed_job, "previous_job").to_config()
+        JobDependency("previous_job", committed_job).to_config()
     ]
     job.metadata["tags"] = ["test", "test-latest"]
     job.timestamp = datetime.datetime(2021, 1, 3, 0, 0, 0)
