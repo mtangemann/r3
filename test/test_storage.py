@@ -9,6 +9,7 @@ import pytest
 import yaml
 from executor import execute
 from pyfakefs.fake_filesystem import FakeFilesystem
+from pytest_mock import MockerFixture
 
 from r3.job import GitDependency, Job, JobDependency
 from r3.storage import Storage
@@ -316,7 +317,9 @@ def test_checkout_job_checks_out_job_dependencies(fs: FakeFilesystem):
     assert calls_to_checkout[0][1] == checkout_path
 
 
-def test_checkout_job_checks_out_git_dependencies(fs: FakeFilesystem):
+def test_checkout_job_checks_out_git_dependencies(
+    fs: FakeFilesystem, mocker: MockerFixture,
+):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
 
@@ -326,6 +329,13 @@ def test_checkout_job_checks_out_git_dependencies(fs: FakeFilesystem):
         "commit": "123abc",
         "destination": "dependency_path",
     }]
+
+    # Prevent calling `git tag` when using the fake filesystem.
+    def patched_execute(command: str, **kwargs):
+        if command.startswith("git tag"):
+            return
+        return execute(command, **kwargs)
+    mocker.patch("r3.storage.execute", new=patched_execute)
 
     committed_job = storage.add(original_job)
 
@@ -350,19 +360,19 @@ def test_checkout_job_dependency_symlinks_files(fs: FakeFilesystem):
     job = storage.add(job)
     assert job.id is not None
 
-    dependency = JobDependency(job.id, "destination")
+    dependency = JobDependency("destination", job.id)
     fs.makedir("/checkout1")
     storage.checkout_job_dependency(dependency, "/checkout1")
     assert Path("/checkout1/destination").is_symlink()
     assert Path("/checkout1/destination").resolve() == job.path.resolve()
 
-    dependency = JobDependency(job.id, "original_run.py", "run.py")
+    dependency = JobDependency("original_run.py", job.id, "run.py")
     fs.makedir("/checkout2")
     storage.checkout_job_dependency(dependency, "/checkout2")
     assert Path("/checkout2/original_run.py").is_symlink()
     assert Path("/checkout2/original_run.py").resolve() == job.path.resolve() / "run.py"
 
-    dependency = JobDependency(job.id, "destination", "output")
+    dependency = JobDependency("destination", job.id, "output")
     fs.makedir("/checkout3")
     storage.checkout_job_dependency(dependency, "/checkout3")
     assert Path("/checkout3/destination").is_symlink()

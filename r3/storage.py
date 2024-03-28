@@ -6,6 +6,7 @@ import stat
 import tempfile
 import uuid
 import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Union
 
@@ -97,7 +98,16 @@ class Storage:
         if job_path.exists():
             raise FileExistsError(f"Congrats, you found a UUID collision: {job_id}")
 
+        job.timestamp = datetime.now()
         job.hash(recompute=True)
+
+        for dependency in job.dependencies:
+            if isinstance(dependency, GitDependency):
+                repository_path = self.root / dependency.repository_path
+                execute(
+                    f"git tag r3/{job_id} {dependency.commit}",
+                    directory=repository_path,
+                )
 
         os.mkdir(job_path)
         os.mkdir(job_path / "output")
@@ -238,7 +248,7 @@ class Storage:
 
             else:
                 # https://stackoverflow.com/a/43136160
-                origin = str(self.root / dependency.repository_path / ".git")
+                origin = str(self.root / dependency.repository_path)
                 commands = " && ".join([
                     "git init",
                     f"git remote add origin {origin}",

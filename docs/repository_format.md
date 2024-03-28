@@ -1,6 +1,6 @@
 # Repository Format
 
-Version: 1.0.0-beta.5
+Version: 1.0.0-beta.7
 
 This document describes the format that R3 uses internally for storing jobs. The format
 specification is intended to guide the development of R3's core features but is not part
@@ -17,8 +17,8 @@ for any interaction with repositories and stored jobs.
   - `jobs/`: Committed jobs.
 
 - The `git` directory contains cloned git repositories, structured by their url (e.g.,
-  `git/github.com/mtangemann/r3`). Repositories may be pulled, but only if no commit is
-  removed that any job depends on.
+  `git/github.com/mtangemann/r3`). All clones are bare repositories. A lightweight tag
+  `r3/$job_id` is present for each commit that is used by a job.
 
 - The `jobs` directory contains all committed jobs structured by their uuid (i.e. 
   `jobs/$uuid/`). Each job is assigned a uuid version 4 when committed to the
@@ -62,6 +62,7 @@ for any interaction with repositories and stored jobs.
     match any file belonging to the job.
   - `hashes`: A dictionary apping paths to hashes (as specified aboce). The key `.`
     maps to the overall job hash.
+  - `timestamp`: The timestamp when the job was created as an ISO 8601 string.
 
 - The custom metadata file may contain arbitrary metadata. Tools building on R3 may
   further specify parts of the information provided in that file but should fail

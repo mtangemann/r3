@@ -4,7 +4,9 @@ import filecmp
 import os
 import stat
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from typing import Union
 
 import pytest
 import yaml
@@ -22,6 +24,42 @@ from r3.job import (
 from r3.repository import Repository
 
 DATA_PATH = Path(__file__).parent / "data"
+
+
+class ExampleGitRepository:
+    def __init__(self, path: Union[str, Path]) -> None:
+        self.path = Path(path)
+        execute(f"git init {self.path}")
+        with open(self.path / "test.txt", "w") as file:
+            file.write("original content")
+        execute("git add test.txt", directory=self.path)
+        execute("git commit -m 'Initial commit'", directory=self.path)
+
+    def head_commit(self) -> str:
+        return execute("git rev-parse HEAD", directory=self.path, capture=True).strip()
+
+    def update(self) -> None:
+        execute("git switch main", directory=self.path)
+        with open(self.path / "test.txt", "w") as file:
+            file.write("updated content")
+        execute("git add test.txt", directory=self.path)
+        execute("git commit -m 'Update'", directory=self.path)
+
+    def update_branch(self) -> None:
+        execute("git checkout -b branch", directory=self.path)
+        with open(self.path / "test.txt", "w") as file:
+            file.write("branch content")
+        execute("git add test.txt", directory=self.path)
+        execute("git commit -m 'Branch commit'", directory=self.path)
+
+    def force_update(self) -> None:
+        with open(self.path / "test.txt", "w") as file:
+            file.write("forced content")
+        execute("git add test.txt", directory=self.path)
+        execute("git commit --amend -m 'Force update'", directory=self.path)
+    
+    def add_tag(self, tag: str) -> None:
+        execute(f"git tag {tag} -m 'Test tag'", directory=self.path)
 
 
 @pytest.fixture
@@ -93,62 +131,158 @@ def test_repository_contains_job_calls_storage_contains(
 def test_repository_contains_job_dependency(fs: FakeFilesystem) -> None:
     repository = Repository.init("/repository")
 
-    dependency = JobDependency("123abc", "destination")
+    dependency = JobDependency("destination", "123abc")
     assert dependency not in repository
 
     job = get_dummy_job(fs, "base")
     job = repository.commit(job)
     assert job.id is not None
 
-    dependency = JobDependency(job.id, "destination")
+    dependency = JobDependency("destination", job.id)
     assert dependency in repository
 
-    dependency = JobDependency(job.id, "destination.py", "run.py")
+    dependency = JobDependency("destination.py", job.id, "run.py")
     assert dependency in repository
 
-    dependency = JobDependency(job.id, "destination.py", "does_not_exist.py")
+    dependency = JobDependency("destination.py", job.id, "does_not_exist.py")
     assert dependency not in repository
 
 
-def test_repository_contains_git_dependency() -> None:
+def test_repository_contains_git_dependency_clones_repository(
+    mocker: MockerFixture,
+) -> None:
+    # If the repository specified by a GitDependency does not exist locally yet, the
+    # __contains__ method should clone the repository before checking whether the
+    # commit exists.
     with tempfile.TemporaryDirectory() as tempdir:
-        repository = Repository.init(f"{tempdir}/repository")
-
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        repository = Repository.init(f"{tempdir}/r3")
         dependency = GitDependency(
-            repository="https://github.com/mtangemann/r3.git",
-            commit="c2397aac3fbdca682150faf721098b6f5a47806b",
+            repository=origin_url,
+            commit=origin.head_commit(),
             destination="destination",
         )
+
+        git_clone_called = False
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            nonlocal git_clone_called
+            if command.startswith("git clone"):
+                git_clone_called = True
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        assert dependency in repository
+        assert git_clone_called
+
+        git_clone_called = False
+        assert dependency in repository
+        assert not git_clone_called
+
+
+def test_repository_contains_git_dependency_fetches_all_branches(
+    mocker: MockerFixture,
+) -> None:
+    # If the commit specified by a GitDependency does not exists locally yet, the
+    # __contains__ method should fetch all branches before checking whether the commit
+    # exists.
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        repository = Repository.init(f"{tempdir}/r3")
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=origin.head_commit(),
+            destination="destination",
+        )
+
+        git_fetch_called = False
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            nonlocal git_fetch_called
+            if command.startswith("git fetch"):
+                git_fetch_called = True
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        assert dependency in repository
+        assert not git_fetch_called
+
+        origin.update()
+        dependency.commit = origin.head_commit()
+
+        assert dependency in repository
+        assert git_fetch_called
+        git_fetch_called = False
+
+        origin.update_branch()
+        dependency.commit = origin.head_commit()
+        assert dependency in repository
+        assert git_fetch_called
+        git_fetch_called = False
+
+        dependency.commit = "does-not-exist"
+        assert dependency not in repository
+        assert git_fetch_called
+
+
+def test_repository_contains_git_dependency_fails_if_commit_does_not_exist(
+    mocker: MockerFixture,
+) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        repository = Repository.init(f"{tempdir}/r3")
+        dependency = GitDependency(
+            repository=origin_url,
+            commit="does-not-exist",
+            destination="destination",
+        )
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
         assert dependency not in repository
 
-        r3_path = Path(__file__).parent.parent
-        assert (r3_path / ".git").is_dir()
-        repository_path = Path(f"{tempdir}/repository/git/github.com/mtangemann/r3")
-        execute(f"git clone {r3_path} {repository_path}")
+
+def test_repository_contains_git_dependency_checks_whether_source_exists(
+    mocker: MockerFixture,
+) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        repository = Repository.init(f"{tempdir}/r3")
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=origin.head_commit(),
+            source="test.txt",
+            destination="destination.txt",
+        )
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
 
         assert dependency in repository
 
-        dependency = GitDependency(
-            repository="https://github.com/mtangemann/r3.git",
-            commit="c2397aac3fbdca682150faf721098b6f5a47806b",
-            destination="destination.py",
-            source="test/test_repository.py",
-        )
-        assert dependency in repository
-
-        dependency = GitDependency(
-            repository="https://github.com/mtangemann/r3.git",
-            commit="c2397aac3fbdca682150faf721098b6f5a47806b",
-            destination="destination.py",
-            source="does_not_exist.py",
-        )
+        dependency.source = Path("does-not-exist.txt")
         assert dependency not in repository
 
 
 def test_repository_contains_query_dependency(fs: FakeFilesystem) -> None:
     repository = Repository.init("/repository")
 
-    dependency = QueryDependency("#test", "destination")
+    dependency = QueryDependency("destination", "#test")
     assert dependency not in repository
 
     job = get_dummy_job(fs, "base")
@@ -157,20 +291,20 @@ def test_repository_contains_query_dependency(fs: FakeFilesystem) -> None:
 
     assert dependency in repository
 
-    dependency = QueryDependency("#test #does-not-exist", "destination")
+    dependency = QueryDependency("destination", "#test #does-not-exist")
     assert dependency not in repository
 
-    dependency = QueryDependency("#test", "destination.py", "run.py")
+    dependency = QueryDependency("destination.py", "#test", "run.py")
     assert dependency in repository
 
-    dependency = QueryDependency("#test", "destination.py", "does_not_exist.py")
+    dependency = QueryDependency("destination.py", "#test", "does_not_exist.py")
     assert dependency not in repository
 
 
 def test_repository_contains_query_all_dependency(fs: FakeFilesystem) -> None:
     repository = Repository.init("/repository")
 
-    dependency = QueryAllDependency("#test", "destination")
+    dependency = QueryAllDependency("destination", "#test")
     assert dependency not in repository
 
     job = get_dummy_job(fs, "base")
@@ -207,6 +341,18 @@ def test_commit_returns_the_updated_job(
     job = repository.commit(job)
     assert job.id is not None
     assert str(job.path).startswith(str(repository.path))
+
+
+def test_commit_sets_timestamp(fs: FakeFilesystem, repository: Repository) -> None:
+    before = datetime.now()
+
+    job = get_dummy_job(fs, "base")
+    job = repository.commit(job)
+
+    assert job.timestamp is not None
+    assert isinstance(job.timestamp, datetime)
+    assert job.timestamp >= before
+    assert job.timestamp <= datetime.now()
 
 
 def test_commit_copies_files_write_protected(
@@ -252,6 +398,59 @@ def test_commit_copies_nested_files(
     )
 
 
+def test_commit_adds_git_tags_to_prevent_garbage_collection(
+    mocker: MockerFixture,
+) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        origin.update()
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        dependency = GitDependency(
+            repository=origin_url,
+            commit=origin.head_commit(),
+            destination="destination",
+        )
+
+        job_path = Path(tempdir) / "job"
+        job_path.mkdir()
+        with open(job_path / "r3.yaml", "w") as file:
+            yaml.dump({"dependencies": [dependency.to_config()]}, file)
+        with open(job_path / "run.py", "w") as file:
+            file.write("print('Hello, world!')")
+        job = Job(job_path)
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        job = repository.commit(job)
+
+        clone_path = repository.path / dependency.repository_path
+        tags = execute("git tag", directory=clone_path, capture=True)
+        assert f"r3/{job.id}" in tags.splitlines()
+        ref = execute(f"git rev-parse r3/{job.id}", directory=clone_path, capture=True)
+        assert ref.strip() == dependency.commit
+
+        origin.force_update()
+
+        updated_dependency = GitDependency(
+            repository=origin_url,
+            commit=origin.head_commit(),
+            destination="destination",
+        )
+        assert updated_dependency in repository
+
+        execute("git gc --prune=now", directory=clone_path)
+
+        assert updated_dependency in repository
+        assert dependency in repository
+
+
 def test_repository_remove_fails_if_other_jobs_depend_on_job(
     fs: FakeFilesystem, repository: Repository
 ) -> None:
@@ -260,7 +459,7 @@ def test_repository_remove_fails_if_other_jobs_depend_on_job(
     job = repository.commit(base_job)
     assert job.id is not None
 
-    dependency = JobDependency(job.id, "destination")
+    dependency = JobDependency("destination", job.id)
     base_job._dependencies = [dependency]
     base_job._config["dependencies"] = [dependency.to_config()]
     dependent_job = repository.commit(base_job)
@@ -272,18 +471,79 @@ def test_repository_remove_fails_if_other_jobs_depend_on_job(
     repository.remove(job)
 
 
+def test_find_dependents_requires_job_id(
+    fs: FakeFilesystem, repository: Repository,
+) -> None:
+    job = get_dummy_job(fs, "base")
+    job = repository.commit(job)
+
+    repository.find_dependents(job)
+
+    job.id = None
+    with pytest.raises(ValueError):
+        repository.find_dependents(job)
+
+
+def test_find_dependents(fs: FakeFilesystem, repository: Repository) -> None:
+    job1 = get_dummy_job(fs, "base")
+    job1 = repository.commit(job1)
+    assert job1.id is not None
+
+    job2 = get_dummy_job(fs, "base")
+    dependency = JobDependency("destination1", job1.id)
+    job2._dependencies = [dependency]
+    job2._config["dependencies"] = [dependency.to_config()]
+    job2 = repository.commit(job2)
+    assert job2.id is not None
+
+    job3 = get_dummy_job(fs, "base")
+    dependency = JobDependency("destination2", job1.id)
+    job3._dependencies = [dependency]
+    job3._config["dependencies"] = [dependency.to_config()]
+    job3 = repository.commit(job3)
+    assert job3.id is not None
+
+    job4 = get_dummy_job(fs, "base")
+    dependency = JobDependency("destination3", job2.id)
+    job4._dependencies = [dependency]
+    job4._config["dependencies"] = [dependency.to_config()]
+    dependency = JobDependency("destination4", job3.id)
+    job4._dependencies.append(dependency)
+    job4._config["dependencies"].append(dependency.to_config())
+    job4 = repository.commit(job4)
+
+    dependents = repository.find_dependents(job4)
+    assert len(dependents) == 0
+
+    dependents = repository.find_dependents(job3)
+    assert len(dependents) == 1
+    assert {dependent.id for dependent in dependents} == {job4.id}
+
+    dependents = repository.find_dependents(job2)
+    assert len(dependents) == 1
+    assert {dependent.id for dependent in dependents} == {job4.id}
+
+    dependents = repository.find_dependents(job1)
+    assert len(dependents) == 2
+    assert {dependent.id for dependent in dependents} == {job2.id, job3.id}
+
+    dependents = repository.find_dependents(job1, recursive=True)
+    assert len(dependents) == 3
+    assert {dependent.id for dependent in dependents} == {job2.id, job3.id, job4.id}
+
+
 def test_resolve_query_dependency(fs: FakeFilesystem, repository: Repository) -> None:
     job = get_dummy_job(fs, "base")
     job.metadata["tags"] = ["test"]
     job = repository.commit(job)
 
-    dependency = QueryDependency("#test", "destination")
+    dependency = QueryDependency("destination", "#test")
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == job.id
 
     with pytest.raises(ValueError):
-        repository.resolve(QueryDependency("#does-not-exist", "destination"))
+        repository.resolve(QueryDependency("destination", "#does-not-exist"))
 
 
 def test_resolve_query_all_dependency(
@@ -294,7 +554,7 @@ def test_resolve_query_all_dependency(
     job.metadata["tags"] = ["test"]
     commited_job_1 = repository.commit(job)
 
-    dependency = QueryAllDependency("#test", "destination")
+    dependency = QueryAllDependency("destination", "#test")
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, list)
     assert len(resolved_dependency) == 1
@@ -312,12 +572,101 @@ def test_resolve_query_all_dependency(
     }
 
 
+def test_resolve_git_dependency_from_url(mocker: MockerFixture) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        dependency = GitDependency("destination", origin_url)
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == origin.head_commit()
+
+        origin.update()
+
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == origin.head_commit()
+
+
+def test_resolve_git_dependency_from_branch(mocker: MockerFixture) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        origin.update_branch()
+        branch_commit = origin.head_commit()
+        origin.update()
+        main_commit = origin.head_commit()
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        dependency = GitDependency("destination", origin_url, branch="main")
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == main_commit
+
+        dependency = GitDependency("destination", origin_url, branch="branch")
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == branch_commit
+
+        dependency = GitDependency("destination", origin_url, branch="does-not-exist")
+        with pytest.raises(ValueError):
+            repository.resolve(dependency)
+
+
+def test_resolve_git_dependency_from_tag(mocker: MockerFixture) -> None:
+    with tempfile.TemporaryDirectory() as tempdir:
+        origin_url = "git@github.com:mtangemann/origin.git"
+        origin = ExampleGitRepository(f"{tempdir}/origin")
+        origin.add_tag("test")
+        tag_commit = origin.head_commit()
+        origin.update()
+
+        repository = Repository.init(f"{tempdir}/r3")
+
+        def patched_execute(command, **kwargs):
+            command = command.replace(origin_url, str(origin.path))
+            return execute(command, **kwargs)
+
+        mocker.patch("r3.repository.execute", new=patched_execute)
+
+        dependency = GitDependency("destination", origin_url, tag="test")
+        resolved_dependency = repository.resolve(dependency)
+        assert isinstance(resolved_dependency, GitDependency)
+        assert resolved_dependency.is_resolved()
+        assert resolved_dependency.commit == tag_commit
+
+        dependency = GitDependency("destination", origin_url, tag="does-not-exist")
+        with pytest.raises(ValueError):
+            repository.resolve(dependency)
+
+
 def test_resolve_job(fs: FakeFilesystem, repository: Repository) -> None:
     job = get_dummy_job(fs, "base")
     job.metadata["tags"] = ["test"]
     committed_job = repository.commit(job)
 
-    dependency = QueryDependency("#test", "destination")
+    dependency = QueryDependency("destination", "#test")
     job._dependencies = [dependency]
     job._config["dependencies"] = [dependency.to_config()]
 

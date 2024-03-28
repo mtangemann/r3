@@ -1,14 +1,12 @@
 """Job index for efficient searching."""
 
 import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import yaml
 
 from r3.job import Job
 from r3.storage import Storage
-
-DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
 
 class Index:
@@ -51,11 +49,11 @@ class Index:
 
         # Both should be set for jobs in the storage.
         assert job.id is not None
-        assert job.datetime is not None
+        assert job.timestamp is not None
 
         self._entries[job.id] = {
             "tags": job.metadata.get("tags", []),
-            "datetime": job.datetime.strftime(DATE_FORMAT),
+            "timestamp": job.timestamp.isoformat(),
             "dependencies": [
                 dependency.to_config() for dependency in job.dependencies
             ],
@@ -99,30 +97,43 @@ class Index:
 
         if latest:
             def key(job: Job) -> datetime.datetime:
-                assert job.datetime is not None
-                return job.datetime
+                assert job.timestamp is not None
+                return job.timestamp
             jobs = sorted(jobs, key=key, reverse=True)
             jobs = [jobs[0]] if len(jobs) > 0 else []
 
         return jobs
 
-    def find_dependents(self, job: Job) -> List[Job]:
+    def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that directly depend on the given job.
 
         Parameters:
             job: The job to find dependents for.
+            recursive: Whether to find dependents recursively.
         
         Returns:
             The jobs that directly depend on the given job.
         """
-        dependents = list()
+        if job.id is None:
+            raise ValueError("Job ID is not set")
+
+        dependents = dict()
 
         for job_id, job_info in self._entries.items():
             for dependency in job_info["dependencies"]:
                 if "job" in dependency and dependency["job"] == job.id:
-                    dependents.append(self.storage.get(job_id))
+                    dependents[job_id] = self.storage.get(job_id)
 
-        return dependents
+                    if recursive:
+                        indirect_dependents = self.find_dependents(
+                            dependents[job_id], recursive=True
+                        )
+                        dependents.update({
+                            dependent.id: dependent  # type: ignore
+                            for dependent in indirect_dependents
+                        })
+
+        return set(dependents.values())
 
     def rebuild(self) -> None:
         """Rebuilds the index from the storage."""

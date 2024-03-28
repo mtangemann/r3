@@ -1,5 +1,6 @@
 """Unit tests for `r3.index`."""
 
+import datetime
 from pathlib import Path
 
 import pytest
@@ -31,18 +32,18 @@ def storage_with_jobs(fs: FakeFilesystem) -> Storage:
 
     job = get_dummy_job(fs, "base")
     job.metadata["tags"] = ["test"]
-    job.metadata["committed_at"] = "2021-01-01 00:00:00"
+    job.timestamp = datetime.datetime(2021, 1, 1, 0, 0, 0)
     storage.add(job)
 
     job.metadata["tags"] = ["test", "test-again"]
-    job.metadata["committed_at"] = "2021-01-02 00:00:00"
+    job.timestamp = datetime.datetime(2021, 1, 2, 0, 0, 0)
     committed_job = storage.add(job)
 
     job._config["dependencies"] = [
-        JobDependency(committed_job, "previous_job").to_config()
+        JobDependency("previous_job", committed_job).to_config()
     ]
     job.metadata["tags"] = ["test", "test-latest"]
-    job.metadata["committed_at"] = "2021-01-03 00:00:00"
+    job.timestamp = datetime.datetime(2021, 1, 3, 0, 0, 0)
     storage.add(job)
 
     return storage
@@ -141,7 +142,7 @@ def test_index_find_dependents(storage_with_jobs: Storage):
     job = index.find(["test-again"], latest=True)[0]
     dependents = index.find_dependents(job)
     assert len(dependents) == 1
-    assert "test-latest" in dependents[0].metadata["tags"]
+    assert "test-latest" in next(iter(dependents)).metadata["tags"]
 
     job = index.find(["test-latest"], latest=True)[0]
     dependents = index.find_dependents(job)

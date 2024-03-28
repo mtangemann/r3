@@ -68,20 +68,12 @@ def test_job_save_metadata_creates_metadata_yaml(fs: FakeFilesystem) -> None:
         assert yaml.safe_load(metadata_file) == job.metadata
 
 
-def test_job_datetime_returns_none_if_id_is_none() -> None:
-    job_path = DATA_PATH / "jobs" / "base"
-    job = r3.Job(job_path)
-    job.metadata = {"datetime": "2024-02-11 23:29:10"}
-
-    assert job.datetime is None
-
-
 def test_job_datetime_returns_datetime_from_metadata_if_id_is_not_none() -> None:
     job_path = DATA_PATH / "jobs" / "base"
     job = r3.Job(job_path, str(uuid.uuid4()))
-    job.metadata = {"committed_at": "2024-02-11 23:29:10"}
+    job._config["timestamp"] = "2024-02-11 23:29:10"
 
-    assert job.datetime == datetime.datetime(2024, 2, 11, 23, 29, 10)
+    assert job.timestamp == datetime.datetime(2024, 2, 11, 23, 29, 10)
 
 
 def test_job_hash_does_not_depend_on_metadata(fs: FakeFilesystem) -> None:
@@ -223,7 +215,7 @@ def test_job_dependency_to_config():
 
 
 def test_job_dependency_hash_does_not_depend_on_destination() -> None:
-    dependency = r3.JobDependency(str(uuid.uuid4()), Path("data"))
+    dependency = r3.JobDependency(Path("data"), str(uuid.uuid4()))
 
     original_hash = dependency.hash()
 
@@ -394,12 +386,27 @@ def test_git_dependency_to_config():
 
 def test_git_dependency_hash_does_not_depend_on_destination() -> None:
     dependency = r3.GitDependency(
+        Path("model"),
         "https://github.com/user/model.git",
         "2ef52fde13642372a262fd9618159fe72835c813",
-        Path("model"),
     )
 
     original_hash = dependency.hash()
 
     dependency.destination = Path("changed")
     assert dependency.hash() == original_hash
+
+
+def test_git_dependency_is_resolved_if_commit_is_not_none() -> None:
+    dependency = r3.GitDependency(
+        Path("model"),
+        "https://github.com/user/model.git",
+        "2ef52fde13642372a262fd9618159fe72835c813",
+    )
+    assert dependency.is_resolved()
+
+    dependency = r3.GitDependency(
+        Path("model"),
+        "https://github.com/user/model.git",
+    )
+    assert not dependency.is_resolved()

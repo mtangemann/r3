@@ -1,16 +1,13 @@
 import abc
 import os
 import re
-import warnings
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import yaml
 
 import r3.utils
-
-DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
 
 
 class Job:
@@ -67,27 +64,21 @@ class Job:
             yaml.dump(self.metadata, metadata_file)
 
     @property
-    def datetime(self) -> Optional[datetime]:
+    def timestamp(self) -> Optional[datetime]:
         """Returns the date and time when this job was committed.
         
         Returns:
             A datetime object representing the date and time when this job was
             committed. If the job is not committed, this returns `None`.
         """
-        if "committed_at" in self.metadata:
-            return datetime.strptime(self.metadata["committed_at"], DATE_FORMAT)
-
-        if self.id is not None:
-            # REVIEW: This is deprecated. Can we remove this?
-            warnings.warn(
-                "Job metadata doesn't include `committed_at`. Falling back to using "
-                "the directory creation data (deprecated).",
-                stacklevel=2,
-            )
-            timestamp = self.path.stat().st_ctime
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        if "timestamp" in self._config:
+            return datetime.fromisoformat(self._config["timestamp"])
         
         return None
+
+    @timestamp.setter
+    def timestamp(self, timestamp: datetime) -> None:
+        self._config["timestamp"] = timestamp.isoformat()
 
     # REVIEW: Replace with a method that returns an iterator?
     @property
@@ -226,8 +217,8 @@ class JobDependency(Dependency):
 
     def __init__(
         self,
-        job: Union[Job, str],
         destination: Union[os.PathLike, str],
+        job: Union[Job, str],
         source: Union[os.PathLike, str] = ".",
         query: Optional[str] = None,
         query_all: Optional[str] = None,
@@ -315,8 +306,8 @@ class QueryDependency(Dependency):
 
     def __init__(
         self,
-        query: str,
         destination: Union[os.PathLike, str],
+        query: str,
         source: Union[os.PathLike, str] = ".",
     ) -> None:
         """Initializes the query dependency.
@@ -383,8 +374,8 @@ class QueryAllDependency(Dependency):
 
     def __init__(
         self,
+        destination: Union[os.PathLike, str],
         query_all: str,
-        destination: Union[os.PathLike, str]
     ) -> None:
         """Initializes the query all dependency.
 
@@ -451,10 +442,12 @@ class GitDependency(Dependency):
 
     def __init__(
         self,
-        repository: str,
-        commit: str,
         destination: Union[os.PathLike, str],
+        repository: str,
+        commit: Optional[str] = None,
         source: Union[os.PathLike, str] = "",
+        branch: Optional[str] = None,
+        tag: Optional[str] = None,
     ) -> None:
         """Initializes the git dependency.
         
@@ -465,11 +458,21 @@ class GitDependency(Dependency):
             destination: Path relative to the job to which the repository will be
                 checked out.
             source: Path relative to the repository root to be checked out.
+            branch: Branch name. If no commit id is given, the dependency will be
+                resolved to the latest commit on this branch.
+            tag: Tag name. If no commit id is given, the dependency will be resolved to
+                the commit pointed to by this tag.
         """
+        if branch is not None and tag is not None:
+            raise ValueError("Cannot specify both branch and tag.")
+
         super().__init__(destination)
         self.source = Path(source)
         self.repository = repository
         self.commit = commit
+        self.branch = branch
+        self.tag = tag
+
 
     # REVIEW: This should not be a method of this class. Instead, the git manager in the
     #         repository class should be responsible for this.
@@ -517,16 +520,18 @@ class GitDependency(Dependency):
 
         See `from_config` for an example.
         """
-        return {
+        config = {
             "repository": self.repository,
-            "commit": self.commit,
             "source": str(self.source),
             "destination": str(self.destination),
         }
+        if self.commit is not None:
+            config["commit"] = self.commit
+        return config
 
     def is_resolved(self) -> bool:
         """Returns `True` if the dependency is resolved."""
-        return True
+        return self.commit is not None
 
     def hash(self) -> str:
         """Returns the hash of the dependency."""

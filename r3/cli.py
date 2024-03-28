@@ -143,8 +143,8 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
     repository = r3.Repository(repository_path)
     for job in repository.find(tags, latest):
         if long:
-            assert job.datetime is not None
-            datetime = job.datetime.strftime(r"%Y-%m-%d %H:%M:%S")
+            assert job.timestamp is not None
+            datetime = job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S")
             tags = " ".join(f"#{tag}" for tag in job.metadata.get("tags", []))
             print(f"{job.id} | {datetime} | {tags}")
         else:
