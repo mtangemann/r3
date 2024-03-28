@@ -8,8 +8,6 @@ import yaml
 from r3.job import Job
 from r3.storage import Storage
 
-DATE_FORMAT = r"%Y-%m-%d %H:%M:%S"
-
 
 class Index:
     """Job index for efficient searching."""
@@ -51,11 +49,11 @@ class Index:
 
         # Both should be set for jobs in the storage.
         assert job.id is not None
-        assert job.datetime is not None
+        assert job.timestamp is not None
 
         self._entries[job.id] = {
             "tags": job.metadata.get("tags", []),
-            "datetime": job.datetime.strftime(DATE_FORMAT),
+            "timestamp": job.timestamp.isoformat(),
             "dependencies": [
                 dependency.to_config() for dependency in job.dependencies
             ],
@@ -99,8 +97,8 @@ class Index:
 
         if latest:
             def key(job: Job) -> datetime.datetime:
-                assert job.datetime is not None
-                return job.datetime
+                assert job.timestamp is not None
+                return job.timestamp
             jobs = sorted(jobs, key=key, reverse=True)
             jobs = [jobs[0]] if len(jobs) > 0 else []
 
