@@ -4,7 +4,6 @@ import datetime
 from pathlib import Path
 
 import pytest
-from pyfakefs.fake_filesystem import FakeFilesystem
 
 from r3.index import Index
 from r3.job import Job, JobDependency
@@ -14,23 +13,21 @@ DATA_PATH = Path(__file__).parent / "data"
 
 
 # REVIEW: This should be offered centrally.
-def get_dummy_job(fs: FakeFilesystem, name: str) -> Job:
+def get_dummy_job(name: str) -> Job:
     path = DATA_PATH / "jobs" / name
-    fs.add_real_directory(path, read_only=True)
     return Job(path)
 
 
 @pytest.fixture
-def storage(fs: FakeFilesystem) -> Storage:
-    fs.create_dir("/repository")
-    return Storage.init("/repository")
+def storage(tmp_path) -> Storage:
+    return Storage.init(tmp_path / "repository")
 
 
 @pytest.fixture
-def storage_with_jobs(fs: FakeFilesystem) -> Storage:
-    storage = Storage.init("/repository")
+def storage_with_jobs(tmp_path) -> Storage:
+    storage = Storage.init(tmp_path / "repository")
 
-    job = get_dummy_job(fs, "base")
+    job = get_dummy_job("base")
     job.metadata["tags"] = ["test"]
     job.timestamp = datetime.datetime(2021, 1, 1, 0, 0, 0)
     storage.add(job)
@@ -49,75 +46,53 @@ def storage_with_jobs(fs: FakeFilesystem) -> Storage:
     return storage
 
 
-def test_index_defaults_to_empty(fs: FakeFilesystem, storage: Storage):
+def test_index_defaults_to_empty(storage: Storage):
     index = Index(storage)
-    assert len(index._entries) == 0
+    assert len(index) == 0
 
 
-def test_index_add_raises_if_job_not_in_storage(fs: FakeFilesystem, storage: Storage):
+def test_index_add_raises_if_job_not_in_storage(storage: Storage):
     index = Index(storage)
-    job = get_dummy_job(fs, "base")
+    job = get_dummy_job("base")
     with pytest.raises(ValueError):
         index.add(job)
 
 
-def test_index_add_adds_job(fs: FakeFilesystem, storage: Storage):
+def test_index_add_adds_job(storage: Storage):
     index = Index(storage)
-    job = get_dummy_job(fs, "base")
+    job = get_dummy_job("base")
     job = storage.add(job)
     index.add(job)
-    assert len(index._entries) == 1
-    assert job.id in index._entries
+    assert len(index) == 1
+    assert job in index
 
 
-def test_index_add_saves_index_to_disk(fs: FakeFilesystem, storage: Storage):
+def test_index_rebuild(storage: Storage):
     index = Index(storage)
-    job = get_dummy_job(fs, "base")
-    job = storage.add(job)
-    index.add(job, save=False)
-    assert not (storage.root / "index.yaml").exists()
-    index.add(job)
-    assert (storage.root / "index.yaml").exists()
-
-
-def test_index_rebuild(fs: FakeFilesystem, storage: Storage):
-    index = Index(storage)
-    job = get_dummy_job(fs, "base")
+    job = get_dummy_job("base")
     job = storage.add(job)
     index.add(job)
-    index._entries = dict()
-    assert len(index._entries) == 0
+    assert len(index) == 1
+    assert job in index
     index.rebuild()
-    assert len(index._entries) == 1
-    assert job.id in index._entries
-
-
-def test_index_save(fs: FakeFilesystem, storage: Storage):
-    index = Index(storage)
-    job = get_dummy_job(fs, "base")
-    job = storage.add(job)
-    index.add(job, save=False)
-    assert not (storage.root / "index.yaml").exists()
-    index.save()
-    assert (storage.root / "index.yaml").exists()
+    assert len(index) == 1
+    assert job in index
 
 
 def test_index_remove(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
-    index.rebuild()
-    assert len(index._entries) == 3
+    assert len(index) == 3
 
     job = next(iter(storage_with_jobs.jobs()))
-    assert job.id in index._entries
+    assert job in index
 
     index.remove(job)
-    assert len(index._entries) == 2
-    assert job.id not in index._entries
+    assert len(index) == 2
+    assert job not in index
 
 
 def test_index_find_requires_all_tags(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
-    index.rebuild()
     assert len(index.find(["test"])) == 3
     assert len(index.find(["test", "test-again"])) == 1
     assert len(index.find(["test", "test-missing"])) == 0
@@ -137,7 +112,6 @@ def test_index_find_latest_returns_only_latest_job(storage_with_jobs: Storage):
 
 def test_index_find_dependents(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
-    index.rebuild()
 
     job = index.find(["test-again"], latest=True)[0]
     dependents = index.find_dependents(job)
