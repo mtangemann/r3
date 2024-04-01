@@ -3,9 +3,10 @@
 import json
 import sqlite3
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import Any, Dict, List, Set
 
 from r3.job import Job, JobDependency
+from r3.query import mongo_to_sql
 from r3.storage import Storage
 
 
@@ -147,33 +148,23 @@ class Index:
                 (job.id, job.id)
             )
 
-    def find(self, tags: Iterable[str], latest: bool = False) -> List[Job]:
+    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
         """Finds jobs by tags.
         
         Parameters:
-            tags: The tags to search for. Jobs are matched if they contain all the given
-                tags.
+            query: The query to match jobs against. The query is specified as a
+                MongoDB-style query document.
             latest: Whether to return the latest job or all jobs with the given tags.
 
         Returns:
-            The jobs that match the given tags.
+            The jobs that match the given query.
         """
-        tags = list(tags)
+        sql_query = f"SELECT id FROM jobs WHERE {mongo_to_sql(query)}"
+        if latest:
+            sql_query += " ORDER BY timestamp DESC LIMIT 1"
 
         with Transaction(self._path) as transaction:
-            query = "SELECT id FROM jobs"
-
-            if len(tags) > 0:
-                query += " WHERE "
-                query += " AND ".join(
-                    "EXISTS (SELECT 1 FROM json_each(metadata->>'tags') WHERE value = ?)"  # noqa: E501
-                    for _ in tags
-                )
-        
-            if latest:
-                query += " ORDER BY timestamp DESC LIMIT 1"
-
-            transaction.execute(query, tuple(tags))
+            transaction.execute(sql_query)
             job_ids = [result[0] for result in transaction.fetchall()]
 
         return [self.storage.get(job_id) for job_id in job_ids]

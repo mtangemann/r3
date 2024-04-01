@@ -211,7 +211,8 @@ class Repository:
         Returns:
             The jobs that match the given tags.
         """
-        return self._index.find(tags, latest)
+        query = { "tags": { "$all": tags } }
+        return self._index.find(query, latest)
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that depend on the given job.

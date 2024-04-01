@@ -2,6 +2,7 @@
 
 import datetime
 from pathlib import Path
+from typing import List
 
 import pytest
 
@@ -91,21 +92,33 @@ def test_index_remove(storage_with_jobs: Storage):
     assert job not in index
 
 
-def test_index_find_requires_all_tags(storage_with_jobs: Storage):
+@pytest.mark.parametrize(
+    "tags,expected",
+    [
+        (["test"], 3),
+        (["test-again"], 1),
+        (["test-missing"], 0),
+        (["test", "test-again"], 1),
+        (["test", "test-missing"], 0),
+        (["test", "test-again", "test-missing"], 0),
+        ([], 3),
+    ]
+)
+def test_index_find_requires_all_tags(
+    storage_with_jobs: Storage, tags: List[str], expected: int
+) -> None:
     index = Index(storage_with_jobs)
-    assert len(index.find(["test"])) == 3
-    assert len(index.find(["test", "test-again"])) == 1
-    assert len(index.find(["test", "test-missing"])) == 0
-    assert len(index.find(["test-missing"])) == 0
-    assert len(index.find(["test", "test-again", "test-missing"])) == 0
-    assert len(index.find([])) == 3
+    query = {"tags": {"$all": tags}}
+    results = index.find(query)
+    assert len(results) == expected
 
 
 def test_index_find_latest_returns_only_latest_job(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
     index.rebuild()
 
-    result = index.find(["test"], latest=True)
+    query = {"tags": {"$all": ["test"]}}
+    result = index.find(query, latest=True)
     assert len(result) == 1
     assert "test-latest" in result[0].metadata["tags"]
 
@@ -113,11 +126,11 @@ def test_index_find_latest_returns_only_latest_job(storage_with_jobs: Storage):
 def test_index_find_dependents(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
 
-    job = index.find(["test-again"], latest=True)[0]
+    job = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
     dependents = index.find_dependents(job)
     assert len(dependents) == 1
     assert "test-latest" in next(iter(dependents)).metadata["tags"]
 
-    job = index.find(["test-latest"], latest=True)[0]
+    job = index.find({"tags": {"$all": ["test-latest"]}}, latest=True)[0]
     dependents = index.find_dependents(job)
     assert len(dependents) == 0
