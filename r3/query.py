@@ -125,6 +125,8 @@ class Condition(abc.ABC):
                 return Lt(value)
             if key == "$lte":
                 return Lte(value)
+            if key == "$all":
+                return All(value)
 
         return Eq(value)
 
@@ -213,3 +215,22 @@ class Lte(Condition):
 
     def to_sql(self, field: str) -> str:
         return f"{field} <= {self.value}"
+
+
+@dataclass
+class All(Condition):
+    """All condition ($all)."""
+    values: List[Any]
+
+    def to_sql(self, field: str) -> str:
+        if len(self.values) == 0:
+            return "TRUE"
+
+        subqueries = [
+            f"EXISTS (SELECT 1 FROM json_each({field}) WHERE value = '{value}')"
+            if isinstance(value, str)
+            else f"EXISTS (SELECT 1 FROM json_each({field}) WHERE value = {value})"
+            for value in self.values
+        ]
+
+        return " AND ".join(subqueries)

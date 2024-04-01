@@ -104,6 +104,16 @@ TEST_CASES = [
         {"$nor": [{"dataset": "mnist"}, {"model": "cnn"}]},
         "NOT ((metadata->>'$.dataset' = 'mnist') OR (metadata->>'$.model' = 'cnn'))",
     ),
+    (
+        {"tags": {"$all": ["new", "mnist"]}},
+        "EXISTS (SELECT 1 FROM json_each(metadata->>'$.tags') WHERE value = 'new') AND "
+        "EXISTS (SELECT 1 FROM json_each(metadata->>'$.tags') WHERE value = 'mnist')",
+    ),
+    (
+        {"tags": {"$all": ["new", 1]}},
+        "EXISTS (SELECT 1 FROM json_each(metadata->>'$.tags') WHERE value = 'new') AND "
+        "EXISTS (SELECT 1 FROM json_each(metadata->>'$.tags') WHERE value = 1)",
+    ),
 ]
 
 
