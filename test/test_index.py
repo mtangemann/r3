@@ -2,7 +2,7 @@
 
 import datetime
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 import pytest
 
@@ -29,11 +29,17 @@ def storage_with_jobs(tmp_path) -> Storage:
     storage = Storage.init(tmp_path / "repository")
 
     job = get_dummy_job("base")
-    job.metadata["tags"] = ["test"]
+    job.metadata["tags"] = ["test", "test-first"]
+    job.metadata["dataset"] = "mnist"
+    job.metadata["model"] = "cnn"
+    job.metadata["image_size"] = 28
     job.timestamp = datetime.datetime(2021, 1, 1, 0, 0, 0)
     storage.add(job)
 
     job.metadata["tags"] = ["test", "test-again"]
+    job.metadata["dataset"] = "mnist"
+    job.metadata["model"] = "cnn"
+    job.metadata["image_size"] = 32
     job.timestamp = datetime.datetime(2021, 1, 2, 0, 0, 0)
     committed_job = storage.add(job)
 
@@ -41,6 +47,9 @@ def storage_with_jobs(tmp_path) -> Storage:
         JobDependency("previous_job", committed_job).to_config()
     ]
     job.metadata["tags"] = ["test", "test-latest"]
+    job.metadata["dataset"] = "mnist"
+    job.metadata["model"] = "resnet"
+    job.metadata["image_size"] = 32
     job.timestamp = datetime.datetime(2021, 1, 3, 0, 0, 0)
     storage.add(job)
 
@@ -92,6 +101,51 @@ def test_index_remove(storage_with_jobs: Storage):
     assert job not in index
 
 
+def test_index_find(storage_with_jobs: Storage):
+    index = Index(storage_with_jobs)
+
+    job1 = index.find({"tags": {"$all": ["test-first"]}}, latest=True)[0]
+    job2 = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
+    job3 = index.find({"tags": {"$all": ["test-latest"]}}, latest=True)[0]
+
+    query: Dict[str, Any] = {"dataset": "mnist"}
+    results = index.find(query)
+    assert len(results) == 3
+
+    query = {"model": "cnn"}
+    results = index.find(query)
+    assert len(results) == 2
+    assert set(result.id for result in results) == {job1.id, job2.id}
+
+    query = {"$not": {"model": "cnn"}}
+    results = index.find(query)
+    assert len(results) == 1
+    assert results[0].id == job3.id
+
+    query = {"$or": [{"model": "cnn"}, {"model": "resnet"}]}
+    results = index.find(query)
+    assert len(results) == 3
+
+    query = {"$and": [{"model": "cnn"}, {"image_size": 32}]}
+    results = index.find(query)
+    assert len(results) == 1
+    assert results[0].id == job2.id
+
+    query = {"$or": [{"model": "cnn"}, {"image_size": {"$gt": 28}}]}
+    results = index.find(query)
+    assert len(results) == 3
+
+    query = {"$and": [{"model": "cnn"}, {"image_size": {"$ne": 32}}]}
+    results = index.find(query)
+    assert len(results) == 1
+    assert results[0].id == job1.id
+
+    query = {"model": {"$in": ["cnn", "transformer"]}}
+    results = index.find(query)
+    assert len(results) == 2
+    assert set(result.id for result in results) == {job1.id, job2.id}
+
+
 @pytest.mark.parametrize(
     "tags,expected",
     [
@@ -104,7 +158,7 @@ def test_index_remove(storage_with_jobs: Storage):
         ([], 3),
     ]
 )
-def test_index_find_requires_all_tags(
+def test_index_find_all_tags(
     storage_with_jobs: Storage, tags: List[str], expected: int
 ) -> None:
     index = Index(storage_with_jobs)
