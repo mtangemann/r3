@@ -13,6 +13,7 @@ from executor import execute
 from pytest_mock.plugin import MockerFixture
 
 from r3.job import (
+    FindAllDependency,
     FindLatestDependency,
     GitDependency,
     Job,
@@ -554,6 +555,42 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_1.id
+
+
+def test_resolve_find_all_dependency(repository: Repository) -> None:
+    job = get_dummy_job("base")
+    job.metadata["tags"] = ["test"]
+    job.metadata["image_size"] = 28
+    committed_job_1 = repository.commit(job)
+
+    dependency = FindAllDependency("destination", {"tags": {"$all": ["test"]}})
+    resolved_dependency = repository.resolve(dependency)
+    assert isinstance(resolved_dependency, list)
+    assert len(resolved_dependency) == 1
+    assert isinstance(resolved_dependency[0], JobDependency)
+    assert resolved_dependency[0].job == committed_job_1.id
+
+    job.metadata["tags"] = ["test", "test-again"]
+    job.metadata["image_size"] = 32
+    committed_job_2 = repository.commit(job)
+
+    resolved_dependency = repository.resolve(dependency)
+    assert isinstance(resolved_dependency, list)
+    assert len(resolved_dependency) == 2
+    assert all(
+        isinstance(dependency, JobDependency) for dependency in resolved_dependency
+    )
+    assert set([dependency.job for dependency in resolved_dependency]) == {
+        committed_job_1.id,
+        committed_job_2.id,
+    }
+
+    dependency = FindAllDependency("destination", {"image_size": {"$lt": 30}})
+    resolved_dependency = repository.resolve(dependency)
+    assert isinstance(resolved_dependency, list)
+    assert len(resolved_dependency) == 1
+    assert isinstance(resolved_dependency[0], JobDependency)
+    assert resolved_dependency[0].job == committed_job_1.id
 
 
 def test_resolve_query_all_dependency(repository: Repository) -> None:

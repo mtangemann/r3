@@ -16,6 +16,7 @@ import r3.utils
 from r3.index import Index
 from r3.job import (
     Dependency,
+    FindAllDependency,
     FindLatestDependency,
     GitDependency,
     Job,
@@ -257,6 +258,8 @@ class Repository:
             return self._resolve_job(item)
         if isinstance(item, FindLatestDependency):
             return self._resolve_find_latest_dependency(item)
+        if isinstance(item, FindAllDependency):
+            return self._resolve_find_all_dependency(item)
         if isinstance(item, QueryDependency):
             return self._resolve_query_dependency(item)
         if isinstance(item, QueryAllDependency):
@@ -298,6 +301,23 @@ class Repository:
         return JobDependency(
             dependency.destination, result[0], find_latest=dependency.query
         )
+
+    def _resolve_find_all_dependency(
+        self, dependency: FindAllDependency
+    ) -> List[JobDependency]:
+        result = self.find(dependency.query)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {dependency.query}")
+
+        resolved_dependencies = []
+        for job in result:
+            assert job.id is not None
+            resolved_dependencies.append(JobDependency(
+                dependency.destination / job.id, job, find_all=dependency.query
+            ))
+
+        return resolved_dependencies
 
     def _resolve_query_dependency(
         self,

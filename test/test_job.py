@@ -113,6 +113,14 @@ def test_depedency_from_config() -> None:
     assert isinstance(dependency, r3.FindLatestDependency)
 
     config = {
+        "find_all": {"tags": "test"},  # type: ignore
+        "destination": "data",
+    }
+
+    dependency = r3.Dependency.from_config(config)
+    assert isinstance(dependency, r3.FindAllDependency)
+
+    config = {
         "query": "#query",
         "source": "output",
         "destination": "data",
@@ -323,6 +331,34 @@ def test_find_latest_dependency_to_config():
 
 def test_find_latest_dependency_hash_raises_error():
     dependency = r3.FindLatestDependency("data", {"tags": "test"})
+
+    with pytest.raises(ValueError):
+        dependency.hash()
+
+
+def test_find_all_dependency_from_config() -> None:
+    config = {
+        "find_all": {"tags": "test"},
+        "destination": "data",
+    }
+
+    dependency = r3.FindAllDependency.from_config(config)
+
+    assert dependency.destination == Path(config["destination"])  # type: ignore
+    assert dependency.query == config["find_all"]
+
+
+def test_find_all_dependency_to_config():
+    dependency = r3.FindAllDependency(Path("data"), {"tags": "test"})
+
+    assert dependency.to_config() == {
+        "find_all": dependency.query,
+        "destination": str(dependency.destination),
+    }
+
+
+def test_find_all_dependency_hash_raises_error():
+    dependency = r3.FindAllDependency("data", {"tags": "test"})
 
     with pytest.raises(ValueError):
         dependency.hash()
