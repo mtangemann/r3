@@ -4,6 +4,7 @@ from pathlib import Path
 
 from r3.job import (
     Dependency,
+    FindLatestDependency,
     GitDependency,
     Job,
     JobDependency,
@@ -17,6 +18,7 @@ with open(Path(__file__).parent.parent / "VERSION", "r") as version_file:
 
 __all__ = [
     "Dependency",
+    "FindLatestDependency",
     "GitDependency",
     "Job",
     "JobDependency",

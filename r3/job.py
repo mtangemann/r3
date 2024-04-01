@@ -184,6 +184,8 @@ class Dependency(abc.ABC):
         """
         if "job" in config:
             return JobDependency.from_config(config)
+        if "find_latest" in config:
+            return FindLatestDependency.from_config(config)
         if "query" in config:
             return QueryDependency.from_config(config)
         if "query_all" in config:
@@ -220,6 +222,7 @@ class JobDependency(Dependency):
         destination: Union[os.PathLike, str],
         job: Union[Job, str],
         source: Union[os.PathLike, str] = ".",
+        find_latest: Optional[Dict[str, Any]] = None,
         query: Optional[str] = None,
         query_all: Optional[str] = None,
     ) -> None:
@@ -246,6 +249,7 @@ class JobDependency(Dependency):
             self.job = job
 
         self.source = Path(source)
+        self.find_latest = find_latest
         self.query = query
         self.query_all = query_all
 
@@ -260,6 +264,9 @@ class JobDependency(Dependency):
                 "source": "output",     # Checkout <source_job>/output (default: .)
                 "destination": "data",  # to <dependent_job>/data
                 "query": "#data/xyz",   # Query used when committing the job (optional)
+                "find_latest": {        # Query used when committing the job (optional)
+                    "tags": {"$all": ["test", "data/xzy"]}
+                },
             }
 
             dependency = JobDependency.from_config(config)
@@ -271,7 +278,7 @@ class JobDependency(Dependency):
         Returns:
             A JobDependency instance.
         """
-        return JobDependency(**config)
+        return JobDependency(**config)  # type: ignore
 
     def to_config(self) -> Dict[str, str]:
         """Returns a config dictionary representing the dependency.
@@ -299,6 +306,78 @@ class JobDependency(Dependency):
     def hash(self) -> str:
         """Returns the hash of the dependency."""
         return r3.utils.hash_str(f"jobs/{self.job}/{self.source}")
+
+
+class FindLatestDependency(Dependency):
+    """A dependency to the latest job determined by a query."""
+
+    def __init__(
+        self,
+        destination: Union[os.PathLike, str],
+        query: Dict[str, Any],
+        source: Union[os.PathLike, str] = ".",
+    ) -> None:
+        """Initializes the query dependency.
+
+        Parameters:
+            query: A mongo-style query document that will be used to determine the job.
+            destination: Path relative to the job to which the dependency will be
+                checked out.
+            source: Path relative to the source job to be checked out.
+        """
+        super().__init__(destination)
+        self.source = Path(source)
+        self.query = query
+    
+    @staticmethod
+    def from_config(config: Dict[str, Any]) -> "FindLatestDependency":
+        """Creates a QueryDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "find_latest": {
+                    "tags": {"$all": ["test", "data/xzy"]}
+                },
+                "source": "output",
+                "destination": "data",
+            }
+
+            dependency = FindLatestDependency.from_config(config)
+        
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+        """
+        config = config.copy()
+        config["query"] = config.pop("find_latest")
+        return FindLatestDependency(**config)
+
+    def to_config(self) -> Dict[str, Any]:
+        """Returns a config dictionary representing the dependency.
+        
+        See `from_config` for an example.
+        """
+        return {
+            "destination": str(self.destination),
+            "find_latest": self.query,
+            "source": str(self.source),
+        }
+
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return False
+
+    def hash(self) -> str:
+        """Raises an error.
+        
+        FindLatestDependencies cannot be hashed because the hash would depend on the
+        result of the query, which is not known at the time of creating the dependency.
+
+        Raises:
+            ValueError: Always.
+        """
+        raise ValueError("Cannot hash FindLatestDependency")
 
 
 class QueryDependency(Dependency):
