@@ -1,6 +1,7 @@
 import abc
 import os
 import re
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
@@ -482,6 +483,12 @@ class QueryDependency(Dependency):
                 checked out.
             source: Path relative to the source job to be checked out.
         """
+        warnings.warn(
+            "QueryDependency is deprecated. Use FindLatestDependency instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         super().__init__(destination)
         self.source = Path(source)
         self.query = query
@@ -553,6 +560,11 @@ class QueryAllDependency(Dependency):
                 out. Each job will be checked out to a subdirectory of this path with
                 the job id as the name of the subdirectory.
         """
+        warnings.warn(
+            "QueryAllDependency is deprecated. Use FindAllDependency instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__(destination)
         self.query_all = query_all
 

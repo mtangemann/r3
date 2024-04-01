@@ -414,6 +414,11 @@ def test_query_dependency_hash_raises_error():
         dependency.hash()
 
 
+def test_query_dependency_is_deprecated():
+    with pytest.warns(DeprecationWarning):
+        r3.QueryDependency("#query", "data")
+
+
 def test_query_all_dependency_from_config() -> None:
     config = {
         "query_all": "#query",
@@ -440,6 +445,11 @@ def test_query_all_dependency_hash_raises_error():
 
     with pytest.raises(ValueError):
         dependency.hash()
+
+
+def test_query_all_dependency_is_deprecated():
+    with pytest.warns(DeprecationWarning):
+        r3.QueryAllDependency("#query", "data")
 
 
 def test_git_dependency_from_config() -> None:
