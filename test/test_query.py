@@ -187,6 +187,10 @@ QUERY_TEST_CASES = [
         {"tags": {"$all": ["mnist", "28"]}},
         set(),
     ),
+    (
+        {"tags": {"$elemMatch": {"$gt": 16, "$lt": 32}}},
+        {"mnist-cnn-28", "mnist-resnet-28", "cifar10-cnn-28", "cifar10-resnet-28"},
+    ),
 ]
 @pytest.mark.parametrize("query,ids", QUERY_TEST_CASES)
 def test_mongo_to_sql(database: str, query: Dict[str, Any], ids: Set[str]):
@@ -223,6 +227,10 @@ CONDITION_TEST_CASES = [
         {"$all": ["new", 1]},
         "EXISTS (SELECT 1 FROM json_each(field) WHERE value = 'new') AND "
         "EXISTS (SELECT 1 FROM json_each(field) WHERE value = 1)",
+    ),
+    (
+        {"$elemMatch": {"$gt": 28, "$lt": 32}},
+        "EXISTS (SELECT 1 FROM json_each(field) WHERE value > 28 AND value < 32)",
     ),
 ]
 @pytest.mark.parametrize("mongo,sql", CONDITION_TEST_CASES)

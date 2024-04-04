@@ -142,6 +142,13 @@ class Condition(abc.ABC):
                 return Lte(value)
             if key == "$all":
                 return All(value)
+            if key == "$elemMatch":
+                if not isinstance(value, dict):
+                    raise ValueError(f"Invalid condition: {value}")
+                return ElemMatch([
+                    Condition.from_mongo({subkey: subvalue})
+                    for subkey, subvalue in value.items()
+                ])
 
         return Eq(value)
 
@@ -285,3 +292,19 @@ class All(Condition):
         ]
 
         return " AND ".join(subqueries)
+
+
+@dataclass
+class ElemMatch(Condition):
+    """Element match condition ($elemMatch)."""
+    conditions: List[Condition]
+
+    @property
+    def supports_arrays(self) -> bool:
+        return False
+
+    def to_sql(self, field: str) -> str:
+        conditions_sql = " AND ".join(
+            condition.to_sql("value") for condition in self.conditions
+        )
+        return f"EXISTS (SELECT 1 FROM json_each({field}) WHERE {conditions_sql})"
