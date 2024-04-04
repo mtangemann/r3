@@ -140,6 +140,8 @@ class Condition(abc.ABC):
                 return Lt(value)
             if key == "$lte":
                 return Lte(value)
+            if key == "$glob":
+                return Glob(value)
             if key == "$all":
                 return All(value)
             if key == "$elemMatch":
@@ -269,6 +271,19 @@ class Lte(Condition):
 
     def to_sql(self, field: str) -> str:
         return f"{field} <= {self.value}"
+
+
+@dataclass
+class Glob(Condition):
+    """Glob condition (Sqlite GLOB)."""
+    pattern: str
+
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
+    def to_sql(self, field: str) -> str:
+        return f"{field} GLOB '{self.pattern}'"
 
 
 @dataclass

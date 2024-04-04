@@ -29,7 +29,7 @@ def database(tmp_path):
                         "dataset": dataset,
                         "model": model,
                         "image_size": image_size,
-                        "tags": [model, dataset, image_size],
+                        "tags": [model, dataset, f"{model}/{dataset}", image_size],
                     }))
                 )
     
@@ -107,6 +107,18 @@ QUERY_TEST_CASES = [
         {"mnist-cnn-16", "mnist-resnet-16", "cifar10-cnn-16", "cifar10-resnet-16"},
     ),
     (
+        {"model": {"$glob": "res*"}},
+        {"mnist-resnet-16", "mnist-resnet-28", "mnist-resnet-32",
+         "cifar10-resnet-16", "cifar10-resnet-28", "cifar10-resnet-32"},
+    ),
+    (
+        {"dataset": {"$glob": "*i*"}},
+        {"mnist-cnn-16", "mnist-cnn-28", "mnist-cnn-32",
+         "mnist-resnet-16", "mnist-resnet-28", "mnist-resnet-32",
+         "cifar10-cnn-16", "cifar10-cnn-28", "cifar10-cnn-32",
+         "cifar10-resnet-16", "cifar10-resnet-28", "cifar10-resnet-32"},
+    ),
+    (
         {"dataset": "mnist", "model": "cnn"},
         {"mnist-cnn-16", "mnist-cnn-28", "mnist-cnn-32"},
     ),
@@ -176,6 +188,11 @@ QUERY_TEST_CASES = [
          "mnist-resnet-16", "mnist-resnet-28", "mnist-resnet-32"},
     ),
     (
+        {"tags": {"$glob": "cnn/*"}},
+        {"mnist-cnn-16", "mnist-cnn-28", "mnist-cnn-32",
+         "cifar10-cnn-16", "cifar10-cnn-28", "cifar10-cnn-32"},
+    ),
+    (
         {"tags": {"$all": ["mnist", 28]}},
         {"mnist-cnn-28", "mnist-resnet-28"},
     ),
@@ -218,6 +235,7 @@ CONDITION_TEST_CASES = [
     ({"$ne": 28},                    "field != 28"),
     ({"$in": [28, 32]},              "field IN (28, 32)"),
     ({"$nin": [28, 32]},             "field NOT IN (28, 32)"),
+    ({"$glob": "resnet/*"},          "field GLOB 'resnet/*'"),
     (
         {"$all": ["new", "mnist"]},
         "EXISTS (SELECT 1 FROM json_each(field) WHERE value = 'new') AND "
