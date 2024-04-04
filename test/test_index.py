@@ -104,9 +104,9 @@ def test_index_remove(storage_with_jobs: Storage):
 def test_index_find(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
 
-    job1 = index.find({"tags": {"$all": ["test-first"]}}, latest=True)[0]
-    job2 = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
-    job3 = index.find({"tags": {"$all": ["test-latest"]}}, latest=True)[0]
+    job1 = index.find({"tags": "test-first"}, latest=True)[0]
+    job2 = index.find({"tags": "test-again"}, latest=True)[0]
+    job3 = index.find({"tags": "test-latest"}, latest=True)[0]
 
     query: Dict[str, Any] = {"dataset": "mnist"}
     results = index.find(query)

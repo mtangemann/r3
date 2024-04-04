@@ -92,10 +92,25 @@ class FieldQuery(Query):
 
     def to_sql(self) -> str:
         """Converts the field query to a SQL query."""
-        return self.condition.to_sql(f"metadata->>'$.{self.field}'")
+        if not self.condition.supports_arrays:
+            return self.condition.to_sql(f"metadata->>'$.{self.field}'")
+
+        condition_value = self.condition.to_sql("value")
+        condition_field = self.condition.to_sql(f"metadata->>'$.{self.field}'")
+        return (
+            f"CASE WHEN json_type(metadata, '$.{self.field}') = 'array' "
+            f"THEN EXISTS (SELECT 1 FROM json_each(metadata->>'$.{self.field}') WHERE {condition_value}) "  # noqa: E501
+            f"ELSE {condition_field} END"
+        )
 
 
 class Condition(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def supports_arrays(self) -> bool:
+        """Whether the condition supports arrays."""
+        pass
+
     @abc.abstractmethod
     def to_sql(self, field: str) -> str:
         """Converts the condition to a SQL query."""
@@ -136,6 +151,10 @@ class Eq(Condition):
     """Equality condition ($eq, implicit)."""
     value: Any
 
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
     def to_sql(self, field: str) -> str:
         if isinstance(self.value, str):
             return f"{field} = '{self.value}'"
@@ -148,6 +167,10 @@ class Ne(Condition):
     """Inequality condition ($ne)."""
     value: Any
 
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
     def to_sql(self, field: str) -> str:
         if isinstance(self.value, str):
             return f"{field} != '{self.value}'"
@@ -159,6 +182,10 @@ class Ne(Condition):
 class In(Condition):
     """In condition ($in)."""
     values: List[Any]
+
+    @property
+    def supports_arrays(self) -> bool:
+        return True
 
     def to_sql(self, field: str) -> str:
         values = [
@@ -173,6 +200,10 @@ class Nin(Condition):
     """Not in condition ($nin)."""
     values: List[Any]
 
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
     def to_sql(self, field: str) -> str:
         values = [
             f"'{value}'" if isinstance(value, str) else str(value)
@@ -186,6 +217,10 @@ class Gt(Condition):
     """Greater than condition ($gt)."""
     value: Any
 
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
     def to_sql(self, field: str) -> str:
         return f"{field} > {self.value}"
 
@@ -194,6 +229,10 @@ class Gt(Condition):
 class Gte(Condition):
     """Greater than or equal condition ($gte)."""
     value: Any
+
+    @property
+    def supports_arrays(self) -> bool:
+        return True
 
     def to_sql(self, field: str) -> str:
         return f"{field} >= {self.value}"
@@ -204,6 +243,10 @@ class Lt(Condition):
     """Less than condition ($lt)."""
     value: Any
 
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
     def to_sql(self, field: str) -> str:
         return f"{field} < {self.value}"
 
@@ -213,6 +256,10 @@ class Lte(Condition):
     """Less than or equal condition ($lte)."""
     value: Any
 
+    @property
+    def supports_arrays(self) -> bool:
+        return True
+
     def to_sql(self, field: str) -> str:
         return f"{field} <= {self.value}"
 
@@ -221,6 +268,10 @@ class Lte(Condition):
 class All(Condition):
     """All condition ($all)."""
     values: List[Any]
+
+    @property
+    def supports_arrays(self) -> bool:
+        return False
 
     def to_sql(self, field: str) -> str:
         if len(self.values) == 0:

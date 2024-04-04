@@ -538,7 +538,7 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     job.metadata["image_size"] = 28
     committed_job_1 = repository.commit(job)
 
-    dependency = FindLatestDependency("destination", {"tags": {"$all": ["test"]}})
+    dependency = FindLatestDependency("destination", {"tags": "test"})
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_1.id
@@ -563,7 +563,7 @@ def test_resolve_find_all_dependency(repository: Repository) -> None:
     job.metadata["image_size"] = 28
     committed_job_1 = repository.commit(job)
 
-    dependency = FindAllDependency("destination", {"tags": {"$all": ["test"]}})
+    dependency = FindAllDependency("destination", {"tags": "test"})
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, list)
     assert len(resolved_dependency) == 1
