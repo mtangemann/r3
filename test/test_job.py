@@ -104,6 +104,23 @@ def test_depedency_from_config() -> None:
     assert isinstance(dependency, r3.JobDependency)
 
     config = {
+        "find_latest": {"tags": "test"},  # type: ignore
+        "source": "output",
+        "destination": "data",
+    }
+
+    dependency = r3.Dependency.from_config(config)
+    assert isinstance(dependency, r3.FindLatestDependency)
+
+    config = {
+        "find_all": {"tags": "test"},  # type: ignore
+        "destination": "data",
+    }
+
+    dependency = r3.Dependency.from_config(config)
+    assert isinstance(dependency, r3.FindAllDependency)
+
+    config = {
         "query": "#query",
         "source": "output",
         "destination": "data",
@@ -249,6 +266,104 @@ def test_job_dependency_hash_does_not_depend_on_query() -> None:
     assert dependency.hash() == original_hash
 
 
+def test_job_dependency_hash_does_not_depend_on_find_latest() -> None:
+    dependency = r3.JobDependency(
+        job=str(uuid.uuid4()),
+        source=Path("output"),
+        destination=Path("data"),
+        find_latest={"tags": "test"},
+    )
+
+    original_hash = dependency.hash()
+
+    dependency.find_latest = {"tags": "changed"}
+    assert dependency.hash() == original_hash
+
+    dependency.find_latest = None
+    assert dependency.hash() == original_hash
+
+    dependency.find_latest = {"tags": "test"}
+    assert dependency.hash() == original_hash
+
+
+def test_find_latest_dependency_from_config() -> None:
+    config = {
+        "find_latest": {"tags": "test"},
+        "destination": "data",
+    }
+
+    dependency = r3.FindLatestDependency.from_config(config)
+
+    assert dependency.destination == Path(config["destination"])  # type: ignore
+    assert dependency.query == config["find_latest"]
+    assert dependency.source == Path(".")
+
+    config = {
+        "find_latest": {"tags": "test"},
+        "source": "output",
+        "destination": "data",
+    }
+
+    dependency = r3.FindLatestDependency.from_config(config)
+
+    assert dependency.destination == Path(config["destination"])  # type: ignore
+    assert dependency.query == config["find_latest"]
+    assert dependency.source == Path(config["source"])  # type: ignore
+
+
+def test_find_latest_dependency_to_config():
+    dependency = r3.FindLatestDependency(Path("data"), {"tags": "test"})
+
+    assert dependency.to_config() == {
+        "find_latest": dependency.query,
+        "source": ".",
+        "destination": str(dependency.destination),
+    }
+
+    dependency = r3.FindLatestDependency(Path("data"), {"tags": "test"}, Path("output"))
+
+    assert dependency.to_config() == {
+        "find_latest": dependency.query,
+        "source": str(dependency.source),
+        "destination": str(dependency.destination),
+    }
+
+
+def test_find_latest_dependency_hash_raises_error():
+    dependency = r3.FindLatestDependency("data", {"tags": "test"})
+
+    with pytest.raises(ValueError):
+        dependency.hash()
+
+
+def test_find_all_dependency_from_config() -> None:
+    config = {
+        "find_all": {"tags": "test"},
+        "destination": "data",
+    }
+
+    dependency = r3.FindAllDependency.from_config(config)
+
+    assert dependency.destination == Path(config["destination"])  # type: ignore
+    assert dependency.query == config["find_all"]
+
+
+def test_find_all_dependency_to_config():
+    dependency = r3.FindAllDependency(Path("data"), {"tags": "test"})
+
+    assert dependency.to_config() == {
+        "find_all": dependency.query,
+        "destination": str(dependency.destination),
+    }
+
+
+def test_find_all_dependency_hash_raises_error():
+    dependency = r3.FindAllDependency("data", {"tags": "test"})
+
+    with pytest.raises(ValueError):
+        dependency.hash()
+
+
 def test_query_dependency_from_config() -> None:
     config = {
         "query": "#query",
@@ -299,6 +414,11 @@ def test_query_dependency_hash_raises_error():
         dependency.hash()
 
 
+def test_query_dependency_is_deprecated():
+    with pytest.warns(DeprecationWarning):
+        r3.QueryDependency("#query", "data")
+
+
 def test_query_all_dependency_from_config() -> None:
     config = {
         "query_all": "#query",
@@ -325,6 +445,11 @@ def test_query_all_dependency_hash_raises_error():
 
     with pytest.raises(ValueError):
         dependency.hash()
+
+
+def test_query_all_dependency_is_deprecated():
+    with pytest.warns(DeprecationWarning):
+        r3.QueryAllDependency("#query", "data")
 
 
 def test_git_dependency_from_config() -> None:

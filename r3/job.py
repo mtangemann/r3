@@ -1,6 +1,7 @@
 import abc
 import os
 import re
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
@@ -184,6 +185,10 @@ class Dependency(abc.ABC):
         """
         if "job" in config:
             return JobDependency.from_config(config)
+        if "find_latest" in config:
+            return FindLatestDependency.from_config(config)
+        if "find_all" in config:
+            return FindAllDependency.from_config(config)
         if "query" in config:
             return QueryDependency.from_config(config)
         if "query_all" in config:
@@ -220,6 +225,8 @@ class JobDependency(Dependency):
         destination: Union[os.PathLike, str],
         job: Union[Job, str],
         source: Union[os.PathLike, str] = ".",
+        find_latest: Optional[Dict[str, Any]] = None,
+        find_all: Optional[Dict[str, Any]] = None,
         query: Optional[str] = None,
         query_all: Optional[str] = None,
     ) -> None:
@@ -230,6 +237,10 @@ class JobDependency(Dependency):
             destination: Path relative to the job to which the dependency will be
                 checked out.
             source: Path relative to the source job to be checked out.
+            find_latest: If this job was resolved from a FindLatestDependency, this is
+                the query that was used.
+            find_all: If this job was resolved from a FindAllDependency, this is the
+                query that was used.
             query: If this job was resolved from a QueryDependency, this is the query
                 that was used.
             query_all: If this job was resolved from a QueryAllDependency, this is the
@@ -246,6 +257,8 @@ class JobDependency(Dependency):
             self.job = job
 
         self.source = Path(source)
+        self.find_latest = find_latest
+        self.find_all = find_all
         self.query = query
         self.query_all = query_all
 
@@ -259,7 +272,9 @@ class JobDependency(Dependency):
                 "job": "123abc...",     # Job id
                 "source": "output",     # Checkout <source_job>/output (default: .)
                 "destination": "data",  # to <dependent_job>/data
-                "query": "#data/xyz",   # Query used when committing the job (optional)
+                "find_latest": {        # Query used when committing the job (optional)
+                    "tags": {"$all": ["test", "data/xzy"]}
+                },
             }
 
             dependency = JobDependency.from_config(config)
@@ -271,18 +286,24 @@ class JobDependency(Dependency):
         Returns:
             A JobDependency instance.
         """
-        return JobDependency(**config)
+        return JobDependency(**config)  # type: ignore
 
-    def to_config(self) -> Dict[str, str]:
+    def to_config(self) -> Dict[str, Any]:
         """Returns a config dictionary representing the dependency.
         
         See `from_config` for an example.
         """
-        config = {
+        config: Dict[str, Any] = {
             "job": self.job,
             "source": str(self.source),
             "destination": str(self.destination),
         }
+
+        if self.find_latest is not None:
+            config["find_latest"] = self.find_latest
+        
+        if self.find_all is not None:
+            config["find_all"] = self.find_all
 
         if self.query is not None:
             config["query"] = self.query
@@ -299,6 +320,150 @@ class JobDependency(Dependency):
     def hash(self) -> str:
         """Returns the hash of the dependency."""
         return r3.utils.hash_str(f"jobs/{self.job}/{self.source}")
+
+
+class FindLatestDependency(Dependency):
+    """A dependency to the latest job determined by a query."""
+
+    def __init__(
+        self,
+        destination: Union[os.PathLike, str],
+        query: Dict[str, Any],
+        source: Union[os.PathLike, str] = ".",
+    ) -> None:
+        """Initializes the query dependency.
+
+        Parameters:
+            query: A mongo-style query document that will be used to determine the job.
+            destination: Path relative to the job to which the dependency will be
+                checked out.
+            source: Path relative to the source job to be checked out.
+        """
+        super().__init__(destination)
+        self.source = Path(source)
+        self.query = query
+    
+    @staticmethod
+    def from_config(config: Dict[str, Any]) -> "FindLatestDependency":
+        """Creates a QueryDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "find_latest": {
+                    "tags": {"$all": ["test", "data/xzy"]}
+                },
+                "source": "output",
+                "destination": "data",
+            }
+
+            dependency = FindLatestDependency.from_config(config)
+        
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+        """
+        config = config.copy()
+        config["query"] = config.pop("find_latest")
+        return FindLatestDependency(**config)
+
+    def to_config(self) -> Dict[str, Any]:
+        """Returns a config dictionary representing the dependency.
+        
+        See `from_config` for an example.
+        """
+        return {
+            "destination": str(self.destination),
+            "find_latest": self.query,
+            "source": str(self.source),
+        }
+
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return False
+
+    def hash(self) -> str:
+        """Raises an error.
+        
+        FindLatestDependencies cannot be hashed because the hash would depend on the
+        result of the query, which is not known at the time of creating the dependency.
+
+        Raises:
+            ValueError: Always.
+        """
+        raise ValueError("Cannot hash FindLatestDependency")
+
+
+class FindAllDependency(Dependency):
+    """A dependency to all jobs determined by a query."""
+    
+    def __init__(
+        self,
+        destination: Union[os.PathLike, str],
+        query: Dict[str, Any],
+    ) -> None:
+        """Initializes the find all dependency.
+
+        This does not specifying a source, since all jobs need to be checked out to
+        directories with different names. The source is always the root of the job,
+        and the destination directory name is always the job id.
+
+        Parameters:
+            query: A mongo-style query document that will be used to determine the jobs.
+            destination: Base path relative to the job to which the jobs will be checked
+                out. Each job will be checked out to a subdirectory of this path with
+                the job id as the name of the subdirectory.
+        """
+        super().__init__(destination)
+        self.query = query
+
+    @staticmethod
+    def from_config(config: Dict[str, Any]) -> "FindAllDependency":
+        """Creates a FindAllDependency instance from a config dictionary.
+        
+        Example:
+
+            config = {
+                "find_all": {
+                    "tags": {"$all": ["test", "data/xzy"]}
+                },
+                "destination": "data",
+            }
+
+            dependency = FindAllDependency.from_config(config)
+        
+        Parameters:
+            config: A dictionary representing the dependency. See the example above for
+                the format of the dictionary.
+        """
+        config = config.copy()
+        config["query"] = config.pop("find_all")
+        return FindAllDependency(**config)
+
+    def to_config(self) -> Dict[str, Any]:
+        """Returns a config dictionary representing the dependency.
+
+        See `from_config` for an example.
+        """
+        return {
+            "find_all": self.query,
+            "destination": str(self.destination),
+        }
+
+    def is_resolved(self) -> bool:
+        """Returns `True` if the dependency is resolved."""
+        return False
+
+    def hash(self) -> str:
+        """Raises an error.
+
+        FindAllDependencies cannot be hashed because the hash would depend on the
+        result of the query, which is not known at the time of creating the dependency.
+
+        Raises:
+            ValueError: Always.
+        """
+        raise ValueError("Cannot hash FindAllDependency")
 
 
 class QueryDependency(Dependency):
@@ -318,6 +483,12 @@ class QueryDependency(Dependency):
                 checked out.
             source: Path relative to the source job to be checked out.
         """
+        warnings.warn(
+            "QueryDependency is deprecated. Use FindLatestDependency instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         super().__init__(destination)
         self.source = Path(source)
         self.query = query
@@ -389,6 +560,11 @@ class QueryAllDependency(Dependency):
                 out. Each job will be checked out to a subdirectory of this path with
                 the job id as the name of the subdirectory.
         """
+        warnings.warn(
+            "QueryAllDependency is deprecated. Use FindAllDependency instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__(destination)
         self.query_all = query_all
 

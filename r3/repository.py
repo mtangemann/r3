@@ -6,7 +6,7 @@ The `Repository` class should be imported not from this module but from the top-
 
 import os
 from pathlib import Path
-from typing import Iterable, List, Set, Union
+from typing import Any, Dict, Iterable, List, Set, Union
 
 import yaml
 from executor import execute
@@ -16,6 +16,8 @@ import r3.utils
 from r3.index import Index
 from r3.job import (
     Dependency,
+    FindAllDependency,
+    FindLatestDependency,
     GitDependency,
     Job,
     JobDependency,
@@ -200,18 +202,17 @@ class Repository:
         self._storage.remove(job)
         self._index.remove(job)
 
-    def find(self, tags: Iterable[str], latest: bool = False) -> List[Job]:
-        """Finds jobs by tags.
+    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
+        """Finds jobs by a query.
         
         Parameters:
-            tags: The tags to search for. Jobs are matched if they contain all the given
-                tags.
+            query: The mongo-style query document to find jobs by.
             latest: Whether to return the latest job or all jobs with the given tags.
 
         Returns:
             The jobs that match the given tags.
         """
-        return self._index.find(tags, latest)
+        return self._index.find(query, latest)
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that depend on the given job.
@@ -255,6 +256,10 @@ class Repository:
 
         if isinstance(item, Job):
             return self._resolve_job(item)
+        if isinstance(item, FindLatestDependency):
+            return self._resolve_find_latest_dependency(item)
+        if isinstance(item, FindAllDependency):
+            return self._resolve_find_all_dependency(item)
         if isinstance(item, QueryDependency):
             return self._resolve_query_dependency(item)
         if isinstance(item, QueryAllDependency):
@@ -283,6 +288,36 @@ class Repository:
             dependency.to_config() for dependency in job.dependencies
         ]
         return job
+    
+    def _resolve_find_latest_dependency(
+        self,
+        dependency: FindLatestDependency,
+    ) -> JobDependency:
+        result = self.find(dependency.query, latest=True)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {dependency.query}")
+        
+        return JobDependency(
+            dependency.destination, result[0], find_latest=dependency.query
+        )
+
+    def _resolve_find_all_dependency(
+        self, dependency: FindAllDependency
+    ) -> List[JobDependency]:
+        result = self.find(dependency.query)
+
+        if len(result) < 1:
+            raise ValueError(f"Cannot resolve dependency: {dependency.query}")
+
+        resolved_dependencies = []
+        for job in result:
+            assert job.id is not None
+            resolved_dependencies.append(JobDependency(
+                dependency.destination / job.id, job, find_all=dependency.query
+            ))
+
+        return resolved_dependencies
 
     def _resolve_query_dependency(
         self,
@@ -294,13 +329,14 @@ class Repository:
             raise ValueError(f"Invalid query: {dependency.query}")
 
         tags = [tag[1:] for tag in tags]
-        result = self.find(tags, latest=True)
+        query = { "tags": { "$all": tags } }
+        result = self.find(query, latest=True)
 
         if len(result) < 1:
             raise ValueError(f"Cannot resolve dependency: {dependency.query}")
 
         return JobDependency(
-            dependency.destination, result[0], dependency.source, dependency.query
+            dependency.destination, result[0], dependency.source, query=dependency.query
         )
 
     def _resolve_query_all_dependency(
@@ -313,7 +349,8 @@ class Repository:
             raise ValueError(f"Invalid query: {dependency.query_all}")
 
         tags = [tag[1:] for tag in tags]
-        result = self.find(tags)
+        query = { "tags": { "$all": tags } }
+        result = self.find(query)
 
         if len(result) < 1:
             raise ValueError(f"Cannot resolve dependency: {dependency.query_all}")
