@@ -542,6 +542,7 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_1.id
+    assert resolved_dependency.source == dependency.source
 
     job.metadata["tags"] = ["test", "test-again"]
     job.metadata["image_size"] = 32
@@ -550,11 +551,31 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_2.id
+    assert resolved_dependency.source == dependency.source
 
-    dependency = FindLatestDependency("destination", {"image_size": {"$lt": 30}})
+    dependency = FindLatestDependency(
+        "destination",
+        {"image_size": {"$lt": 30}},
+        source="output",
+    )
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_1.id
+    assert resolved_dependency.source == dependency.source
+
+
+def test_resolve_find_latest_dependency_preserves_source(
+    repository: Repository
+) -> None:
+    """Regression test."""
+    job = get_dummy_job("base")
+    job.metadata["tags"] = ["test"]
+    repository.commit(job)
+
+    dependency = FindLatestDependency("destination", {"tags": "test"}, source="output")
+    resolved_dependency = repository.resolve(dependency)
+    assert isinstance(resolved_dependency, JobDependency)
+    assert resolved_dependency.source == dependency.source
 
 
 def test_resolve_find_all_dependency(repository: Repository) -> None:

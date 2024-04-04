@@ -297,9 +297,12 @@ class Repository:
 
         if len(result) < 1:
             raise ValueError(f"Cannot resolve dependency: {dependency.query}")
-        
+
         return JobDependency(
-            dependency.destination, result[0], find_latest=dependency.query
+            destination=dependency.destination,
+            job=result[0],
+            source=dependency.source,
+            find_latest=dependency.query,
         )
 
     def _resolve_find_all_dependency(
