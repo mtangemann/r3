@@ -177,6 +177,14 @@ def test_index_find_latest_returns_only_latest_job(storage_with_jobs: Storage):
     assert "test-latest" in result[0].metadata["tags"]
 
 
+def test_index_find_uses_cached_metadata(storage_with_jobs: Storage):
+    index = Index(storage_with_jobs)
+    index.rebuild()
+
+    job = index.find({"tags": "test"}, latest=True)[0]
+    assert job.uses_cached_metadata()
+
+
 def test_index_find_dependents(storage_with_jobs: Storage):
     index = Index(storage_with_jobs)
 
@@ -188,3 +196,12 @@ def test_index_find_dependents(storage_with_jobs: Storage):
     job = index.find({"tags": {"$all": ["test-latest"]}}, latest=True)[0]
     dependents = index.find_dependents(job)
     assert len(dependents) == 0
+
+
+def test_index_find_dependents_uses_cached_metadata(storage_with_jobs: Storage):
+    index = Index(storage_with_jobs)
+    index.rebuild()
+
+    job = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
+    dependents = index.find_dependents(job)
+    assert all(dependent.uses_cached_metadata() for dependent in dependents)
