@@ -159,7 +159,7 @@ class Index:
         Returns:
             The jobs that match the given query.
         """
-        sql_query = f"SELECT id, metadata FROM jobs WHERE {mongo_to_sql(query)}"
+        sql_query = f"SELECT id, timestamp, metadata FROM jobs WHERE {mongo_to_sql(query)}"  # noqa: E501
         if latest:
             sql_query += " ORDER BY timestamp DESC LIMIT 1"
 
@@ -168,8 +168,8 @@ class Index:
             results = transaction.fetchall()
 
         return [
-            self.storage.get(job_id, json.loads(cached_metadata))
-            for job_id, cached_metadata in results
+            self.storage.get(job_id, cached_timestamp, json.loads(cached_metadata))
+            for job_id, cached_timestamp, cached_metadata in results
         ]
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
@@ -187,7 +187,7 @@ class Index:
 
         with Transaction(self._path) as transaction:
             transaction.execute(
-                """SELECT child_id, metadata
+                """SELECT child_id, timestamp, metadata
                 FROM job_dependencies JOIN jobs ON child_id = id
                 WHERE parent_id = ?""",
                 (job.id,)
@@ -198,9 +198,10 @@ class Index:
 
         for result in results:
             job_id = result[0]
-            cached_metadata = json.loads(result[1])
+            cached_timestamp = result[1]
+            cached_metadata = json.loads(result[2])
 
-            dependent_job = self.storage.get(job_id, cached_metadata)
+            dependent_job = self.storage.get(job_id, cached_timestamp, cached_metadata)
             dependents[dependent_job.id] = dependent_job
 
             if recursive:

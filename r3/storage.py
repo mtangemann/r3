@@ -61,11 +61,18 @@ class Storage:
 
         raise TypeError(f"Expected Job or str, got {type(job_or_job_id)}")
 
-    def get(self, job_id: str, cached_metadata: Optional[Dict[str, Any]] = None) -> Job:
+    def get(
+        self,
+        job_id: str,
+        cached_timestamp: Optional[datetime] = None,
+        cached_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Job:
         """Retrieves a job from the storage.
         
         Parameters:
             job_id: The ID of the job to retrieve.
+            cached_timestamp: The timestamp of the job to retrieve, if available in the
+                cache.
             cached_metadata: The metadata of the job to retrieve, if available in the
                 cache.
         
@@ -74,7 +81,13 @@ class Storage:
         """
         if job_id not in self:
             raise FileNotFoundError(f"Job not found: {job_id}")
-        return Job(self.root / "jobs" / job_id, job_id, cached_metadata=cached_metadata)
+        
+        return Job(
+            self.root / "jobs" / job_id,
+            job_id,
+            cached_timestamp=cached_timestamp,
+            cached_metadata=cached_metadata,
+        )
 
     def jobs(self) -> Iterator[Job]:
         """Returns an iterator over all jobs in the storage."""
