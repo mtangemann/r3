@@ -91,7 +91,7 @@ class Repository:
 
     def jobs(self) -> Iterable[Job]:
         """Returns an iterator over all jobs in this repository."""
-        yield from self._storage.jobs()
+        return self.find({}, latest=False)
 
     def __contains__(self, item: Union[Job, Dependency]) -> bool:
         """Checks whether a job or dependency is contained in this repository.
