@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
@@ -167,10 +168,13 @@ class Index:
             transaction.execute(sql_query)
             results = transaction.fetchall()
 
-        return [
-            self.storage.get(job_id, cached_timestamp, json.loads(cached_metadata))
-            for job_id, cached_timestamp, cached_metadata in results
-        ]
+        jobs = []
+        for result in results:
+            job_id = result[0]
+            cached_timestamp = datetime.fromisoformat(result[1])
+            cached_metadata = json.loads(result[2])
+            jobs.append(self.storage.get(job_id, cached_timestamp, cached_metadata))
+        return jobs
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that directly depend on the given job.
@@ -198,7 +202,7 @@ class Index:
 
         for result in results:
             job_id = result[0]
-            cached_timestamp = result[1]
+            cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
 
             dependent_job = self.storage.get(job_id, cached_timestamp, cached_metadata)

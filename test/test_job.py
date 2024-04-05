@@ -68,6 +68,16 @@ def test_job_save_metadata_creates_metadata_yaml(fs: FakeFilesystem) -> None:
         assert yaml.safe_load(metadata_file) == job.metadata
 
 
+def test_job_timestamp_caching() -> None:
+    job_path = DATA_PATH / "jobs" / "base"
+
+    job = r3.Job(job_path)
+    assert not job.uses_cached_timestamp()
+ 
+    job = r3.Job(job_path, cached_timestamp=datetime.datetime(2021, 1, 1, 0, 0, 0))
+    assert job.uses_cached_timestamp()
+
+
 def test_job_metadata_caching() -> None:
     job_path = DATA_PATH / "jobs" / "base"
     with open(job_path / "metadata.yaml", "r") as metadata_file:
