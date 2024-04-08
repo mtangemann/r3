@@ -141,7 +141,8 @@ def remove(job_path: Path) -> None:
 def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -> None:
     """Searches the R3 repository for jobs matching the given conditions."""
     repository = r3.Repository(repository_path)
-    for job in repository.find(tags, latest):
+    query = {"tags": {"$all": tags}}
+    for job in repository.find(query, latest):
         if long:
             assert job.timestamp is not None
             datetime = job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S")

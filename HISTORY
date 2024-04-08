@@ -1,5 +1,20 @@
 # History
 
+## v0.4 (2024-04-08)
+- Jobs are now queried using MongoDB-style query documents
+  - `Repository.find` expects a query document instead of a list of tags
+  - Added `FindLatestDependency` and `FindAllDependency` that use the new query format
+  - `QueryDependency` and `QueryAllDependency` are now deprecated
+- R3 uses SQLite to store the job index
+- Metadata from the job index is used where available for faster loading
+
+BREAKING CHANGES:
+- `Repository.find` now expects a query document instead of a list of tags
+
+The repository format has not been changed, but the job index has to be rebuilt using
+`r3 rebuild-index`.
+
+
 ## v0.3 (2024-03-28)
 - Git dependencies are now automatically managed by R3
 - Git dependencies do not require a `commit` key anymore. If not specified, the remote

@@ -1,11 +1,13 @@
 """Job index for efficient searching."""
 
-import datetime
-from typing import Any, Dict, Iterable, List, Optional, Set
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Set
 
-import yaml
-
-from r3.job import Job
+from r3.job import Job, JobDependency
+from r3.query import mongo_to_sql
 from r3.storage import Storage
 
 
@@ -19,30 +21,93 @@ class Index:
             storage: The storage with the jobs to index.
         """
         self.storage = storage
-        self._path = storage.root / "index.yaml"
-        self.__entries: Optional[Dict[str, Any]] = None
+        self._path = storage.root / "index.sqlite"
 
-    @property
-    def _entries(self) -> Dict[str, Any]:
-        if self.__entries is None:
-            if self._path.exists():
-                with open(self._path, "r") as index_file:
-                    self.__entries = yaml.safe_load(index_file)
-            else:
-                self.__entries = dict()
+        if not self._path.exists():
+            self.rebuild()
 
-        return self.__entries
+    def rebuild(self) -> None:
+        """Rebuilds the index from the storage."""
+        if self._path.exists():
+            self._path.unlink()
 
-    @_entries.setter
-    def _entries(self, entries: Dict[str, Any]) -> None:
-        self.__entries = entries
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                """
+                CREATE TABLE jobs (
+                    id TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    metadata JSON NOT NULL
+                )
+                """
+            )
+            transaction.execute(
+                """
+                CREATE TABLE job_dependencies (
+                    child_id TEXT NOT NULL,
+                    parent_id TEXT NOT NULL,
+                    FOREIGN KEY (child_id) REFERENCES jobs (id),
+                    FOREIGN KEY (parent_id) REFERENCES jobs (id)
+                )
+                """
+            )
 
-    def add(self, job: Job, save: bool = True) -> None:
+            job_data = []
+            job_dependency_data: list[tuple[str, str]] = []
+
+            for job in self.storage.jobs():
+                assert job.id is not None
+                assert job.timestamp is not None
+
+                job_data.append(
+                    (job.id, job.timestamp.isoformat(), json.dumps(job.metadata))
+                )
+
+                job_dependency_data.extend(
+                    (job.id, dependency.job)
+                    for dependency in job.dependencies
+                    if isinstance(dependency, JobDependency)
+                )
+
+            transaction.executemany(
+                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                job_data,
+            )
+            transaction.executemany(
+                "INSERT INTO job_dependencies (child_id, parent_id) VALUES (?, ?)",
+                job_dependency_data,
+            )
+
+    def __len__(self) -> int:
+        """Returns the number of jobs in the index."""
+        with Transaction(self._path) as transaction:
+            transaction.execute("SELECT COUNT(*) FROM jobs")
+            return transaction.fetchone()[0]
+    
+    def __contains__(self, job: Job) -> bool:
+        """Checks if a job is in the index.
+        
+        Parameters:
+            job: The job to check.
+        
+        Returns:
+            Whether the job is in the index.
+        """
+        if job.id is None:
+            raise ValueError("Job ID is not set")
+
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "SELECT COUNT(*) FROM jobs WHERE id = ?",
+                (job.id,)
+            )
+            return transaction.fetchone()[0] > 0
+
+    def add(self, job: Job) -> None:
         """Adds a job to the index.
         
         Parameters:
             job: The job to add.
-            save: Whether to save the index to disk after adding the job.
         """
         if job not in self.storage:
             raise ValueError(f"Job not in storage: {job}")
@@ -51,57 +116,64 @@ class Index:
         assert job.id is not None
         assert job.timestamp is not None
 
-        self._entries[job.id] = {
-            "tags": job.metadata.get("tags", []),
-            "timestamp": job.timestamp.isoformat(),
-            "dependencies": [
-                dependency.to_config() for dependency in job.dependencies
-            ],
-        }
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                (job.id, job.timestamp.isoformat(), json.dumps(job.metadata))
+            )
+            transaction.executemany(
+                "INSERT INTO job_dependencies (child_id, parent_id) VALUES (?, ?)",
+                [
+                    (job.id, dependency.job)
+                    for dependency in job.dependencies
+                    if isinstance(dependency, JobDependency)
+                ]
+            )
 
-        if save:
-            self.save()
-    
-    def remove(self, job: Job, save: bool = True) -> None:
+    def remove(self, job: Job) -> None:
         """Removes a job from the index.
         
         Parameters:
             job: The job to remove.
-            save: Whether to save the index to disk after removing the job.
         """
         if job.id is None:
             raise ValueError("Job ID is not set")
 
-        if job.id in self._entries:
-            del self._entries[job.id]
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "DELETE FROM jobs WHERE id = ?",
+                (job.id,)
+            )
+            transaction.execute(
+                "DELETE FROM job_dependencies WHERE child_id = ? OR parent_id = ?",
+                (job.id, job.id)
+            )
 
-        if save:
-            self.save()
-
-    def find(self, tags: Iterable[str], latest: bool = False) -> List[Job]:
+    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
         """Finds jobs by tags.
         
         Parameters:
-            tags: The tags to search for. Jobs are matched if they contain all the given
-                tags.
+            query: The query to match jobs against. The query is specified as a
+                MongoDB-style query document.
             latest: Whether to return the latest job or all jobs with the given tags.
 
         Returns:
-            The jobs that match the given tags.
+            The jobs that match the given query.
         """
-        jobs = list()
-
-        for job_id, job_info in self._entries.items():
-            if set(tags).issubset(set(job_info["tags"])):
-                jobs.append(self.storage.get(job_id))
-
+        sql_query = f"SELECT id, timestamp, metadata FROM jobs WHERE {mongo_to_sql(query)}"  # noqa: E501
         if latest:
-            def key(job: Job) -> datetime.datetime:
-                assert job.timestamp is not None
-                return job.timestamp
-            jobs = sorted(jobs, key=key, reverse=True)
-            jobs = [jobs[0]] if len(jobs) > 0 else []
+            sql_query += " ORDER BY timestamp DESC LIMIT 1"
 
+        with Transaction(self._path) as transaction:
+            transaction.execute(sql_query)
+            results = transaction.fetchall()
+
+        jobs = []
+        for result in results:
+            job_id = result[0]
+            cached_timestamp = datetime.fromisoformat(result[1])
+            cached_metadata = json.loads(result[2])
+            jobs.append(self.storage.get(job_id, cached_timestamp, cached_metadata))
         return jobs
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
@@ -117,34 +189,43 @@ class Index:
         if job.id is None:
             raise ValueError("Job ID is not set")
 
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                """SELECT child_id, timestamp, metadata
+                FROM job_dependencies JOIN jobs ON child_id = id
+                WHERE parent_id = ?""",
+                (job.id,)
+            )
+            results = transaction.fetchall()
+
         dependents = dict()
 
-        for job_id, job_info in self._entries.items():
-            for dependency in job_info["dependencies"]:
-                if "job" in dependency and dependency["job"] == job.id:
-                    dependents[job_id] = self.storage.get(job_id)
+        for result in results:
+            job_id = result[0]
+            cached_timestamp = datetime.fromisoformat(result[1])
+            cached_metadata = json.loads(result[2])
 
-                    if recursive:
-                        indirect_dependents = self.find_dependents(
-                            dependents[job_id], recursive=True
-                        )
-                        dependents.update({
-                            dependent.id: dependent  # type: ignore
-                            for dependent in indirect_dependents
-                        })
+            dependent_job = self.storage.get(job_id, cached_timestamp, cached_metadata)
+            dependents[dependent_job.id] = dependent_job
+
+            if recursive:
+                dependents.update({
+                    job.id: job
+                    for job in self.find_dependents(dependent_job, recursive=True)
+                })
 
         return set(dependents.values())
 
-    def rebuild(self) -> None:
-        """Rebuilds the index from the storage."""
-        self._entries = dict()
 
-        for job in self.storage.jobs():
-            self.add(job, save=False)
+class Transaction:
+    def __init__(self, path: Path) -> None:
+        self.path = str(path)
 
-        self.save()
+    def __enter__(self) -> sqlite3.Cursor:
+        self.connection = sqlite3.connect(self.path)
+        self.cursor = self.connection.cursor()
+        return self.cursor
 
-    def save(self) -> None:
-        """Saves the index to disk."""
-        with open(self._path, "w") as index_file:
-            yaml.dump(self._entries, index_file)
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.connection.commit()
+        self.connection.close()
