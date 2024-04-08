@@ -14,11 +14,14 @@ class Query(abc.ABC):
     @staticmethod
     def from_mongo(query: Dict[str, Any]) -> "Query":
         """Creates a query from a MongoDB query document."""
+        if len(query) == 0:
+            return TrueQuery()
+
         if len(query) > 1:
             return AndQuery([
                 Query.from_mongo({key: value}) for key, value in query.items()
             ])
-    
+
         key, value = next(iter(query.items()))
 
         if key == "$and":
@@ -51,6 +54,12 @@ class Query(abc.ABC):
     def to_sql(self) -> str:
         """Converts the query to a SQL query."""
         pass
+
+
+@dataclass
+class TrueQuery(Query):
+    def to_sql(self) -> str:
+        return "TRUE"
 
 
 @dataclass

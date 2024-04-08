@@ -102,16 +102,16 @@ def test_init_creates_config_file_with_version(tmp_path: Path) -> None:
     assert "version" in config
 
 
-def test_repository_jobs_calls_storage_jobs(
+def test_repository_jobs_calls_find(
     tmp_path: Path, mocker: MockerFixture,
 ) -> None:
     path = tmp_path / "repository"
     repository = Repository.init(path)
 
-    storage_jobs = mocker.patch("r3.storage.Storage.jobs")
+    repository_find = mocker.patch("r3.repository.Repository.find")
     list(repository.jobs())
 
-    storage_jobs.assert_called_once()
+    repository_find.assert_called_once_with({}, latest=False)
 
 
 def test_repository_contains_job_calls_storage_contains(

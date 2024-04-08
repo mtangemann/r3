@@ -41,6 +41,13 @@ def database(tmp_path):
 
 QUERY_TEST_CASES = [
     (
+        {},
+        {"mnist-cnn-16", "mnist-cnn-28", "mnist-cnn-32",
+         "mnist-resnet-16", "mnist-resnet-28", "mnist-resnet-32",
+         "cifar10-cnn-16", "cifar10-cnn-28", "cifar10-cnn-32",
+         "cifar10-resnet-16", "cifar10-resnet-28", "cifar10-resnet-32"},
+    ),
+    (
         {"dataset": "mnist"},
         {"mnist-cnn-16", "mnist-cnn-28", "mnist-cnn-32",
          "mnist-resnet-16", "mnist-resnet-28", "mnist-resnet-32"},

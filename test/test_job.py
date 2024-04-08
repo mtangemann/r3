@@ -68,6 +68,38 @@ def test_job_save_metadata_creates_metadata_yaml(fs: FakeFilesystem) -> None:
         assert yaml.safe_load(metadata_file) == job.metadata
 
 
+def test_job_timestamp_caching() -> None:
+    job_path = DATA_PATH / "jobs" / "base"
+
+    job = r3.Job(job_path)
+    assert not job.uses_cached_timestamp()
+ 
+    job = r3.Job(job_path, cached_timestamp=datetime.datetime(2021, 1, 1, 0, 0, 0))
+    assert job.uses_cached_timestamp()
+
+
+def test_job_metadata_caching() -> None:
+    job_path = DATA_PATH / "jobs" / "base"
+    with open(job_path / "metadata.yaml", "r") as metadata_file:
+        disk_metadata = yaml.safe_load(metadata_file)
+
+    job = r3.Job(job_path)
+    assert not job.uses_cached_metadata()
+    assert job.metadata == disk_metadata
+
+    assert "cached" not in disk_metadata
+    cached_metadata = disk_metadata.copy()
+    cached_metadata["cached"] = True
+    job = r3.Job(job_path, cached_metadata=cached_metadata)
+
+    assert job.uses_cached_metadata()
+    assert job.metadata == cached_metadata
+
+    job.reload_metadata()
+    assert not job.uses_cached_metadata()
+    assert job.metadata == disk_metadata
+
+
 def test_job_datetime_returns_datetime_from_metadata_if_id_is_not_none() -> None:
     job_path = DATA_PATH / "jobs" / "base"
     job = r3.Job(job_path, str(uuid.uuid4()))

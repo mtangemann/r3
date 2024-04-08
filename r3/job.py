@@ -14,7 +14,13 @@ import r3.utils
 class Job:
     """A computational job."""
 
-    def __init__(self, path: Union[str, os.PathLike], id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        path: Union[str, os.PathLike],
+        id: Optional[str] = None,
+        cached_timestamp: Optional[datetime] = None,
+        cached_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Initializes a job instance.
 
         Parameters:
@@ -25,7 +31,9 @@ class Job:
         self._path = Path(path).absolute()
         self.id = id
 
-        self._metadata: Optional[Dict[str, Any]] = None
+        self._metadata: Optional[Dict[str, Any]] = cached_metadata
+        self._metadata_from_cache = cached_metadata is not None
+        self._timestamp = cached_timestamp
         self._files: Optional[Dict[Path, Path]] = None
         self.__config: Optional[Dict[str, Any]] = None
         self._dependencies: Optional[Sequence["Dependency"]] = None
@@ -44,17 +52,30 @@ class Job:
         file. Use `save_metadata` to save changes to the metadata file.
         """
         if self._metadata is None:
-            if (self.path / "metadata.yaml").is_file():
-                with open(self.path / "metadata.yaml", "r") as metadata_file:
-                    self._metadata = yaml.safe_load(metadata_file)
-            else:
-                self._metadata = dict()
-
+            self.reload_metadata()
+        assert self._metadata is not None
         return self._metadata
 
     @metadata.setter
     def metadata(self, metadata: Dict[str, Any]) -> None:
         self._metadata = metadata
+
+    def uses_cached_metadata(self) -> bool:
+        """Returns `True` if the metadata was loaded from the cache.
+        
+        Metadata from the cache might be outdated. Use `reload_metadata` to reload the
+        metadata from disk.
+        """
+        return self._metadata_from_cache
+
+    def reload_metadata(self) -> None:
+        """Reloads the metadata from the metadata file."""
+        if (self.path / "metadata.yaml").is_file():
+            with open(self.path / "metadata.yaml", "r") as metadata_file:
+                self._metadata = yaml.safe_load(metadata_file)
+        else:
+            self._metadata = dict()
+        self._metadata_from_cache = False
 
     def save_metadata(self) -> None:
         """Saves the job metadata to the metadata file.
@@ -72,6 +93,9 @@ class Job:
             A datetime object representing the date and time when this job was
             committed. If the job is not committed, this returns `None`.
         """
+        if self._timestamp is not None:
+            return self._timestamp
+
         if "timestamp" in self._config:
             return datetime.fromisoformat(self._config["timestamp"])
         
@@ -80,6 +104,13 @@ class Job:
     @timestamp.setter
     def timestamp(self, timestamp: datetime) -> None:
         self._config["timestamp"] = timestamp.isoformat()
+
+    def uses_cached_timestamp(self) -> bool:
+        """Returns `True` if the timestamp was loaded from the cache.
+        
+        The timestamp of a job is fixed, so it cannot be outdated.
+        """
+        return self._timestamp is not None
 
     # REVIEW: Replace with a method that returns an iterator?
     @property
