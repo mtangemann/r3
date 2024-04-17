@@ -183,6 +183,31 @@ def rebuild_index(repository_path: Path):
     repository = r3.Repository(repository_path)
     repository.rebuild_index()
 
+@cli.command()
+@click.argument(
+    "job_id", type=str
+)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def edit(job_id: str, repository_path: Path) -> None:
+    """Edit a jobs metadata."""
+    repository = r3.Repository(repository_path)
+    try:
+        job = repository[job_id]
+    except:
+        print(f"The job with ID {job_id} was not found in the repository.")
+
+    # Let user edit the metadata file of the job
+    metadata_file_path = job.path / "metadata.yaml"
+    click.edit(filename=metadata_file_path)
+
+    # Update job in search index (SQLite DB)
+    repository._index.remove(job)
+    repository._index.add(job)
 
 if __name__ == "__main__":
     cli()
