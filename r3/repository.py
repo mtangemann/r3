@@ -202,26 +202,6 @@ class Repository:
         self._storage.remove(job)
         self._index.remove(job)
 
-    def __getitem__(self, key):
-        """Get jobs by their ID with the repository[job_id] syntax."""
-        return self.get_job_by_id(key)
-
-    def get_job_by_id(self, job_id: str):
-        """Returns the job with the given ID.
-
-        If the job does not exist in the repository it will raise a KeyError.
-
-        Parameters:
-            job_id: ID of the job to retrieve from the repository.
-
-        Returns:
-            The job with the given ID.
-        """
-        try:
-            return self._storage.get(job_id=job_id)
-        except FileNotFoundError:
-            raise KeyError(f"Job with ID {job_id} not found in this repository.")
-
     def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
         """Finds jobs by a query.
         
