@@ -739,3 +739,17 @@ def test_resolve_job(repository: Repository) -> None:
     assert all(dependency.is_resolved() for dependency in resolved_job.dependencies)
     assert isinstance(resolved_job.dependencies[0], JobDependency)
     assert resolved_job.dependencies[0].job == committed_job.id
+
+def test_repository_get_job_by_id(repository: Repository) -> None:
+    job = get_dummy_job("base")
+    job = repository.commit(job)
+    
+    retrieved_job = repository.get_job_by_id(job.id)
+    retrieved_job_syntax_sugar = repository[job.id]
+
+    assert retrieved_job.id == retrieved_job_syntax_sugar.id == job.id
+
+    with pytest.raises(KeyError):
+        repository.get_job_by_id("invalid-job-id")
+    with pytest.raises(KeyError):
+        repository["invalid-job-id"]
