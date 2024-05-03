@@ -224,8 +224,14 @@ class Storage:
             dependency: The job dependency to check out.
             destination: The directory to check out the job dependency to.
         """
-        source = self.root / "jobs" / dependency.job / dependency.source
         destination = destination / dependency.destination
+
+        if str(dependency.source) == ".":
+            job = self.get(dependency.job)
+            self.checkout_job(job, destination)
+            return
+
+        source = self.root / "jobs" / dependency.job / dependency.source
 
         os.makedirs(destination.parent, exist_ok=True)
         os.symlink(source, destination)
