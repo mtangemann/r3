@@ -130,6 +130,48 @@ class Index:
                 ]
             )
 
+    def get(self, job_id: str) -> Job:
+        """Gets a job by ID.
+        
+        Parameters:
+            job_id: The ID of the job to get.
+        
+        Returns:
+            The job with the given ID.
+        """
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "SELECT timestamp, metadata FROM jobs WHERE id = ?",
+                (job_id,)
+            )
+            result = transaction.fetchone()
+
+        if result is None:
+            raise KeyError(f"Job not found: {job_id}")
+
+        cached_timestamp = datetime.fromisoformat(result[0])
+        cached_metadata = json.loads(result[1])
+        return self.storage.get(job_id, cached_timestamp, cached_metadata)
+    
+    def update(self, job: Job) -> None:
+        """Updates a job in the index.
+        
+        This does not update the dependency graph, since that is not expected to change.
+
+        Parameters:
+            job: The job to update.
+        """
+        if job not in self.storage:
+            raise ValueError(f"Job not in storage: {job}")
+        assert job.id is not None
+        assert job.timestamp is not None
+
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "UPDATE jobs SET timestamp = ?, metadata = ? WHERE id = ?",
+                (job.timestamp.isoformat(), json.dumps(job.metadata), job.id)
+            )
+
     def remove(self, job: Job) -> None:
         """Removes a job from the index.
         

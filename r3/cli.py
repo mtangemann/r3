@@ -183,6 +183,7 @@ def rebuild_index(repository_path: Path):
     repository = r3.Repository(repository_path)
     repository.rebuild_index()
 
+
 @cli.command()
 @click.argument(
     "job_id", type=str
@@ -206,8 +207,8 @@ def edit(job_id: str, repository_path: Path) -> None:
     click.edit(filename=metadata_file_path)
 
     # Update job in search index (SQLite DB)
-    repository._index.remove(job)
-    repository._index.add(job)
+    repository._index.update(job)
+
 
 if __name__ == "__main__":
     cli()
