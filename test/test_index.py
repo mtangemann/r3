@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
+import yaml
 
 from r3.index import Index
 from r3.job import Job, JobDependency
@@ -75,6 +76,41 @@ def test_index_add_adds_job(storage: Storage):
     index.add(job)
     assert len(index) == 1
     assert job in index
+
+
+def test_index_get(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert len(index) == 1
+    assert job in index
+    assert job.id is not None
+    retrieved_job = index.get(job.id)
+    assert retrieved_job.id == job.id
+
+
+def test_index_update(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job.metadata["updated"] = False
+    job = storage.add(job)
+    index.add(job)
+    assert len(index) == 1
+    assert job in index
+    assert job.id is not None
+    retrieved_job = index.get(job.id)
+    assert retrieved_job.metadata["updated"] is False
+
+    job.metadata["updated"] = True
+    with open(job.path / "metadata.yaml", "w") as file:
+        yaml.dump(job.metadata, file)
+    index.update(job)
+    assert len(index) == 1
+    assert job in index
+    assert job.id is not None
+    retrieved_job = index.get(job.id)
+    assert retrieved_job.metadata["updated"] is True
 
 
 def test_index_rebuild(storage: Storage):

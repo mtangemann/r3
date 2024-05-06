@@ -743,6 +743,7 @@ def test_resolve_job(repository: Repository) -> None:
 def test_repository_get_job_by_id(repository: Repository) -> None:
     job = get_dummy_job("base")
     job = repository.commit(job)
+    assert job.id is not None
     
     retrieved_job = repository.get_job_by_id(job.id)
     retrieved_job_syntax_sugar = repository[job.id]
