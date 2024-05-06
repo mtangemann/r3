@@ -29,7 +29,7 @@ DATA_PATH = Path(__file__).parent / "data"
 class ExampleGitRepository:
     def __init__(self, path: Union[str, Path]) -> None:
         self.path = Path(path)
-        execute(f"git init {self.path}")
+        execute(f"git init --initial-branch=main {self.path}")
         with open(self.path / "test.txt", "w") as file:
             file.write("original content")
         execute("git add test.txt", directory=self.path)
