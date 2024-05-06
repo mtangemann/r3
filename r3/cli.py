@@ -199,7 +199,7 @@ def edit(job_id: str, repository_path: Path) -> None:
     repository = r3.Repository(repository_path)
     try:
         job = repository[job_id]
-    except:
+    except KeyError:
         print(f"The job with ID {job_id} was not found in the repository.")
 
     # Let user edit the metadata file of the job

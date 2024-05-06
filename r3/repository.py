@@ -219,8 +219,9 @@ class Repository:
         """
         try:
             return self._storage.get(job_id=job_id)
-        except FileNotFoundError:
-            raise KeyError(f"Job with ID {job_id} not found in this repository.")
+        except FileNotFoundError as error:
+            message = f"Job with ID {job_id} not found in this repository."
+            raise KeyError(message) from error
 
     def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
         """Finds jobs by a query.
