@@ -45,7 +45,7 @@ def test_storage_init_creates_directories(fs: FakeFilesystem):
 def test_storage_add_updates_job_path(fs: FakeFilesystem):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
-    
+
     job = get_dummy_job(fs, "base")
     job = storage.add(job)
 
@@ -55,7 +55,7 @@ def test_storage_add_updates_job_path(fs: FakeFilesystem):
 def test_storage_add_creates_job_folder(fs: FakeFilesystem):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
-    
+
     job = get_dummy_job(fs, "base")
     job = storage.add(job)
 
@@ -65,7 +65,7 @@ def test_storage_add_creates_job_folder(fs: FakeFilesystem):
 def test_storage_add_assigns_job_id(fs: FakeFilesystem):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
-    
+
     job = get_dummy_job(fs, "base")
     job = storage.add(job)
 
@@ -76,7 +76,7 @@ def test_storage_add_assigns_job_id(fs: FakeFilesystem):
 def test_storage_add_copies_source_files(fs: FakeFilesystem):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
-    
+
     original_job = get_dummy_job(fs, "base")
 
     # REVIEW: Job should have a method to return all source files.
@@ -103,7 +103,7 @@ def test_storage_add_saves_metadata(fs: FakeFilesystem):
 
     job = storage.add(job)
     assert job.metadata["test"] == "value"
-    
+
     assert (job.path / "metadata.yaml").exists()
     with open(job.path / "metadata.yaml", "r") as metadata_file:
         metadata = yaml.safe_load(metadata_file)
@@ -363,20 +363,30 @@ def test_checkout_job_dependency_symlinks_files(fs: FakeFilesystem):
     dependency = JobDependency("destination", job.id)
     fs.makedir("/checkout1")
     storage.checkout_job_dependency(dependency, "/checkout1")
-    assert Path("/checkout1/destination").is_symlink()
-    assert Path("/checkout1/destination").resolve() == job.path.resolve()
+    assert not Path("/checkout1/destination").is_symlink()
+    assert Path("/checkout1/destination/output").is_symlink()
+    assert (
+        Path("/checkout1/destination/output").resolve()
+        == (job.path / 'output').resolve()
+    )
 
-    dependency = JobDependency("original_run.py", job.id, "run.py")
+    dependency = JobDependency("destination", job.id, recursive_checkout=False)
     fs.makedir("/checkout2")
     storage.checkout_job_dependency(dependency, "/checkout2")
-    assert Path("/checkout2/original_run.py").is_symlink()
-    assert Path("/checkout2/original_run.py").resolve() == job.path.resolve() / "run.py"
+    assert Path("/checkout2/destination").is_symlink()
+    assert Path("/checkout2/destination").resolve() == job.path.resolve()
 
-    dependency = JobDependency("destination", job.id, "output")
+    dependency = JobDependency("original_run.py", job.id, "run.py")
     fs.makedir("/checkout3")
     storage.checkout_job_dependency(dependency, "/checkout3")
-    assert Path("/checkout3/destination").is_symlink()
-    assert Path("/checkout3/destination").resolve() == job.path.resolve() / "output"
+    assert Path("/checkout3/original_run.py").is_symlink()
+    assert Path("/checkout3/original_run.py").resolve() == job.path.resolve() / "run.py"
+
+    dependency = JobDependency("destination", job.id, "output")
+    fs.makedir("/checkout4")
+    storage.checkout_job_dependency(dependency, "/checkout4")
+    assert Path("/checkout4/destination").is_symlink()
+    assert Path("/checkout4/destination").resolve() == job.path.resolve() / "output"
 
 
 def test_checkout_git_dependency_clones_repository():
@@ -432,7 +442,7 @@ def test_checkout_git_dependency_clones_repository():
                 assert (checkout_path / "destination" / child.name).is_dir()
             else:
                 assert (checkout_path / "destination" / child.name).is_file()
-        
+
         dependency = GitDependency(
             repository="https://github.com/mtangemann/r3.git",
             commit="c2397aac3fbdca682150faf721098b6f5a47806b",
