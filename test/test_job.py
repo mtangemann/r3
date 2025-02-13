@@ -73,7 +73,7 @@ def test_job_timestamp_caching() -> None:
 
     job = r3.Job(job_path)
     assert not job.uses_cached_timestamp()
- 
+
     job = r3.Job(job_path, cached_timestamp=datetime.datetime(2021, 1, 1, 0, 0, 0))
     assert job.uses_cached_timestamp()
 
@@ -130,6 +130,7 @@ def test_depedency_from_config() -> None:
         "source": "output",
         "destination": "data",
         "query": "#query",
+        "recursive_checkout": False,
     }
 
     dependency = r3.Dependency.from_config(config)
@@ -139,6 +140,7 @@ def test_depedency_from_config() -> None:
         "find_latest": {"tags": "test"},  # type: ignore
         "source": "output",
         "destination": "data",
+        "recursive_checkout": False,
     }
 
     dependency = r3.Dependency.from_config(config)
@@ -147,6 +149,7 @@ def test_depedency_from_config() -> None:
     config = {
         "find_all": {"tags": "test"},  # type: ignore
         "destination": "data",
+        "recursive_checkout": True,
     }
 
     dependency = r3.Dependency.from_config(config)
@@ -192,6 +195,7 @@ def test_job_dependency_from_config_defaults() -> None:
     assert dependency.source == Path(".")
     assert dependency.query is None
     assert dependency.query_all is None
+    assert dependency.recursive_checkout
 
 
 def test_job_dependency_from_config() -> None:
@@ -200,6 +204,7 @@ def test_job_dependency_from_config() -> None:
         "source": "output",
         "destination": "data",
         "query": "#query",
+        "recursive_checkout": False,
     }
 
     dependency = r3.JobDependency.from_config(config)
@@ -209,6 +214,7 @@ def test_job_dependency_from_config() -> None:
     assert dependency.destination == Path(config["destination"])
     assert dependency.query == config["query"]
     assert dependency.query_all is None
+    assert dependency.recursive_checkout == config["recursive_checkout"]
 
     config = {
         "job": str(uuid.uuid4()),
@@ -224,15 +230,17 @@ def test_job_dependency_from_config() -> None:
     assert dependency.destination == Path(config["destination"])
     assert dependency.query is None
     assert dependency.query_all == config["query_all"]
+    assert dependency.recursive_checkout
 
 
 def test_job_dependency_to_config():
-    dependency = r3.JobDependency(str(uuid.uuid4()), Path("data"))
+    dependency = r3.JobDependency(str(uuid.uuid4()), Path("data"), recursive_checkout=False)
 
     assert dependency.to_config() == {
         "job": dependency.job,
         "source": ".",
         "destination": str(dependency.destination),
+        "recursive_checkout": False,
     }
 
     dependency = r3.JobDependency(
@@ -329,11 +337,13 @@ def test_find_latest_dependency_from_config() -> None:
     assert dependency.destination == Path(config["destination"])  # type: ignore
     assert dependency.query == config["find_latest"]
     assert dependency.source == Path(".")
+    assert dependency.recursive_checkout
 
     config = {
         "find_latest": {"tags": "test"},
         "source": "output",
         "destination": "data",
+        "recursive_checkout": False,
     }
 
     dependency = r3.FindLatestDependency.from_config(config)
@@ -341,6 +351,7 @@ def test_find_latest_dependency_from_config() -> None:
     assert dependency.destination == Path(config["destination"])  # type: ignore
     assert dependency.query == config["find_latest"]
     assert dependency.source == Path(config["source"])  # type: ignore
+    assert dependency.recursive_checkout == config["recursive_checkout"]
 
 
 def test_find_latest_dependency_to_config():
@@ -352,12 +363,13 @@ def test_find_latest_dependency_to_config():
         "destination": str(dependency.destination),
     }
 
-    dependency = r3.FindLatestDependency(Path("data"), {"tags": "test"}, Path("output"))
+    dependency = r3.FindLatestDependency(Path("data"), {"tags": "test"}, Path("output"), recursive_checkout=False)
 
     assert dependency.to_config() == {
         "find_latest": dependency.query,
         "source": str(dependency.source),
         "destination": str(dependency.destination),
+        "recursive_checkout": False,
     }
 
 
@@ -379,13 +391,26 @@ def test_find_all_dependency_from_config() -> None:
     assert dependency.destination == Path(config["destination"])  # type: ignore
     assert dependency.query == config["find_all"]
 
+    config = {
+        "find_all": {"tags": "test"},
+        "destination": "data",
+        "recursive_checkout": False,
+    }
+
+    dependency = r3.FindAllDependency.from_config(config)
+
+    assert dependency.destination == Path(config["destination"])  # type: ignore
+    assert dependency.query == config["find_all"]
+    assert dependency.recursive_checkout == config["recursive_checkout"]
+
 
 def test_find_all_dependency_to_config():
-    dependency = r3.FindAllDependency(Path("data"), {"tags": "test"})
+    dependency = r3.FindAllDependency(Path("data"), {"tags": "test"}, recursive_checkout=False)
 
     assert dependency.to_config() == {
         "find_all": dependency.query,
         "destination": str(dependency.destination),
+        "recursive_checkout": False,
     }
 
 
