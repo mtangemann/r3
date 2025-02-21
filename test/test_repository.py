@@ -57,7 +57,7 @@ class ExampleGitRepository:
             file.write("forced content")
         execute("git add test.txt", directory=self.path)
         execute("git commit --amend -m 'Force update'", directory=self.path)
-    
+
     def add_tag(self, tag: str) -> None:
         execute(f"git tag {tag} -m 'Test tag'", directory=self.path)
 
@@ -527,6 +527,7 @@ def test_resolve_query_dependency(repository: Repository) -> None:
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == job.id
+    assert resolved_dependency.recursive_checkout
 
     with pytest.raises(ValueError):
         repository.resolve(QueryDependency("destination", "#does-not-exist"))
@@ -538,11 +539,17 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     job.metadata["image_size"] = 28
     committed_job_1 = repository.commit(job)
 
-    dependency = FindLatestDependency("destination", {"tags": "test"})
+    dependency = FindLatestDependency(
+        "destination",
+        {"tags": "test"},
+        recursive_checkout=False
+    )
+
     resolved_dependency = repository.resolve(dependency)
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_1.id
     assert resolved_dependency.source == dependency.source
+    assert not resolved_dependency.recursive_checkout
 
     job.metadata["tags"] = ["test", "test-again"]
     job.metadata["image_size"] = 32
@@ -552,6 +559,7 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_2.id
     assert resolved_dependency.source == dependency.source
+    assert not resolved_dependency.recursive_checkout
 
     dependency = FindLatestDependency(
         "destination",
@@ -562,6 +570,8 @@ def test_resolve_find_latest_dependency(repository: Repository) -> None:
     assert isinstance(resolved_dependency, JobDependency)
     assert resolved_dependency.job == committed_job_1.id
     assert resolved_dependency.source == dependency.source
+    assert resolved_dependency.recursive_checkout
+
 
 
 def test_resolve_find_latest_dependency_preserves_source(

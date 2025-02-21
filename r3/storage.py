@@ -34,10 +34,10 @@ class Storage:
     @staticmethod
     def init(root: Union[str, os.PathLike]) -> "Storage":
         """Initializes a new storage at the given root directory.
-        
+
         Parameters:
             root: The root directory of the storage (the repository root).
-        
+
         Returns:
             The initialized storage.
         """
@@ -48,7 +48,7 @@ class Storage:
 
     def __contains__(self, job_or_job_id: Union[Job, str]) -> bool:
         """Checks whether a job is in the storage.
-        
+
         Parameters:
             job_or_job_id: The job or job ID to check for.
         """
@@ -68,20 +68,20 @@ class Storage:
         cached_metadata: Optional[Dict[str, Any]] = None,
     ) -> Job:
         """Retrieves a job from the storage.
-        
+
         Parameters:
             job_id: The ID of the job to retrieve.
             cached_timestamp: The timestamp of the job to retrieve, if available in the
                 cache.
             cached_metadata: The metadata of the job to retrieve, if available in the
                 cache.
-        
+
         Returns:
             The job with the given ID.
         """
         if job_id not in self:
             raise FileNotFoundError(f"Job not found: {job_id}")
-        
+
         return Job(
             self.root / "jobs" / job_id,
             job_id,
@@ -97,13 +97,13 @@ class Storage:
 
     def add(self, job: Job) -> Job:
         """Adds a job to the storage.
-        
+
         This method does not check whether all dependencies of the job are satisfied but
         copies the job to the storage as is.
 
         Parameters:
             job: The job to add to the storage.
-        
+
         Returns:
             The job with updated path and ID.
         """
@@ -160,7 +160,7 @@ class Storage:
         """
         if job not in self:
             raise FileNotFoundError(f"Job not found: {job}")
-    
+
         for path in job.files:
             _add_write_permission(job.path / path)
         _add_write_permission(job.path)
@@ -171,7 +171,7 @@ class Storage:
         self, item: Union[Job, Dependency], path: Union[str, os.PathLike]
     ) -> None:
         """Checks out a job or dependency to a destination directory.
-        
+
         Parameters:
             item: The job or dependency to check out.
             path: The directory to check out the item to.
@@ -189,10 +189,10 @@ class Storage:
             raise TypeError(
                 f"Expected Job, JobDependency or GitDependency, got {type(item)}"
             )
- 
+
     def checkout_job(self, job: Job, destination: Union[str, os.PathLike]) -> None:
         """Checks out a job to a destination directory.
-        
+
         Parameters:
             job: The job to check out.
             destination: The directory to check out the job to.
@@ -219,13 +219,19 @@ class Storage:
         self, dependency: JobDependency, destination: Union[str, os.PathLike]
     ) -> None:
         """Checks out a job dependency to a destination directory.
-        
+
         Parameters:
             dependency: The job dependency to check out.
             destination: The directory to check out the job dependency to.
         """
-        source = self.root / "jobs" / dependency.job / dependency.source
         destination = destination / dependency.destination
+
+        if str(dependency.source) == "." and dependency.recursive_checkout:
+            job = self.get(dependency.job)
+            self.checkout_job(job, destination)
+            return
+
+        source = self.root / "jobs" / dependency.job / dependency.source
 
         os.makedirs(destination.parent, exist_ok=True)
         os.symlink(source, destination)
@@ -234,7 +240,7 @@ class Storage:
         self, dependency: GitDependency, destination: Union[str, os.PathLike]
     ) -> None:
         """Checks out a git dependency to a destination directory.
-        
+
         Parameters:
             dependency: The git dependency to check out.
             destination: The directory to check out the git dependency to.
