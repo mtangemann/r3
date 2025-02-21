@@ -346,7 +346,7 @@ class JobDependency(Dependency):
         if self.query_all is not None:
             config["query_all"] = self.query_all
 
-        if self.recursive_checkout is not True:
+        if not self.recursive_checkout:
             config["recursive_checkout"] = self.recursive_checkout
 
         return config
