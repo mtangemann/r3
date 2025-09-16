@@ -95,10 +95,10 @@ class Repository:
 
     def __contains__(self, item: Union[Job, Dependency]) -> bool:
         """Checks whether a job or dependency is contained in this repository.
-        
+
         Parameters:
             item: The job or dependency to check for.
-        
+
         Returns:
             Whether the given job or dependency is contained in this repository.
         """
@@ -139,10 +139,10 @@ class Repository:
 
     def commit(self, job: Job) -> Job:
         """Commits a job to the repository.
-        
+
         Parameters:
             job: The job to commit.
-        
+
         Returns:
             The committed job. Compared to the original job, the returned job has an id
             and the path is changed to the location in the repository.
@@ -164,7 +164,7 @@ class Repository:
         self, item: Union[Dependency, Job], path: Union[str, os.PathLike]
     ) -> None:
         """Checks out a job or dependency to the given path.
-        
+
         Parameters:
             item: The job or dependency to check out.
             path: The path to check out the job or dependency to.
@@ -179,10 +179,10 @@ class Repository:
 
     def remove(self, job: Job) -> None:
         """Removes a job from the repository.
-        
+
         Parameters:
             job: The job to remove.
-        
+
         Raises:
             ValueError: If the job is not contained in this repository or if other jobs
                 depend on it.
@@ -202,9 +202,30 @@ class Repository:
         self._storage.remove(job)
         self._index.remove(job)
 
+    def __getitem__(self, key):
+        """Get jobs by their ID with the repository[job_id] syntax."""
+        return self.get_job_by_id(key)
+
+    def get_job_by_id(self, job_id: str):
+        """Returns the job with the given ID.
+
+        If the job does not exist in the repository it will raise a KeyError.
+
+        Parameters:
+            job_id: ID of the job to retrieve from the repository.
+
+        Returns:
+            The job with the given ID.
+        """
+        try:
+            return self._storage.get(job_id=job_id)
+        except FileNotFoundError as error:
+            message = f"Job with ID {job_id} not found in this repository."
+            raise KeyError(message) from error
+
     def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
         """Finds jobs by a query.
-        
+
         Parameters:
             query: The mongo-style query document to find jobs by.
             latest: Whether to return the latest job or all jobs with the given tags.
@@ -216,11 +237,11 @@ class Repository:
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that depend on the given job.
-        
+
         Parameters:
             job: The job to find dependents for.
             recursive: Whether to find dependents recursively.
-        
+
         Returns:
             The jobs that depend on the given job.
         """
@@ -240,13 +261,13 @@ class Repository:
         item: Union[Job, Dependency],
     ) -> Union[Job, Dependency, List[JobDependency]]:
         """Resolves a job or dependency.
-        
+
         A job or dependency is resolved by replacing query dependencies with concrete
         dependencies.
 
         Parameters:
             item: The job or dependency to resolve.
-        
+
         Returns:
             The resolved job or dependency. A query dependency might resolve to multiple
             concrete dependencies, in which case a list of dependencies is returned.
@@ -288,7 +309,7 @@ class Repository:
             dependency.to_config() for dependency in job.dependencies
         ]
         return job
-    
+
     def _resolve_find_latest_dependency(
         self,
         dependency: FindLatestDependency,
@@ -303,6 +324,7 @@ class Repository:
             job=result[0],
             source=dependency.source,
             find_latest=dependency.query,
+            recursive_checkout=dependency.recursive_checkout,
         )
 
     def _resolve_find_all_dependency(
@@ -317,7 +339,10 @@ class Repository:
         for job in result:
             assert job.id is not None
             resolved_dependencies.append(JobDependency(
-                dependency.destination / job.id, job, find_all=dependency.query
+                destination=dependency.destination / job.id,
+                job=job,
+                find_all=dependency.query,
+                recursive_checkout=dependency.recursive_checkout,
             ))
 
         return resolved_dependencies
@@ -371,7 +396,7 @@ class Repository:
         repository_path = self.path / dependency.repository_path
         if not repository_path.exists():
             execute(f"git clone --bare {dependency.repository} {repository_path}")
-        
+
         if dependency.branch is not None:
             commit = r3.utils.git_get_remote_branch_head(
                 repository_path, dependency.branch
@@ -384,7 +409,7 @@ class Repository:
                 raise ValueError(f"Tag not found: {dependency.tag}")
         else:
             commit = r3.utils.git_get_remote_head(repository_path)
-        
+
         return GitDependency(
             dependency.destination,
             dependency.repository,

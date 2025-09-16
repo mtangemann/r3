@@ -1,14 +1,14 @@
-.PHONY: fix lint lint/ruff lint/mypy test
+.PHONY: fix lint ruff mypy test
 
 fix:
 	ruff check --fix .
 
-lint: lint/ruff lint/mypy
+lint: ruff mypy
 
-lint/ruff:
-	ruff check .
+ruff:
+	pre-commit run ruff --all-files
 
-lint/mypy:
+mypy:
 	mypy r3 test migration
 
 test:

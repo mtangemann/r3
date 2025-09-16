@@ -1,5 +1,19 @@
 # History
 
+## v0.5 (2025-09-16)
+- Jobs are always referenced by their id in the CLI, not by their path.
+- Added `r3 edit <id>` command for editing job metadata.
+- Added a `recursive_checkout` options for job dependencies,
+- Improved the dev tooling by setting up a pre-commit hook for ruff, and GitHub Actions
+  for ruff and mypy. Change to `uv` as recommended package manager.
+- Change to `stable` branch for releases and `main` branch for development.
+
+BREAKING CHANGES:
+- All CLI commands that require a reference to a job now expect the id of the job. Prior
+  to this version, jobs could be referenced by their path.
+- The latest stable release has to be installed from the `stable` branch.
+
+
 ## v0.4 (2024-04-08)
 - Jobs are now queried using MongoDB-style query documents
   - `Repository.find` expects a query document instead of a list of tags

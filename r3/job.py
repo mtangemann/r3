@@ -62,7 +62,7 @@ class Job:
 
     def uses_cached_metadata(self) -> bool:
         """Returns `True` if the metadata was loaded from the cache.
-        
+
         Metadata from the cache might be outdated. Use `reload_metadata` to reload the
         metadata from disk.
         """
@@ -79,7 +79,7 @@ class Job:
 
     def save_metadata(self) -> None:
         """Saves the job metadata to the metadata file.
-        
+
         This method has to be called after modifying the metadata dictionary.
         """
         with open(self.path / "metadata.yaml", "w") as metadata_file:
@@ -88,7 +88,7 @@ class Job:
     @property
     def timestamp(self) -> Optional[datetime]:
         """Returns the date and time when this job was committed.
-        
+
         Returns:
             A datetime object representing the date and time when this job was
             committed. If the job is not committed, this returns `None`.
@@ -98,7 +98,7 @@ class Job:
 
         if "timestamp" in self._config:
             return datetime.fromisoformat(self._config["timestamp"])
-        
+
         return None
 
     @timestamp.setter
@@ -107,7 +107,7 @@ class Job:
 
     def uses_cached_timestamp(self) -> bool:
         """Returns `True` if the timestamp was loaded from the cache.
-        
+
         The timestamp of a job is fixed, so it cannot be outdated.
         """
         return self._timestamp is not None
@@ -203,7 +203,7 @@ class Dependency(abc.ABC):
         self.destination = Path(destination)
 
     @staticmethod
-    def from_config(config: Dict[str, str]) -> "Dependency":
+    def from_config(config: Dict[str, Any]) -> "Dependency":
         """Returns a dependency instance from a config dictionary.
 
         This method determines the type of dependency from config and delegates the
@@ -237,7 +237,7 @@ class Dependency(abc.ABC):
     @abc.abstractmethod
     def is_resolved(self) -> bool:
         """Returns `True` if the dependency is resolved.
-        
+
         A dependency is resolved if it references a specific job or commit.
         """
         raise NotImplementedError
@@ -256,18 +256,21 @@ class JobDependency(Dependency):
         destination: Union[os.PathLike, str],
         job: Union[Job, str],
         source: Union[os.PathLike, str] = ".",
+        recursive_checkout: bool = True,
         find_latest: Optional[Dict[str, Any]] = None,
         find_all: Optional[Dict[str, Any]] = None,
         query: Optional[str] = None,
         query_all: Optional[str] = None,
     ) -> None:
         """Initializes the job dependency.
-        
+
         Parameters:
             job: Job instance or job id.
             destination: Path relative to the job to which the dependency will be
                 checked out.
             source: Path relative to the source job to be checked out.
+            recursive_checkout: If `True`, checking out this JobDependency will also
+                recursively checkout all dependencies of the job.
             find_latest: If this job was resolved from a FindLatestDependency, this is
                 the query that was used.
             find_all: If this job was resolved from a FindAllDependency, this is the
@@ -288,15 +291,16 @@ class JobDependency(Dependency):
             self.job = job
 
         self.source = Path(source)
+        self.recursive_checkout = recursive_checkout
         self.find_latest = find_latest
         self.find_all = find_all
         self.query = query
         self.query_all = query_all
 
     @staticmethod
-    def from_config(config: Dict[str, str]) -> "JobDependency":
+    def from_config(config: Dict[str, Any]) -> "JobDependency":
         """Creates a JobDependency instance from a config dictionary.
-        
+
         Example:
 
             config = {
@@ -313,7 +317,7 @@ class JobDependency(Dependency):
         Parameters:
             config: A dictionary representing the dependency. See the example above for
                 the format of the dictionary.
-        
+
         Returns:
             A JobDependency instance.
         """
@@ -321,7 +325,7 @@ class JobDependency(Dependency):
 
     def to_config(self) -> Dict[str, Any]:
         """Returns a config dictionary representing the dependency.
-        
+
         See `from_config` for an example.
         """
         config: Dict[str, Any] = {
@@ -332,7 +336,7 @@ class JobDependency(Dependency):
 
         if self.find_latest is not None:
             config["find_latest"] = self.find_latest
-        
+
         if self.find_all is not None:
             config["find_all"] = self.find_all
 
@@ -341,6 +345,9 @@ class JobDependency(Dependency):
 
         if self.query_all is not None:
             config["query_all"] = self.query_all
+
+        if not self.recursive_checkout:
+            config["recursive_checkout"] = self.recursive_checkout
 
         return config
 
@@ -361,6 +368,7 @@ class FindLatestDependency(Dependency):
         destination: Union[os.PathLike, str],
         query: Dict[str, Any],
         source: Union[os.PathLike, str] = ".",
+        recursive_checkout: bool = True,
     ) -> None:
         """Initializes the query dependency.
 
@@ -369,15 +377,18 @@ class FindLatestDependency(Dependency):
             destination: Path relative to the job to which the dependency will be
                 checked out.
             source: Path relative to the source job to be checked out.
+            recursive_checkout: If `True`, checking out this FindLatestDependency will
+                also recursively checkout all dependencies of the job.
         """
         super().__init__(destination)
         self.source = Path(source)
         self.query = query
-    
+        self.recursive_checkout = recursive_checkout
+
     @staticmethod
     def from_config(config: Dict[str, Any]) -> "FindLatestDependency":
         """Creates a QueryDependency instance from a config dictionary.
-        
+
         Example:
 
             config = {
@@ -389,7 +400,7 @@ class FindLatestDependency(Dependency):
             }
 
             dependency = FindLatestDependency.from_config(config)
-        
+
         Parameters:
             config: A dictionary representing the dependency. See the example above for
                 the format of the dictionary.
@@ -400,14 +411,19 @@ class FindLatestDependency(Dependency):
 
     def to_config(self) -> Dict[str, Any]:
         """Returns a config dictionary representing the dependency.
-        
+
         See `from_config` for an example.
         """
-        return {
+        config: Dict[str, Any] = {
             "destination": str(self.destination),
             "find_latest": self.query,
             "source": str(self.source),
         }
+
+        if not self.recursive_checkout:
+            config["recursive_checkout"] = self.recursive_checkout
+
+        return config
 
     def is_resolved(self) -> bool:
         """Returns `True` if the dependency is resolved."""
@@ -415,7 +431,7 @@ class FindLatestDependency(Dependency):
 
     def hash(self) -> str:
         """Raises an error.
-        
+
         FindLatestDependencies cannot be hashed because the hash would depend on the
         result of the query, which is not known at the time of creating the dependency.
 
@@ -427,11 +443,12 @@ class FindLatestDependency(Dependency):
 
 class FindAllDependency(Dependency):
     """A dependency to all jobs determined by a query."""
-    
+
     def __init__(
         self,
         destination: Union[os.PathLike, str],
         query: Dict[str, Any],
+        recursive_checkout: bool = True,
     ) -> None:
         """Initializes the find all dependency.
 
@@ -444,14 +461,17 @@ class FindAllDependency(Dependency):
             destination: Base path relative to the job to which the jobs will be checked
                 out. Each job will be checked out to a subdirectory of this path with
                 the job id as the name of the subdirectory.
+            recursive_checkout: If `True`, checking out this FindAllDependency will also
+                recursively checkout all dependencies of the jobs.
         """
         super().__init__(destination)
         self.query = query
+        self.recursive_checkout = recursive_checkout
 
     @staticmethod
     def from_config(config: Dict[str, Any]) -> "FindAllDependency":
         """Creates a FindAllDependency instance from a config dictionary.
-        
+
         Example:
 
             config = {
@@ -462,7 +482,7 @@ class FindAllDependency(Dependency):
             }
 
             dependency = FindAllDependency.from_config(config)
-        
+
         Parameters:
             config: A dictionary representing the dependency. See the example above for
                 the format of the dictionary.
@@ -476,10 +496,15 @@ class FindAllDependency(Dependency):
 
         See `from_config` for an example.
         """
-        return {
+        config: Dict[str, Any] = {
             "find_all": self.query,
             "destination": str(self.destination),
         }
+
+        if not self.recursive_checkout:
+            config["recursive_checkout"] = self.recursive_checkout
+
+        return config
 
     def is_resolved(self) -> bool:
         """Returns `True` if the dependency is resolved."""
@@ -527,7 +552,7 @@ class QueryDependency(Dependency):
     @staticmethod
     def from_config(config: Dict[str, str]) -> "QueryDependency":
         """Creates a QueryDependency instance from a config dictionary.
-        
+
         Example:
 
             config = {
@@ -537,7 +562,7 @@ class QueryDependency(Dependency):
             }
 
             dependency = QueryDependency.from_config(config)
-        
+
         Parameters:
             config: A dictionary representing the dependency. See the example above for
                 the format of the dictionary.
@@ -546,7 +571,7 @@ class QueryDependency(Dependency):
 
     def to_config(self) -> Dict[str, str]:
         """Returns a config dictionary representing the dependency.
-        
+
         See `from_config` for an example.
         """
         return {
@@ -561,7 +586,7 @@ class QueryDependency(Dependency):
 
     def hash(self) -> str:
         """Raises an error.
-        
+
         QueryDependencies cannot be hashed because the hash would depend on the result
         of the query, which is not known at the time of creating the dependency.
 
@@ -602,7 +627,7 @@ class QueryAllDependency(Dependency):
     @staticmethod
     def from_config(config: Dict[str, str]) -> "QueryAllDependency":
         """Creates a QueryAllDependency instance from a config dictionary.
-        
+
         Example:
 
             config = {
@@ -611,7 +636,7 @@ class QueryAllDependency(Dependency):
             }
 
             dependency = QueryAllDependency.from_config(config)
-        
+
         Parameters:
             config: A dictionary representing the dependency. See the example above for
                 the format of the dictionary.
@@ -657,7 +682,7 @@ class GitDependency(Dependency):
         tag: Optional[str] = None,
     ) -> None:
         """Initializes the git dependency.
-        
+
         Parameters:
             repository: URL of the git repository. Currently, only github.com is
                 supported.
@@ -701,7 +726,7 @@ class GitDependency(Dependency):
     @staticmethod
     def from_config(config: Dict[str, str]) -> "GitDependency":
         """Creates a GitDependency instance from a config dictionary.
-        
+
         Example:
 
             config = {
@@ -710,15 +735,15 @@ class GitDependency(Dependency):
                 "source": "src/model",
                 "destination": "model",
             }
-        
+
             dependency = GitDependency.from_config(config)
-        
+
         Parameters:
             config: A dictionary representing the dependency. See the example above for
                 the format of the dictionary.
 
         Returns:
-            A GitDependency instance.        
+            A GitDependency instance.
         """
         return GitDependency(**config)
 
