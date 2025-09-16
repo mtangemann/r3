@@ -3,6 +3,7 @@
 import datetime
 import uuid
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 import yaml
@@ -210,8 +211,8 @@ def test_job_dependency_from_config() -> None:
     dependency = r3.JobDependency.from_config(config)
 
     assert dependency.job == config["job"]
-    assert dependency.source == Path(config["source"])
-    assert dependency.destination == Path(config["destination"])
+    assert dependency.source == Path("output")
+    assert dependency.destination == Path("data")
     assert dependency.query == config["query"]
     assert dependency.query_all is None
     assert dependency.recursive_checkout == config["recursive_checkout"]
@@ -226,15 +227,17 @@ def test_job_dependency_from_config() -> None:
     dependency = r3.JobDependency.from_config(config)
 
     assert dependency.job == config["job"]
-    assert dependency.source == Path(config["source"])
-    assert dependency.destination == Path(config["destination"])
+    assert dependency.source == Path(".")
+    assert dependency.destination == Path("data")
     assert dependency.query is None
     assert dependency.query_all == config["query_all"]
     assert dependency.recursive_checkout
 
 
 def test_job_dependency_to_config():
-    dependency = r3.JobDependency(str(uuid.uuid4()), Path("data"), recursive_checkout=False)
+    dependency = r3.JobDependency(
+        str(uuid.uuid4()), Path("data"), recursive_checkout=False,
+    )
 
     assert dependency.to_config() == {
         "job": dependency.job,
@@ -327,7 +330,7 @@ def test_job_dependency_hash_does_not_depend_on_find_latest() -> None:
 
 
 def test_find_latest_dependency_from_config() -> None:
-    config = {
+    config: Dict[str, Any] = {
         "find_latest": {"tags": "test"},
         "destination": "data",
     }
@@ -363,7 +366,12 @@ def test_find_latest_dependency_to_config():
         "destination": str(dependency.destination),
     }
 
-    dependency = r3.FindLatestDependency(Path("data"), {"tags": "test"}, Path("output"), recursive_checkout=False)
+    dependency = r3.FindLatestDependency(
+        Path("data"),
+        {"tags": "test"},
+        Path("output"),
+        recursive_checkout=False,
+    )
 
     assert dependency.to_config() == {
         "find_latest": dependency.query,
@@ -381,7 +389,7 @@ def test_find_latest_dependency_hash_raises_error():
 
 
 def test_find_all_dependency_from_config() -> None:
-    config = {
+    config: Dict[str, Any] = {
         "find_all": {"tags": "test"},
         "destination": "data",
     }
@@ -405,7 +413,11 @@ def test_find_all_dependency_from_config() -> None:
 
 
 def test_find_all_dependency_to_config():
-    dependency = r3.FindAllDependency(Path("data"), {"tags": "test"}, recursive_checkout=False)
+    dependency = r3.FindAllDependency(
+        Path("data"),
+        {"tags": "test"},
+        recursive_checkout=False,
+    )
 
     assert dependency.to_config() == {
         "find_all": dependency.query,
