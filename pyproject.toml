@@ -21,7 +21,7 @@ dependencies = [
 dynamic = ["version"]
 
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "mkdocs~=1.5",
     "mkdocs-click~=0.8",
