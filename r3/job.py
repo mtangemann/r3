@@ -203,7 +203,7 @@ class Dependency(abc.ABC):
         self.destination = Path(destination)
 
     @staticmethod
-    def from_config(config: Dict[str, str]) -> "Dependency":
+    def from_config(config: Dict[str, Any]) -> "Dependency":
         """Returns a dependency instance from a config dictionary.
 
         This method determines the type of dependency from config and delegates the
@@ -298,7 +298,7 @@ class JobDependency(Dependency):
         self.query_all = query_all
 
     @staticmethod
-    def from_config(config: Dict[str, str]) -> "JobDependency":
+    def from_config(config: Dict[str, Any]) -> "JobDependency":
         """Creates a JobDependency instance from a config dictionary.
 
         Example:
@@ -414,7 +414,7 @@ class FindLatestDependency(Dependency):
 
         See `from_config` for an example.
         """
-        config = {
+        config: Dict[str, Any] = {
             "destination": str(self.destination),
             "find_latest": self.query,
             "source": str(self.source),
@@ -496,7 +496,7 @@ class FindAllDependency(Dependency):
 
         See `from_config` for an example.
         """
-        config = {
+        config: Dict[str, Any] = {
             "find_all": self.query,
             "destination": str(self.destination),
         }
