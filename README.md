@@ -1,7 +1,26 @@
 # R3 - **R**epository for **R**eliable **R**esearch
 
 ## Usage
-Have a look at the documentation:
+Use the `stable` branch to get the latest release of R3:
+
+```bash
+git clone -b stable https://github.com/mtangemann/r3.git
+
+# or
+git clone https://github.com/mtangemann/r3.git
+cd r3
+git switch stable
+```
+
+The recommended way to install R3 is by using [uv](), but other package mangers will
+work as well:
+
+```bash
+cd r3
+uv pip install -e .
+```
+
+Have a look at the documentation for more information:
 ```bash
 mkdocs serve
 ```
