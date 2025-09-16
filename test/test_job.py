@@ -234,7 +234,9 @@ def test_job_dependency_from_config() -> None:
 
 
 def test_job_dependency_to_config():
-    dependency = r3.JobDependency(str(uuid.uuid4()), Path("data"), recursive_checkout=False)
+    dependency = r3.JobDependency(
+        str(uuid.uuid4()), Path("data"), recursive_checkout=False,
+    )
 
     assert dependency.to_config() == {
         "job": dependency.job,
@@ -363,7 +365,12 @@ def test_find_latest_dependency_to_config():
         "destination": str(dependency.destination),
     }
 
-    dependency = r3.FindLatestDependency(Path("data"), {"tags": "test"}, Path("output"), recursive_checkout=False)
+    dependency = r3.FindLatestDependency(
+        Path("data"),
+        {"tags": "test"},
+        Path("output"),
+        recursive_checkout=False,
+    )
 
     assert dependency.to_config() == {
         "find_latest": dependency.query,
@@ -405,7 +412,11 @@ def test_find_all_dependency_from_config() -> None:
 
 
 def test_find_all_dependency_to_config():
-    dependency = r3.FindAllDependency(Path("data"), {"tags": "test"}, recursive_checkout=False)
+    dependency = r3.FindAllDependency(
+        Path("data"),
+        {"tags": "test"},
+        recursive_checkout=False,
+    )
 
     assert dependency.to_config() == {
         "find_all": dependency.query,
