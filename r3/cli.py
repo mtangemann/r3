@@ -63,22 +63,16 @@ def commit(path: Path, repository_path: Path) -> None:
     repository = r3.Repository(repository_path)
     job = r3.Job(path)
     job = repository.commit(job)
-    print(job.id)
+    print(job.path)
 
 
 @cli.command()
 @click.argument(
-    "job_id", type=str
+    "job_path", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
 @click.argument("target_path", type=click.Path(exists=False, path_type=Path))
-@click.option(
-    "--repository",
-    "repository_path",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    envvar="R3_REPOSITORY",
-)
-def checkout(job_id: str, target_path: Path, repository_path: Path) -> None:
-    """Checks out the job with JOB_ID to TARGET_PATH.
+def checkout(job_path: Path, target_path) -> None:
+    """Checks out the job at JOB_PATH to TARGET_PATH.
 
     This copies all job files from JOB_PATH in the R3 repository to the TARGET_PATH.
     The output folder and all dependencies will by symlinked. Checking out a job is
@@ -87,41 +81,33 @@ def checkout(job_id: str, target_path: Path, repository_path: Path) -> None:
 
     \b
     ```
-    $ r3 checkout 4b2146f3-5594-4f05-ae13-2e053ef7bfda workdir
+    $ r3 checkout /repository/jobs/4b2146f3-5594-4f05-ae13-2e053ef7bfda workdir
     $ ls workdir
     run.py
     data.csv -> /repository/jobs/6b189b64-8c7c-4609-b089-f69c7b3e0548/output/data.csv
     output/ -> /repository/jobs/4b2146f3-5594-4f05-ae13-2e053ef7bfda/output
     ```
     """
-    repository = r3.Repository(repository_path)
-    job = repository.get_job_by_id(job_id)
+    job_path = job_path.resolve()
+    repository = r3.Repository(job_path.parent.parent)
+    job = r3.Job(job_path, id=job_path.name)
     repository.checkout(job, target_path)
 
 
 @cli.command()
 @click.argument(
-    "job_id", type=str
+    "job_path", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
-@click.option(
-    "--repository",
-    "repository_path",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    envvar="R3_REPOSITORY",
-)
-def remove(job_id: str, repository_path: Path) -> None:
+def remove(job_path: Path) -> None:
     """Removes the job at JOB_PATH from the R3 repository.
 
     If any other job in the R3 repository depends on the job at JOB_PATH, removing the
     job will fail.
     """
-    repository = r3.Repository(repository_path)
+    job_path = job_path.resolve()
+    repository = r3.Repository(job_path.parent.parent)
+    job = r3.Job(job_path, id=job_path.name)
 
-    try:
-        job = repository.get_job_by_id(job_id)
-    except KeyError as error:
-        print(error)
-        return
     try:
         repository.remove(job)
     except ValueError as error:
@@ -142,7 +128,7 @@ def remove(job_id: str, repository_path: Path) -> None:
 )
 @click.option("--long/--short", "-l", default=False,
     help=(
-        "Whether to list only the job IDs (--short) or also additional job "
+        "Whether to list only the job paths (--short) or also additional job "
         "information (--long)."
     )
 )
@@ -163,7 +149,7 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
             tags = " ".join(f"#{tag}" for tag in job.metadata.get("tags", []))
             print(f"{job.id} | {datetime} | {tags}")
         else:
-            print(job.id)
+            print(job.path)
 
 
 @cli.command()
