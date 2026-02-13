@@ -3,9 +3,10 @@
 
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import click
+import yaml
 
 import r3
 
@@ -25,7 +26,7 @@ def cli() -> None:
 @click.argument("path", type=click.Path(file_okay=False, exists=False, path_type=Path))
 def init(path: Path):
     """Creates an empty R3 repository at PATH.
-    
+
     The given PATH must not exist yet.
     """
 
@@ -133,16 +134,26 @@ def remove(job_path: Path) -> None:
     )
 )
 @click.option(
+    "--location", type=str, default=None,
+    help="Filter by job location.",
+)
+@click.option(
     "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -> None:
+def find(
+    tags: Iterable[str],
+    latest: bool,
+    long: bool,
+    location: Optional[str],
+    repository_path: Path,
+) -> None:
     """Searches the R3 repository for jobs matching the given conditions."""
     repository = r3.Repository(repository_path)
     query = {"tags": {"$all": tags}}
-    for job in repository.find(query, latest):
+    for job in repository.find(query, latest, location=location):
         if long:
             assert job.timestamp is not None
             datetime = job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S")
@@ -161,7 +172,7 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
 )
 def rebuild_index(repository_path: Path):
     """Rebuild the search index.
-    
+
     The index is used when querying for jobs. All R3 commands properly update the index.
     When job metadata is modified manually, however, the index needs to be rebuilt in
     order for the changes to take effect.
@@ -194,6 +205,172 @@ def edit(job_id: str, repository_path: Path) -> None:
 
     # Update job in search index (SQLite DB)
     repository._index.update(job)
+
+
+@cli.command()
+@click.argument("job_id", type=str)
+@click.argument("remote_name", type=str)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Show what would be moved without doing it.",
+)
+def move(job_id: str, remote_name: str, repository_path: Path, dry_run: bool) -> None:
+    """Move a job to a remote storage location."""
+    repository = r3.Repository(repository_path)
+    try:
+        if dry_run:
+            job = repository.get_job_by_id(job_id)
+            dependents = repository.find_dependents(job)
+            print(f"Would move job {job_id} to remote '{remote_name}'.")
+            if dependents:
+                print("The following jobs depend on this job:")
+                for dep in dependents:
+                    print(f"  - {dep.id}")
+            return
+        dependents = repository.move(job_id, remote_name)
+        print(f"Moved job {job_id} to remote '{remote_name}'.")
+        if dependents:
+            print("Warning: the following jobs depend on this job:")
+            for dep in dependents:
+                print(f"  - {dep.id}")
+    except (ValueError, KeyError) as error:
+        print(f"Error: {error}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("job_id", type=str)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def fetch(job_id: str, repository_path: Path) -> None:
+    """Fetch a job from remote storage back to local."""
+    repository = r3.Repository(repository_path)
+    try:
+        repository.fetch(job_id)
+        print(f"Fetched job {job_id} to local storage.")
+    except (ValueError, KeyError) as error:
+        print(f"Error: {error}")
+        sys.exit(1)
+
+
+@cli.group()
+def remote() -> None:
+    """Manage remote storage backends."""
+    pass
+
+
+@remote.command("add")
+@click.argument("name", type=str)
+@click.option(
+    "--type", "remote_type", type=str, required=True,
+    help="Remote type (e.g. s3).",
+)
+@click.option("--bucket", type=str, default=None, help="S3 bucket name.")
+@click.option("--prefix", type=str, default=None, help="S3 key prefix.")
+@click.option("--profile", type=str, default=None, help="AWS profile name.")
+@click.option("--endpoint-url", type=str, default=None, help="S3 endpoint URL.")
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def remote_add(
+    name: str,
+    remote_type: str,
+    bucket: Optional[str],
+    prefix: Optional[str],
+    profile: Optional[str],
+    endpoint_url: Optional[str],
+    repository_path: Path,
+) -> None:
+    """Add a remote storage backend."""
+    config_path = repository_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    remotes = config.get("remotes", {})
+    if name in remotes:
+        print(f"Error: Remote '{name}' already exists.")
+        sys.exit(1)
+
+    remote_config: dict = {"type": remote_type}
+    if bucket is not None:
+        remote_config["bucket"] = bucket
+    if prefix is not None:
+        remote_config["prefix"] = prefix
+    if profile is not None:
+        remote_config["profile"] = profile
+    if endpoint_url is not None:
+        remote_config["endpoint_url"] = endpoint_url
+
+    remotes[name] = remote_config
+    config["remotes"] = remotes
+
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    print(f"Added remote '{name}' (type: {remote_type}).")
+
+
+@remote.command("list")
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def remote_list(repository_path: Path) -> None:
+    """List configured remote storage backends."""
+    config_path = repository_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    remotes = config.get("remotes", {})
+    if not remotes:
+        print("No remotes configured.")
+        return
+
+    for name, remote_config in remotes.items():
+        print(f"{name} ({remote_config.get('type', 'unknown')})")
+
+
+@remote.command("remove")
+@click.argument("name", type=str)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def remote_remove(name: str, repository_path: Path) -> None:
+    """Remove a remote storage backend."""
+    config_path = repository_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    remotes = config.get("remotes", {})
+    if name not in remotes:
+        print(f"Error: Remote '{name}' does not exist.")
+        sys.exit(1)
+
+    del remotes[name]
+    config["remotes"] = remotes
+
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    print(f"Removed remote '{name}'.")
 
 
 if __name__ == "__main__":

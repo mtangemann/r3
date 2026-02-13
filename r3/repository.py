@@ -6,7 +6,7 @@ The `Repository` class should be imported not from this module but from the top-
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 import yaml
 from executor import execute
@@ -256,17 +256,24 @@ class Repository:
             message = f"Job with ID {job_id} not found in this repository."
             raise KeyError(message) from error
 
-    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
+    def find(
+        self,
+        query: Dict[str, Any],
+        latest: bool = False,
+        location: Optional[str] = None,
+    ) -> List[Job]:
         """Finds jobs by a query.
 
         Parameters:
             query: The mongo-style query document to find jobs by.
             latest: Whether to return the latest job or all jobs with the given tags.
+            location: Optional location filter. When provided, only jobs with the
+                given location are returned.
 
         Returns:
             The jobs that match the given tags.
         """
-        return self._index.find(query, latest)
+        return self._index.find(query, latest, location=location)
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that depend on the given job.
