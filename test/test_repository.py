@@ -906,3 +906,36 @@ def test_repository_find_still_works_after_move(
     results = repository_with_remote.find({"tags": "findme"})
     assert len(results) == 1
     assert results[0].id == job.id
+
+
+def test_checkout_raises_for_archived_job(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch"):
+        repository_with_remote.checkout(job, tmp_path / "checkout")
+
+
+def test_checkout_raises_for_archived_dependency(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    dep_job = get_dummy_job("base")
+    dep_job.metadata["tags"] = ["dep"]
+    dep_job = repository_with_remote.commit(dep_job)
+    assert dep_job.id is not None
+
+    main_job = get_dummy_job("base")
+    dependency = JobDependency("data", dep_job.id, "run.py")
+    main_job._dependencies = [dependency]
+    main_job._config["dependencies"] = [dependency.to_config()]
+    main_job = repository_with_remote.commit(main_job)
+
+    repository_with_remote.move(dep_job.id, "archive")
+
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch"):
+        repository_with_remote.checkout(main_job, tmp_path / "checkout")

@@ -178,14 +178,37 @@ class Repository:
         Parameters:
             item: The job or dependency to check out.
             path: The path to check out the job or dependency to.
+
+        Raises:
+            ValueError: If the job or any of its dependencies is archived.
         """
         resolved_item = self.resolve(item)
 
         if isinstance(resolved_item, list):
             for dependency in resolved_item:
+                if isinstance(dependency, JobDependency):
+                    self._check_job_is_local(dependency.job)
                 self._storage.checkout(dependency, path)
-        else:
+        elif isinstance(resolved_item, Job):
+            assert resolved_item.id is not None
+            self._check_job_is_local(resolved_item.id)
+            for dep in resolved_item.dependencies:
+                if isinstance(dep, JobDependency):
+                    self._check_job_is_local(dep.job)
             self._storage.checkout(resolved_item, path)
+        else:
+            if isinstance(resolved_item, JobDependency):
+                self._check_job_is_local(resolved_item.job)
+            self._storage.checkout(resolved_item, path)
+
+    def _check_job_is_local(self, job_id: str) -> None:
+        """Raises ValueError if a job is not stored locally."""
+        location = self._index.get_location(job_id)
+        if location != "local":
+            raise ValueError(
+                f"Job {job_id} is archived on remote \"{location}\". "
+                f"Run `r3 fetch {job_id}` to retrieve it first."
+            )
 
     def remove(self, job: Job) -> None:
         """Removes a job from the repository.
