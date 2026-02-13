@@ -259,7 +259,19 @@ class Index:
             job_id = result[0]
             cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
-            jobs.append(self.storage.get(job_id, cached_timestamp, cached_metadata))
+            try:
+                jobs.append(
+                    self.storage.get(job_id, cached_timestamp, cached_metadata)
+                )
+            except FileNotFoundError:
+                # Job may have been moved to a remote; construct from cached data.
+                job = Job(
+                    self.storage.root / "jobs" / job_id,
+                    job_id,
+                    cached_timestamp=cached_timestamp,
+                    cached_metadata=cached_metadata,
+                )
+                jobs.append(job)
         return jobs
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:

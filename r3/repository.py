@@ -24,6 +24,7 @@ from r3.job import (
     QueryAllDependency,
     QueryDependency,
 )
+from r3.remote import Remote
 from r3.storage import Storage
 
 R3_FORMAT_VERSION = "1.0.0-beta.7"
@@ -63,6 +64,15 @@ class Repository:
 
         self._storage = Storage(self.path)
         self._index = Index(self._storage)
+
+        self._remotes: Dict[str, Remote] = {}
+        for name, remote_config in config.get("remotes", {}).items():
+            self._remotes[name] = Remote.from_config(remote_config)
+
+    @property
+    def remotes(self) -> Dict[str, "Remote"]:
+        """Returns the configured remotes."""
+        return self._remotes
 
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":
@@ -246,6 +256,62 @@ class Repository:
             The jobs that depend on the given job.
         """
         return self._index.find_dependents(job, recursive)
+
+    def move(self, job_id: str, remote_name: str) -> Set[Job]:
+        """Moves a job to a remote storage backend.
+
+        The job files are uploaded to the remote, verified, and then removed
+        locally. The job remains in the index with its location updated.
+
+        Parameters:
+            job_id: The ID of the job to move.
+            remote_name: The name of the remote to move the job to.
+
+        Returns:
+            The set of jobs that depend on the moved job.
+
+        Raises:
+            ValueError: If the remote name is not configured.
+            KeyError: If the job does not exist.
+            RuntimeError: If the upload verification fails.
+        """
+        if remote_name not in self._remotes:
+            raise ValueError(f"Unknown remote: {remote_name}")
+
+        remote = self._remotes[remote_name]
+        job = self.get_job_by_id(job_id)
+
+        remote.upload(job_id, job.path)
+
+        if not remote.exists(job_id):
+            raise RuntimeError(f"Upload verification failed for job {job_id}")
+
+        dependents = self._index.find_dependents(job)
+        self._storage.remove(job)
+        self._index.set_location(job_id, remote_name)
+
+        return dependents
+
+    def fetch(self, job_id: str) -> None:
+        """Fetches a job from a remote storage backend.
+
+        Downloads the job files from the remote and restores them locally.
+
+        Parameters:
+            job_id: The ID of the job to fetch.
+
+        Raises:
+            ValueError: If the job is already local.
+            KeyError: If the remote is not configured.
+        """
+        location = self._index.get_location(job_id)
+
+        if location == "local":
+            raise ValueError(f"Job {job_id} is already local.")
+
+        remote = self._remotes[location]
+        remote.download(job_id, self._storage.root / "jobs" / job_id)
+        self._index.set_location(job_id, "local")
 
     def rebuild_index(self):
         """Rebuilds the job index.
