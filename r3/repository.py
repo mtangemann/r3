@@ -27,7 +27,7 @@ from r3.job import (
 from r3.remote import Remote
 from r3.storage import Storage
 
-R3_FORMAT_VERSION = "1.0.0-beta.7"
+R3_FORMAT_VERSION = "1.0.0-beta.8"
 
 
 class Repository:

@@ -229,7 +229,10 @@ def test_cli_find_location_filter(repository_with_remote: Repository) -> None:
     # --location archive should find the job
     result = runner.invoke(
         cli,
-        ["find", "-t", "findme", "--location", "archive", "--repository", str(repo.path)],
+        [
+            "find", "-t", "findme", "--location", "archive",
+            "--repository", str(repo.path),
+        ],
     )
     assert result.exit_code == 0, result.output
     assert job.id in result.output
