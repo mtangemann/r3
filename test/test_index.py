@@ -262,3 +262,50 @@ def test_index_find_dependents_uses_cached_metadata(storage_with_jobs: Storage):
     job = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
     dependents = index.find_dependents(job)
     assert all(dependent.uses_cached_metadata() for dependent in dependents)
+
+
+def test_index_add_defaults_location_to_local(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    assert index.get_location(job.id) == "local"
+
+
+def test_index_set_location(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    index.set_location(job.id, "archive")
+    assert index.get_location(job.id) == "archive"
+    index.set_location(job.id, "local")
+    assert index.get_location(job.id) == "local"
+
+
+def test_index_rebuild_defaults_location_to_local(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    index.rebuild()
+    assert index.get_location(job.id) == "local"
+
+
+def test_index_find_with_location_filter(storage_with_jobs: Storage):
+    index = Index(storage_with_jobs)
+    all_jobs = index.find({})
+    assert len(all_jobs) == 3
+    job = all_jobs[0]
+    assert job.id is not None
+    index.set_location(job.id, "archive")
+    local_jobs = index.find({}, location="local")
+    assert len(local_jobs) == 2
+    archived_jobs = index.find({}, location="archive")
+    assert len(archived_jobs) == 1
+    assert archived_jobs[0].id == job.id
+    all_jobs_again = index.find({})
+    assert len(all_jobs_again) == 3

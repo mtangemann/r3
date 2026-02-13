@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from r3.job import Job, JobDependency
 from r3.query import mongo_to_sql
@@ -16,7 +16,7 @@ class Index:
 
     def __init__(self, storage: Storage) -> None:
         """Initializes the index.
-        
+
         Parameters:
             storage: The storage with the jobs to index.
         """
@@ -37,7 +37,8 @@ class Index:
                 CREATE TABLE jobs (
                     id TEXT PRIMARY KEY,
                     timestamp TEXT NOT NULL,
-                    metadata JSON NOT NULL
+                    metadata JSON NOT NULL,
+                    location TEXT NOT NULL DEFAULT 'local'
                 )
                 """
             )
@@ -70,7 +71,7 @@ class Index:
                 )
 
             transaction.executemany(
-                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                "INSERT INTO jobs (id, timestamp, metadata, location) VALUES (?, ?, ?, 'local')",  # noqa: E501
                 job_data,
             )
             transaction.executemany(
@@ -83,13 +84,13 @@ class Index:
         with Transaction(self._path) as transaction:
             transaction.execute("SELECT COUNT(*) FROM jobs")
             return transaction.fetchone()[0]
-    
+
     def __contains__(self, job: Job) -> bool:
         """Checks if a job is in the index.
-        
+
         Parameters:
             job: The job to check.
-        
+
         Returns:
             Whether the job is in the index.
         """
@@ -105,7 +106,7 @@ class Index:
 
     def add(self, job: Job) -> None:
         """Adds a job to the index.
-        
+
         Parameters:
             job: The job to add.
         """
@@ -118,7 +119,7 @@ class Index:
 
         with Transaction(self._path) as transaction:
             transaction.execute(
-                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                "INSERT INTO jobs (id, timestamp, metadata, location) VALUES (?, ?, ?, 'local')",  # noqa: E501
                 (job.id, job.timestamp.isoformat(), json.dumps(job.metadata))
             )
             transaction.executemany(
@@ -132,10 +133,10 @@ class Index:
 
     def get(self, job_id: str) -> Job:
         """Gets a job by ID.
-        
+
         Parameters:
             job_id: The ID of the job to get.
-        
+
         Returns:
             The job with the given ID.
         """
@@ -152,10 +153,10 @@ class Index:
         cached_timestamp = datetime.fromisoformat(result[0])
         cached_metadata = json.loads(result[1])
         return self.storage.get(job_id, cached_timestamp, cached_metadata)
-    
+
     def update(self, job: Job) -> None:
         """Updates a job in the index.
-        
+
         This does not update the dependency graph, since that is not expected to change.
 
         Parameters:
@@ -174,7 +175,7 @@ class Index:
 
     def remove(self, job: Job) -> None:
         """Removes a job from the index.
-        
+
         Parameters:
             job: The job to remove.
         """
@@ -191,18 +192,61 @@ class Index:
                 (job.id, job.id)
             )
 
-    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
+    def set_location(self, job_id: str, location: str) -> None:
+        """Sets the location of a job.
+
+        Parameters:
+            job_id: The ID of the job.
+            location: The location to set.
+        """
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "UPDATE jobs SET location = ? WHERE id = ?",
+                (location, job_id)
+            )
+
+    def get_location(self, job_id: str) -> str:
+        """Gets the location of a job.
+
+        Parameters:
+            job_id: The ID of the job.
+
+        Returns:
+            The location of the job.
+        """
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "SELECT location FROM jobs WHERE id = ?",
+                (job_id,)
+            )
+            result = transaction.fetchone()
+
+        if result is None:
+            raise KeyError(f"Job not found: {job_id}")
+
+        return result[0]
+
+    def find(
+        self,
+        query: Dict[str, Any],
+        latest: bool = False,
+        location: Optional[str] = None,
+    ) -> List[Job]:
         """Finds jobs by tags.
-        
+
         Parameters:
             query: The query to match jobs against. The query is specified as a
                 MongoDB-style query document.
             latest: Whether to return the latest job or all jobs with the given tags.
+            location: Optional location filter. When provided, only jobs with the
+                given location are returned.
 
         Returns:
             The jobs that match the given query.
         """
         sql_query = f"SELECT id, timestamp, metadata FROM jobs WHERE {mongo_to_sql(query)}"  # noqa: E501
+        if location is not None:
+            sql_query += f" AND location = '{location}'"
         if latest:
             sql_query += " ORDER BY timestamp DESC LIMIT 1"
 
@@ -224,7 +268,7 @@ class Index:
         Parameters:
             job: The job to find dependents for.
             recursive: Whether to find dependents recursively.
-        
+
         Returns:
             The jobs that directly depend on the given job.
         """
