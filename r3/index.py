@@ -265,6 +265,8 @@ class Index:
                 )
             except FileNotFoundError:
                 # Job may have been moved to a remote; construct from cached data.
+                # Note: the resulting Job has valid metadata/timestamp but no local
+                # files. Accessing job.files or job._config will fail.
                 job = Job(
                     self.storage.root / "jobs" / job_id,
                     job_id,

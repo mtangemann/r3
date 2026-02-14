@@ -210,8 +210,17 @@ Verify the migration script upgrades the version in `r3.yaml` and that the
 rebuilt index includes the `location` column with `"local"` for all existing
 jobs.
 
+## Known Limitations
+
+- Remote jobs returned by `find()` have cached metadata and timestamp but
+  **no local files**. Accessing `job.files`, `job.dependencies`, or
+  `job._config` on a remote job will fail or return incorrect results.
+  Metadata queries are the intended use case for remote jobs. A future
+  `RemoteJob` subclass with lazy file loading should address this properly.
+
 ## Future Extensions
 
+- `RemoteJob` subclass with lazy file/config loading from remote storage
 - `FilesystemRemote` backend
 - `r3 copy` (upload without removing local files)
 - Direct-to-checkout download for archived dependencies
