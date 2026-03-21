@@ -28,7 +28,30 @@ class Index:
 
     def rebuild(self) -> None:
         """Rebuilds the index from the storage."""
+        # Preserve remote job rows before dropping the index, since remote jobs
+        # have no local files and cannot be reconstructed from storage alone.
+        remote_jobs: list[tuple[str, str, str, str]] = []
+        remote_job_dependencies: list[tuple[str, str]] = []
+
         if self._path.exists():
+            with Transaction(self._path) as transaction:
+                transaction.execute(
+                    "SELECT id, timestamp, metadata, location FROM jobs"
+                    " WHERE location != 'local'"
+                )
+                remote_jobs = transaction.fetchall()
+
+                if remote_jobs:
+                    remote_ids = [row[0] for row in remote_jobs]
+                    placeholders = ",".join("?" * len(remote_ids))
+                    transaction.execute(
+                        f"SELECT child_id, parent_id FROM job_dependencies"  # noqa: E501
+                        f" WHERE child_id IN ({placeholders})"
+                        f" OR parent_id IN ({placeholders})",
+                        remote_ids + remote_ids,
+                    )
+                    remote_job_dependencies = transaction.fetchall()
+
             self._path.unlink()
 
         with Transaction(self._path) as transaction:
@@ -78,6 +101,19 @@ class Index:
                 "INSERT INTO job_dependencies (child_id, parent_id) VALUES (?, ?)",
                 job_dependency_data,
             )
+
+            # Re-insert remote jobs that were preserved before the rebuild.
+            if remote_jobs:
+                transaction.executemany(
+                    "INSERT INTO jobs (id, timestamp, metadata, location)"
+                    " VALUES (?, ?, ?, ?)",
+                    remote_jobs,
+                )
+                transaction.executemany(
+                    "INSERT INTO job_dependencies (child_id, parent_id)"
+                    " VALUES (?, ?)",
+                    remote_job_dependencies,
+                )
 
     def __len__(self) -> int:
         """Returns the number of jobs in the index."""

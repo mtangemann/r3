@@ -939,3 +939,23 @@ def test_checkout_raises_for_archived_dependency(
 
     with pytest.raises(ValueError, match="archived.*archive.*r3 fetch"):
         repository_with_remote.checkout(main_job, tmp_path / "checkout")
+
+
+def test_rebuild_index_preserves_remote_jobs(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+    repository_with_remote.rebuild_index()
+
+    # Job must still be findable by query
+    results = repository_with_remote.find({"tags": "test"})
+    assert len(results) == 1
+    assert results[0].id == job.id
+
+    # Location must still be "archive", not reverted to "local"
+    location = repository_with_remote._index.get_location(job.id)
+    assert location == "archive"
