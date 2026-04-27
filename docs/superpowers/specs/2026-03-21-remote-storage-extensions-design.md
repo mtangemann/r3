@@ -289,6 +289,8 @@ recovery logic is needed; the missing file list is a tolerable degradation.
    `rebuild_index()`, which would wipe remote job location data)
 10. Update design doc (`docs/plans/2026-02-11-remote-storage-design.md`) to reflect
     resolved limitations
+11. Add `@pytest.mark.live_s3` test suite for smoke-testing against a real
+    S3-compatible endpoint (CEPH/MinIO); skipped by default, enabled via env vars
 
 ## Out of scope
 
@@ -306,15 +308,38 @@ recovery logic is needed; the missing file list is a tolerable degradation.
 
 ## Testing strategy
 
+Because R3 stores research data, the testing strategy emphasizes data integrity and
+failure handling, not just happy-path correctness.
+
 ### Archive tests (`S3Remote`)
 - Upload with `archive_format = "tar.zst"`: verify single S3 object at correct key
   with `.tar.zst` extension; verify no individual file objects exist
 - Download: verify extracted files match originals
-- Round-trip (upload then download): file contents identical
+- **Content integrity round-trip**: upload a job, download to a different path,
+  verify the downloaded job's `hash()` (computed via `recompute=True` from disk)
+  equals the original job's stored hash; also byte-compare each file
 - `exists()` and `remove()` with archive format
 - Temp file is cleaned up even when upload raises
 - `from_config()` raises `ValueError` for invalid `archive_frame_size`
 - Without `archive_format`: existing tests unaffected
+
+### Failure-mode tests
+- **Upload interrupted**: simulate a `boto3.upload_file` exception mid-upload — verify
+  no partial S3 object remains visible to subsequent `exists()` / `download()` calls
+  (or, if the partial object is visible, that `Repository.move()`'s post-upload
+  `exists()` verification still catches the failure before local files are deleted)
+- **Download interrupted**: simulate a `boto3.download_file` exception — verify the
+  partially-extracted destination directory is cleaned up rather than left as a
+  half-restored job
+- **Corrupted archive**: upload a known-bad `.tar.zst` (truncated or wrong-magic) and
+  verify `download()` raises a clear error rather than producing partial output
+
+### Edge-case tests
+- Empty job (only `r3.yaml` and `metadata.yaml`): archive round-trip works
+- Job with files at deep nested paths (e.g. `output/subdir/subsubdir/result.pt`)
+- Job with paths containing spaces and non-ASCII characters
+- Re-move idempotency: commit → move → fetch → move again — verify cached file list
+  matches in both move iterations and content round-trips correctly
 
 ### File list caching tests
 - `Repository.move()` with a `cache_file_list = True` remote: verify SQLite `files`
@@ -348,3 +373,28 @@ recovery logic is needed; the missing file list is a tolerable degradation.
 - All existing remote storage tests continue to pass (no archive format configured)
 - All existing local job tests continue to pass (`job.files` values non-`None` for
   local jobs; `job.hash()` unaffected)
+
+### Live S3-compatible smoke test (manual / opt-in)
+
+`moto` faithfully mocks AWS S3 but cannot exercise CEPH/MinIO/RGW quirks (multipart
+ETag computation, list_objects_v2 pagination behaviour, HEAD vs GET semantics,
+endpoint URL handling). A small smoke-test suite exercises the real backend before
+deployment:
+
+- New pytest marker `@pytest.mark.live_s3` on tests that require a live endpoint
+- Configured by environment variables: `R3_TEST_S3_ENDPOINT_URL`, `R3_TEST_S3_BUCKET`,
+  `R3_TEST_S3_PROFILE` (or standard AWS credential env vars)
+- Skipped by default; enabled with `pytest -m live_s3` only when env vars are set
+- Tests run against a temporary prefix that is cleaned up at teardown
+- Coverage:
+  - Full lifecycle without archive: init, commit, move, exists, download, fetch,
+    find, checkout, with content hash verification
+  - Full lifecycle with `archive_format = "tar.zst"`: same coverage path
+  - List pagination: a job with > 1000 files (S3 list_objects_v2 default page size)
+    to catch pagination bugs in the no-archive path
+  - Empty-prefix `remove()`: verify behaviour is consistent with mocked tests
+- Documented in `CONTRIBUTING.md` (or equivalent) with example invocation against a
+  local MinIO container and against CEPH
+
+This suite is opt-in CI-friendly but expected to be run manually by the user against
+the actual CEPH instance before each deployment of remote-storage changes.
