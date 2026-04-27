@@ -382,19 +382,41 @@ endpoint URL handling). A small smoke-test suite exercises the real backend befo
 deployment:
 
 - New pytest marker `@pytest.mark.live_s3` on tests that require a live endpoint
-- Configured by environment variables: `R3_TEST_S3_ENDPOINT_URL`, `R3_TEST_S3_BUCKET`,
-  `R3_TEST_S3_PROFILE` (or standard AWS credential env vars)
-- Skipped by default; enabled with `pytest -m live_s3` only when env vars are set
-- Tests run against a temporary prefix that is cleaned up at teardown
-- Coverage:
-  - Full lifecycle without archive: init, commit, move, exists, download, fetch,
-    find, checkout, with content hash verification
-  - Full lifecycle with `archive_format = "tar.zst"`: same coverage path
-  - List pagination: a job with > 1000 files (S3 list_objects_v2 default page size)
-    to catch pagination bugs in the no-archive path
-  - Empty-prefix `remove()`: verify behaviour is consistent with mocked tests
-- Documented in `CONTRIBUTING.md` (or equivalent) with example invocation against a
-  local MinIO container and against CEPH
+- Configured by environment variables:
+  - `R3_TEST_S3_ENDPOINT_URL` — endpoint URL (e.g. CEPH RGW)
+  - `R3_TEST_S3_BUCKET` — existing bucket the user already has access to
+  - `R3_TEST_S3_PREFIX` — optional base prefix within that bucket (e.g.
+    `r3-smoke-tests/`); the suite isolates itself within this prefix
+  - `R3_TEST_S3_PROFILE` — optional AWS credential profile (or standard AWS env
+    vars: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- Skipped by default; enabled with `pytest -m live_s3` only when the required env
+  vars are set
+
+**Safe-by-default isolation**: because creating dedicated buckets on shared CEPH
+setups often requires admin involvement, the suite is designed to coexist with
+production data in the same bucket:
+
+- Each test run picks a unique run-specific prefix:
+  `{R3_TEST_S3_PREFIX}{uuid4()}/` (e.g. `r3-smoke-tests/3f2a.../`)
+- All `S3Remote` instances created during the test use this run-specific prefix
+- Teardown deletes only keys under the run-specific prefix, via a paginated
+  `list_objects_v2` + `delete_objects` loop scoped to that prefix
+- Teardown is idempotent and tolerates partial state (continues on individual
+  delete failures, raises a clear summary at the end if anything could not be
+  deleted, so the user knows to manually clean up)
+- Tests **must** assert (in setup) that the chosen run-specific prefix is empty
+  before any test writes to it — defensive double-check against accidental reuse
+
+**Coverage**:
+- Full lifecycle without archive: init, commit, move, exists, download, fetch,
+  find, checkout, with content hash verification
+- Full lifecycle with `archive_format = "tar.zst"`: same coverage path
+- List pagination: a job with > 1000 files (S3 `list_objects_v2` default page size)
+  to catch pagination bugs in the no-archive path
+- Empty-prefix `remove()`: verify behaviour is consistent with mocked tests
+
+Documented in `CONTRIBUTING.md` (or equivalent) with example invocation against a
+local MinIO container and against CEPH using a sub-prefix of an existing bucket.
 
 This suite is opt-in CI-friendly but expected to be run manually by the user against
 the actual CEPH instance before each deployment of remote-storage changes.
