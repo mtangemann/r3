@@ -330,6 +330,7 @@ git commit -m ":sparkles: Add Index.set_file_list and get_file_list"
 
 **Files:**
 - Modify: `r3/job.py:14-40` (constructor), `r3/job.py:115-130` (`files` property), `r3/job.py:164-190` (`hash` method)
+- Modify: `r3/storage.py:138-146` (narrow `Optional[Path]` at `Storage.add`'s copy loop)
 - Test: `test/test_job.py`
 
 - [ ] **Step 1: Write failing tests**
