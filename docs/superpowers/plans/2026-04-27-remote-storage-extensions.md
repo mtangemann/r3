@@ -447,15 +447,72 @@ def hash(self, recompute: bool = False) -> str:
 Run: `python -m pytest test/test_job.py -v`
 Expected: PASS for new tests; existing tests pass (cached_file_paths defaults to None).
 
-- [ ] **Step 7: Run full test suite for regressions**
+- [ ] **Step 7: Narrow `Optional[Path]` at downstream call sites**
+
+The new `Mapping[Path, Optional[Path]]` return type means `mypy` will flag two
+existing call sites that consume the values as if they were always `Path`.
+Both are paths that only run for local jobs (storage write and hash
+computation), so `None` cannot occur — the narrowing is purely for static
+analysis.
+
+In `r3/storage.py`, around line 138, replace:
+
+```python
+for destination, source in job.files.items():
+    if destination in [Path("r3.yaml"), Path("metadata.yaml")]:
+        continue
+
+    target = job_path / destination
+
+    os.makedirs(target.parent, exist_ok=True)
+    shutil.copy(source, target)
+    _remove_write_permissions(target)
+```
+
+with:
+
+```python
+for destination, source in job.files.items():
+    if destination in [Path("r3.yaml"), Path("metadata.yaml")]:
+        continue
+
+    # Storage.add is only called for local jobs, so source is never None.
+    assert source is not None
+    target = job_path / destination
+
+    os.makedirs(target.parent, exist_ok=True)
+    shutil.copy(source, target)
+    _remove_write_permissions(target)
+```
+
+In `r3/job.py`, in `hash()` around line 175, after the existing
+`cached_file_paths` guard added in Step 5, the loop body becomes safe to
+narrow:
+
+```python
+for destination, source in self.files.items():
+    if destination in (Path("r3.yaml"), Path("metadata.yaml")):
+        continue
+    # The cached_file_paths guard above ensures we don't reach here
+    # for remote jobs, so source is always a real Path.
+    assert source is not None
+    hashes[str(destination)] = r3.utils.hash_file(source)
+```
+
+- [ ] **Step 8: Run mypy to verify type-narrowing**
+
+Run: `make mypy`
+Expected: no type errors.
+
+- [ ] **Step 9: Run full test suite for regressions**
 
 Run: `python -m pytest`
 Expected: all tests pass.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add r3/job.py test/test_job.py
+git add r3/job.py r3/storage.py test/test_job.py
 git commit -m ":sparkles: Add cached_file_paths support to Job; update files type"
 ```
 
