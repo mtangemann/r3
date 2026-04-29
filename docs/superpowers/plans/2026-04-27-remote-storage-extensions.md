@@ -203,34 +203,9 @@ git commit -m ":sparkles: Add files column to job index schema"
 - Modify: `r3/index.py:30-90` (rebuild method)
 - Test: `test/test_repository.py` (extend existing test)
 
-- [ ] **Step 1: Write failing test**
+(The end-to-end test that exercises rebuild + move + file list preservation is added in Task 7, once `move()` populates the file list. This task only updates the SQL.)
 
-Append to `test/test_repository.py`:
-
-```python
-def test_rebuild_index_preserves_remote_job_file_list(
-    repository_with_remote: Repository,
-) -> None:
-    """The cached file list for remote jobs must survive rebuild_index."""
-    job = get_dummy_job("base")
-    job = repository_with_remote.commit(job)
-    assert job.id is not None
-
-    repository_with_remote.move(job.id, "archive")
-
-    file_list_before = repository_with_remote._index.get_file_list(job.id)
-    assert file_list_before is not None
-    assert len(file_list_before) > 0
-
-    repository_with_remote.rebuild_index()
-
-    file_list_after = repository_with_remote._index.get_file_list(job.id)
-    assert file_list_after == file_list_before
-```
-
-(Note: this test will only fully exercise once Task 7 wires `move()` to populate the file list. It will fail correctly until then for the right reason. Run it after Task 7.)
-
-- [ ] **Step 2: Update `rebuild()` to preserve `files`**
+- [ ] **Step 1: Update `rebuild()` to preserve `files`**
 
 In `r3/index.py`, in the `rebuild()` method, change the SELECT for remote jobs:
 
@@ -252,15 +227,15 @@ transaction.executemany(
 )
 ```
 
-- [ ] **Step 3: Run full test suite for regressions**
+- [ ] **Step 2: Run full test suite for regressions**
 
 Run: `python -m pytest test/test_repository.py::test_rebuild_index_preserves_remote_jobs -v`
 Expected: PASS (existing test still works; the new column comes through as `NULL`).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add r3/index.py test/test_repository.py
+git add r3/index.py
 git commit -m ":sparkles: Preserve files column for remote jobs in rebuild_index"
 ```
 
@@ -572,12 +547,37 @@ def move(self, job_id: str, remote_name: str) -> Set[Job]:
 Run: `python -m pytest test/test_repository.py::test_move_populates_file_list_when_remote_caches test/test_repository.py::test_move_skips_file_list_when_remote_does_not_cache -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run rebuild test (Task 4) to confirm now end-to-end**
+- [ ] **Step 5: Add the end-to-end rebuild + file list test**
+
+Append to `test/test_repository.py`:
+
+```python
+def test_rebuild_index_preserves_remote_job_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """The cached file list for remote jobs must survive rebuild_index."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    file_list_before = repository_with_remote._index.get_file_list(job.id)
+    assert file_list_before is not None
+    assert len(file_list_before) > 0
+
+    repository_with_remote.rebuild_index()
+
+    file_list_after = repository_with_remote._index.get_file_list(job.id)
+    assert file_list_after == file_list_before
+```
+
+- [ ] **Step 6: Run that test to verify it passes**
 
 Run: `python -m pytest test/test_repository.py::test_rebuild_index_preserves_remote_job_file_list -v`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add r3/repository.py test/test_repository.py
@@ -597,9 +597,7 @@ git commit -m ":sparkles: Capture file list during Repository.move when remote c
 Append to `test/test_index.py`:
 
 ```python
-def test_index_find_returns_remote_job_with_cached_file_paths(
-    storage: Storage, mocker: MockerFixture,
-):
+def test_index_find_returns_remote_job_with_cached_file_paths(storage: Storage):
     """When find() returns a remote job, its cached_file_paths come from the index."""
     index = Index(storage)
     job = get_dummy_job("base")
@@ -648,6 +646,29 @@ def test_index_get_unknown_id_raises_keyerror(storage: Storage):
     index = Index(storage)
     with pytest.raises(KeyError):
         index.get("nonexistent-id")
+
+
+def test_index_find_remote_job_with_no_cached_files_returns_none(
+    storage: Storage,
+):
+    """When files IS NULL for a remote job, the constructed Job has cached_file_paths=None."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_location(job.id, "archive")
+    # Note: no set_file_list call — files column stays NULL.
+    import shutil
+    shutil.rmtree(storage.root / "jobs" / job.id)
+
+    results = index.find({"tags": "test"})
+    assert len(results) == 1
+    found_job = results[0]
+    # cached_file_paths is None, so accessing files should raise (not silently
+    # succeed with a wrong dict).
+    assert found_job._cached_file_paths is None
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -870,6 +891,16 @@ def test_contains_remote_job_dependency_with_default_source(
 
     dep = JobDependency(destination="dest", job=base_job.id)
     assert dep in repository_with_remote
+
+
+def test_contains_dependency_on_unknown_job_returns_false(
+    repository_with_remote: Repository,
+) -> None:
+    """A JobDependency on an unknown job ID returns False (no local file, no index entry)."""
+    dep = JobDependency(
+        destination="dest", job="nonexistent-id", source=Path("anything.txt")
+    )
+    assert dep not in repository_with_remote
 ```
 
 (Make sure `from r3.job import JobDependency` is imported.)
@@ -1220,13 +1251,10 @@ def download(self, job_id: str, destination: Path) -> None:
             destination.mkdir(parents=True, exist_ok=True)
             with pyzstd.SeekableZstdFile(str(tmp_path), "r") as zfh:
                 with tarfile.open(fileobj=zfh, mode="r|") as tar:
+                    # tarfile resolves leading "./" in member names to
+                    # destination itself, so files land in destination/<rel>
+                    # not destination/./<rel>. No post-processing needed.
                     tar.extractall(path=str(destination))
-            # tar.add(arcname=".") creates a "./" prefix; flatten if present
-            inner = destination / "."
-            if inner.exists() and inner.is_dir():
-                for item in inner.iterdir():
-                    item.rename(destination / item.name)
-                inner.rmdir()
         finally:
             tmp_path.unlink(missing_ok=True)
     else:
@@ -1241,14 +1269,46 @@ def download(self, job_id: str, destination: Path) -> None:
                 self._client.download_file(self.bucket, s3_key, str(local_path))
 ```
 
-(Note: `tar.add(arcname=".")` on a directory inserts entries as `./file`. Verify behaviour empirically — adjust the flattening logic if entries are stored without the `./` prefix on your platform.)
-
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest test/test_remote.py::test_s3_remote_archive_round_trip -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add seekability verification test**
+
+This is what makes ratarmount mounting feasible later — the archive must
+have a real seek table, not just be sequentially decompressible. Append:
+
+```python
+def test_s3_remote_archive_is_seekable(
+    s3_remote_archive: S3Remote, job_dir: Path, tmp_path: Path
+):
+    """The uploaded archive is in Zstandard Seekable Format (has a seek table)."""
+    s3_remote_archive.upload("test-job-id", job_dir)
+
+    archive_path = tmp_path / "downloaded.tar.zst"
+    client = boto3.client("s3", region_name="us-east-1")
+    client.download_file(
+        BUCKET_NAME, f"{PREFIX}test-job-id.tar.zst", str(archive_path)
+    )
+
+    import pyzstd
+    # SeekableZstdFile in 'r' mode requires a valid seek table; if the archive
+    # were single-frame (no seek table), pyzstd would raise here.
+    with pyzstd.SeekableZstdFile(str(archive_path), "r") as zfh:
+        # Verify seek to a non-zero offset works.
+        zfh.read(100)
+        zfh.seek(0)
+        first_bytes = zfh.read(100)
+        assert len(first_bytes) > 0
+```
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `python -m pytest test/test_remote.py::test_s3_remote_archive_is_seekable -v`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add r3/remote.py test/test_remote.py
@@ -1673,15 +1733,24 @@ Append to `test/test_repository.py`:
 def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
     """The migration script bumps version and adds the files column via ALTER TABLE."""
     import sqlite3
-    import subprocess
-    import sys
+
+    from click.testing import CliRunner
+
+    # Import the migration's click command. The migration file isn't a package,
+    # so import via importlib for a clean test.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "migration_beta_9", "migration/1_0_0_beta_9.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
 
     # Set up a fake beta.8 repository: r3.yaml + a beta.8-shaped index.
     repo_path = tmp_path / "old-repo"
     repo_path.mkdir()
     (repo_path / "r3.yaml").write_text("version: 1.0.0-beta.8\n")
 
-    # Create a beta.8 index with the four-column schema.
     conn = sqlite3.connect(str(repo_path / "index.sqlite"))
     conn.execute(
         """
@@ -1700,14 +1769,13 @@ def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    # Run the migration with confirm-via-input.
-    result = subprocess.run(
-        [sys.executable, "migration/1_0_0_beta_9.py", "--repository", str(repo_path)],
+    runner = CliRunner()
+    result = runner.invoke(
+        module.migrate,
+        ["--repository", str(repo_path)],
         input="y\ny\n",
-        capture_output=True,
-        text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.exit_code == 0, result.output
 
     # Verify the version bump.
     with open(repo_path / "r3.yaml") as f:
@@ -1774,7 +1842,7 @@ Then: pytest -m live_s3
 import os
 import uuid
 from pathlib import Path
-from typing import Generator
+from typing import Generator, List
 
 import boto3
 import pytest
@@ -1822,9 +1890,12 @@ def run_prefix() -> Generator[str, None, None]:
 
     yield prefix
 
-    # Teardown: delete every key under the run prefix.
+    # Teardown: delete every key under the run prefix. We deliberately raise
+    # if cleanup fails — this surfaces orphaned keys clearly so the user can
+    # manually clean up. The next run's "prefix is empty" assert provides a
+    # second layer of defense.
     paginator = client.get_paginator("list_objects_v2")
-    failed: list[str] = []
+    failed: List[str] = []
     for page in paginator.paginate(Bucket=_LIVE_BUCKET, Prefix=prefix):
         contents = page.get("Contents", [])
         if not contents:
@@ -2013,18 +2084,31 @@ git commit -m ":white_check_mark: Live S3 lifecycle and pagination smoke tests"
 
 - [ ] **Step 1: Update the "Known Limitations" section**
 
-Locate the section reading "Remote jobs returned by `find()` have cached metadata and timestamp but no local files..." and replace with:
+In `docs/plans/2026-02-11-remote-storage-design.md`, replace exactly the
+following block (lines 213–219):
+
+```markdown
+## Known Limitations
+
+- Remote jobs returned by `find()` have cached metadata and timestamp but
+  **no local files**. Accessing `job.files`, `job.dependencies`, or
+  `job._config` on a remote job will fail or return incorrect results.
+  Metadata queries are the intended use case for remote jobs. A future
+  `RemoteJob` subclass with lazy file loading should address this properly.
+```
+
+with:
 
 ```markdown
 ## Known Limitations
 
 - Recomputing `job.hash()` on a remote job raises `ValueError`. The hash
   is already stored at commit time and does not need recomputation; this
-  guard provides a clear error rather than a confusing TypeError.
+  guard provides a clear error rather than a confusing `TypeError`. (The
+  file-list limitation in earlier versions is resolved by the file-list
+  caching introduced in 1.0.0-beta.9 — `job.files` returns the cached
+  paths with `None` values for remote jobs.)
 ```
-
-The file-list limitation noted in beta.8 is now resolved by the file-list
-caching introduced in beta.9.
 
 - [ ] **Step 2: Commit**
 
