@@ -340,6 +340,6 @@ def test_s3_remote_archive_corrupted_download_raises(
     )
 
     download_path = tmp_path / "downloaded"
-    with pytest.raises(Exception):
-        # Specific exception type depends on pyzstd; just verify it raises.
+    # Specific exception type depends on pyzstd; just verify it raises.
+    with pytest.raises(Exception):  # noqa: B017
         s3_remote_archive.download("corrupted-id", download_path)
