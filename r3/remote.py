@@ -89,6 +89,8 @@ class S3Remote(Remote):
         prefix: str = "",
         profile: Optional[str] = None,
         endpoint_url: Optional[str] = None,
+        archive_format: Optional[str] = None,
+        archive_frame_size: int = 16 * 1024 * 1024,
     ) -> None:
         """Initializes an S3 remote.
 
@@ -97,11 +99,20 @@ class S3Remote(Remote):
             prefix: The prefix for all S3 keys. Defaults to "".
             profile: The AWS profile name. Defaults to None.
             endpoint_url: The S3 endpoint URL. Defaults to None.
+            archive_format: Optional archive format. If "tar.zst", jobs are
+                stored as a single seekable .tar.zst object instead of
+                individual files. Defaults to None (no archiving).
+            archive_frame_size: Uncompressed frame size in bytes for the
+                seekable zstd archive. Smaller frames give finer-grained
+                random access at a small compression cost. Defaults to
+                16 MiB.
         """
         self.bucket = bucket
         self.prefix = prefix.rstrip("/") + "/" if prefix else ""
         self.profile = profile
         self.endpoint_url = endpoint_url
+        self.archive_format = archive_format
+        self.archive_frame_size = archive_frame_size
 
         self._client_instance: Any = None
 
@@ -123,16 +134,33 @@ class S3Remote(Remote):
 
         Parameters:
             config: The configuration dictionary with keys: bucket, prefix, and
-                optionally profile and endpoint_url.
+                optionally profile, endpoint_url, archive_format, and
+                archive_frame_size.
 
         Returns:
             The S3 remote instance.
         """
+        archive_format = config.get("archive_format")
+        if archive_format is not None and archive_format != "tar.zst":
+            raise ValueError(
+                f"Unsupported archive_format: {archive_format!r}. "
+                f"Only 'tar.zst' is supported."
+            )
+
+        archive_frame_size = config.get("archive_frame_size", 16 * 1024 * 1024)
+        if not isinstance(archive_frame_size, int) or archive_frame_size <= 0:
+            raise ValueError(
+                f"archive_frame_size must be a positive integer; "
+                f"got {archive_frame_size!r}"
+            )
+
         return S3Remote(
             bucket=config["bucket"],
             prefix=config.get("prefix", ""),
             profile=config.get("profile"),
             endpoint_url=config.get("endpoint_url"),
+            archive_format=archive_format,
+            archive_frame_size=archive_frame_size,
         )
 
     def _job_prefix(self, job_id: str) -> str:
