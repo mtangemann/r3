@@ -44,11 +44,15 @@ class Index:
                 if remote_jobs:
                     remote_ids = [row[0] for row in remote_jobs]
                     placeholders = ",".join("?" * len(remote_ids))
+                    # Only preserve edges where the child is remote — edges
+                    # with a local child get re-inserted by the local jobs
+                    # loop below (which reads dependencies from each local
+                    # job's r3.yaml). Including those here would duplicate
+                    # them.
                     transaction.execute(
-                        f"SELECT child_id, parent_id FROM job_dependencies"  # noqa: E501
-                        f" WHERE child_id IN ({placeholders})"
-                        f" OR parent_id IN ({placeholders})",
-                        remote_ids + remote_ids,
+                        f"SELECT child_id, parent_id FROM job_dependencies"
+                        f" WHERE child_id IN ({placeholders})",
+                        remote_ids,
                     )
                     remote_job_dependencies = transaction.fetchall()
 
