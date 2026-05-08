@@ -272,6 +272,12 @@ class S3Remote(Remote):
         Parameters:
             job_id: The ID of the job to remove.
         """
+        if self.archive_format == "tar.zst":
+            self._client.delete_object(
+                Bucket=self.bucket, Key=self._archive_key(job_id)
+            )
+            return
+
         prefix = self._job_prefix(job_id)
         paginator = self._client.get_paginator("list_objects_v2")
 

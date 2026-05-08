@@ -233,3 +233,18 @@ def test_s3_remote_archive_is_seekable(
         zfh.seek(0)
         first_bytes = zfh.read(100)
         assert len(first_bytes) > 0
+
+
+def test_s3_remote_archive_exists(s3_remote_archive: S3Remote, job_dir: Path):
+    assert not s3_remote_archive.exists("test-job-id")
+    s3_remote_archive.upload("test-job-id", job_dir)
+    assert s3_remote_archive.exists("test-job-id")
+
+
+def test_s3_remote_archive_remove(s3_remote_archive: S3Remote, job_dir: Path):
+    s3_remote_archive.upload("test-job-id", job_dir)
+    s3_remote_archive.remove("test-job-id")
+    assert not s3_remote_archive.exists("test-job-id")
+    client = boto3.client("s3", region_name="us-east-1")
+    response = client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=PREFIX)
+    assert response.get("KeyCount", 0) == 0
