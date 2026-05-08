@@ -309,3 +309,15 @@ def test_index_find_with_location_filter(storage_with_jobs: Storage):
     assert archived_jobs[0].id == job.id
     all_jobs_again = index.find({})
     assert len(all_jobs_again) == 3
+
+
+def test_index_rebuild_creates_files_column(storage: Storage):
+    """The rebuilt schema must include the files column."""
+    index = Index(storage)
+    index.rebuild()
+    import sqlite3
+    conn = sqlite3.connect(str(storage.root / "index.sqlite"))
+    cursor = conn.execute("PRAGMA table_info(jobs)")
+    columns = {row[1] for row in cursor.fetchall()}
+    conn.close()
+    assert "files" in columns
