@@ -959,3 +959,56 @@ def test_rebuild_index_preserves_remote_jobs(
     # Location must still be "archive", not reverted to "local"
     location = repository_with_remote._index.get_location(job.id)
     assert location == "archive"
+
+
+def test_move_populates_file_list_when_remote_caches(
+    repository_with_remote: Repository,
+) -> None:
+    """When the remote sets cache_file_list=True, move stores the file list."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    expected_files = sorted(job.files.keys())
+
+    repository_with_remote.move(job.id, "archive")
+
+    cached = repository_with_remote._index.get_file_list(job.id)
+    assert cached is not None
+    assert sorted(cached) == expected_files
+
+
+def test_move_skips_file_list_when_remote_does_not_cache(
+    repository_with_remote: Repository,
+) -> None:
+    """When the remote sets cache_file_list=False, move does not store a file list."""
+    repository_with_remote.remotes["archive"].cache_file_list = False
+    try:
+        job = get_dummy_job("base")
+        job = repository_with_remote.commit(job)
+        assert job.id is not None
+
+        repository_with_remote.move(job.id, "archive")
+        assert repository_with_remote._index.get_file_list(job.id) is None
+    finally:
+        repository_with_remote.remotes["archive"].cache_file_list = True
+
+
+def test_rebuild_index_preserves_remote_job_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """The cached file list for remote jobs must survive rebuild_index."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    file_list_before = repository_with_remote._index.get_file_list(job.id)
+    assert file_list_before is not None
+    assert len(file_list_before) > 0
+
+    repository_with_remote.rebuild_index()
+
+    file_list_after = repository_with_remote._index.get_file_list(job.id)
+    assert file_list_after == file_list_before

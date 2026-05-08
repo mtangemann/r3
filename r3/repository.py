@@ -311,6 +311,10 @@ class Repository:
         remote = self._remotes[remote_name]
         job = self.get_job_by_id(job_id)
 
+        file_list: Optional[List[Path]] = None
+        if remote.cache_file_list:
+            file_list = list(job.files.keys())
+
         remote.upload(job_id, job.path)
 
         if not remote.exists(job_id):
@@ -319,6 +323,9 @@ class Repository:
         dependents = self._index.find_dependents(job)
         self._storage.remove(job)
         self._index.set_location(job_id, remote_name)
+
+        if file_list is not None:
+            self._index.set_file_list(job_id, file_list)
 
         return dependents
 
