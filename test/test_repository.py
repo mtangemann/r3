@@ -1075,3 +1075,22 @@ def test_contains_dependency_on_unknown_job_returns_false(
         destination="dest", job="nonexistent-id", source=Path("anything.txt")
     )
     assert dep not in repository_with_remote
+
+
+def test_repository_re_move_after_fetch_preserves_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """move → fetch → move: file list is captured fresh each time."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+    expected = sorted(job.files.keys())
+
+    repository_with_remote.move(job.id, "archive")
+    first = sorted(repository_with_remote._index.get_file_list(job.id))
+    assert first == expected
+
+    repository_with_remote.fetch(job.id)
+    repository_with_remote.move(job.id, "archive")
+    second = sorted(repository_with_remote._index.get_file_list(job.id))
+    assert second == expected
