@@ -61,7 +61,8 @@ class Index:
                     id TEXT PRIMARY KEY,
                     timestamp TEXT NOT NULL,
                     metadata JSON NOT NULL,
-                    location TEXT NOT NULL DEFAULT 'local'
+                    location TEXT NOT NULL DEFAULT 'local',
+                    files JSON
                 )
                 """
             )
