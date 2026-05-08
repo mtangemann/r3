@@ -1087,10 +1087,14 @@ def test_repository_re_move_after_fetch_preserves_file_list(
     expected = sorted(job.files.keys())
 
     repository_with_remote.move(job.id, "archive")
-    first = sorted(repository_with_remote._index.get_file_list(job.id))
+    first_list = repository_with_remote._index.get_file_list(job.id)
+    assert first_list is not None
+    first = sorted(first_list)
     assert first == expected
 
     repository_with_remote.fetch(job.id)
     repository_with_remote.move(job.id, "archive")
-    second = sorted(repository_with_remote._index.get_file_list(job.id))
+    second_list = repository_with_remote._index.get_file_list(job.id)
+    assert second_list is not None
+    second = sorted(second_list)
     assert second == expected
