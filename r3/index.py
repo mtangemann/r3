@@ -30,13 +30,13 @@ class Index:
         """Rebuilds the index from the storage."""
         # Preserve remote job rows before dropping the index, since remote jobs
         # have no local files and cannot be reconstructed from storage alone.
-        remote_jobs: list[tuple[str, str, str, str]] = []
+        remote_jobs: list[tuple[str, str, str, str, Optional[str]]] = []
         remote_job_dependencies: list[tuple[str, str]] = []
 
         if self._path.exists():
             with Transaction(self._path) as transaction:
                 transaction.execute(
-                    "SELECT id, timestamp, metadata, location FROM jobs"
+                    "SELECT id, timestamp, metadata, location, files FROM jobs"
                     " WHERE location != 'local'"
                 )
                 remote_jobs = transaction.fetchall()
@@ -106,8 +106,8 @@ class Index:
             # Re-insert remote jobs that were preserved before the rebuild.
             if remote_jobs:
                 transaction.executemany(
-                    "INSERT INTO jobs (id, timestamp, metadata, location)"
-                    " VALUES (?, ?, ?, ?)",
+                    "INSERT INTO jobs (id, timestamp, metadata, location, files)"
+                    " VALUES (?, ?, ?, ?, ?)",
                     remote_jobs,
                 )
                 transaction.executemany(
