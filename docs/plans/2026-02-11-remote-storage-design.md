@@ -212,11 +212,12 @@ jobs.
 
 ## Known Limitations
 
-- Remote jobs returned by `find()` have cached metadata and timestamp but
-  **no local files**. Accessing `job.files`, `job.dependencies`, or
-  `job._config` on a remote job will fail or return incorrect results.
-  Metadata queries are the intended use case for remote jobs. A future
-  `RemoteJob` subclass with lazy file loading should address this properly.
+- Recomputing `job.hash()` on a remote job raises `ValueError`. The hash
+  is already stored at commit time and does not need recomputation; this
+  guard provides a clear error rather than a confusing `TypeError`. (The
+  file-list limitation in earlier versions is resolved by the file-list
+  caching introduced in 1.0.0-beta.9 — `job.files` returns the cached
+  paths with `None` values for remote jobs.)
 
 ## Future Extensions
 
