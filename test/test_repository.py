@@ -1032,3 +1032,46 @@ def test_get_job_by_id_returns_remote_job(
 def test_get_job_by_id_unknown_raises_keyerror(repository: Repository) -> None:
     with pytest.raises(KeyError):
         repository.get_job_by_id("nonexistent-id")
+
+
+def test_contains_remote_job_dependency_with_path_in_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """A JobDependency on a remote job is contained iff source is in cached files."""
+    base_job = get_dummy_job("base")
+    base_job = repository_with_remote.commit(base_job)
+    assert base_job.id is not None
+    repository_with_remote.move(base_job.id, "archive")
+
+    dep_present = JobDependency(
+        destination="dest", job=base_job.id, source=Path("run.py")
+    )
+    dep_absent = JobDependency(
+        destination="dest", job=base_job.id, source=Path("does-not-exist.txt")
+    )
+
+    assert dep_present in repository_with_remote
+    assert dep_absent not in repository_with_remote
+
+
+def test_contains_remote_job_dependency_with_default_source(
+    repository_with_remote: Repository,
+) -> None:
+    """A JobDependency with source=Path('.') on a remote job is contained when file list non-empty."""
+    base_job = get_dummy_job("base")
+    base_job = repository_with_remote.commit(base_job)
+    assert base_job.id is not None
+    repository_with_remote.move(base_job.id, "archive")
+
+    dep = JobDependency(destination="dest", job=base_job.id)
+    assert dep in repository_with_remote
+
+
+def test_contains_dependency_on_unknown_job_returns_false(
+    repository_with_remote: Repository,
+) -> None:
+    """A JobDependency on an unknown job ID returns False (no local file, no index entry)."""
+    dep = JobDependency(
+        destination="dest", job="nonexistent-id", source=Path("anything.txt")
+    )
+    assert dep not in repository_with_remote

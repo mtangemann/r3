@@ -125,7 +125,14 @@ class Repository:
 
         if isinstance(resolved_item, JobDependency):
             target = self.path / "jobs" / resolved_item.job / resolved_item.source
-            return target.exists()
+            if target.exists():
+                return True
+            file_list = self._index.get_file_list(resolved_item.job)
+            if file_list is not None:
+                if resolved_item.source == Path("."):
+                    return len(file_list) > 0
+                return resolved_item.source in file_list
+            return False
 
         if isinstance(resolved_item, GitDependency):
             assert resolved_item.commit is not None
