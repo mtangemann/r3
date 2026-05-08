@@ -326,3 +326,20 @@ def test_s3_remote_archive_special_characters_in_paths(
     s3_remote_archive.download("special-job-id", download_path)
     assert (download_path / "file with spaces.txt").read_text() == "ok"
     assert (download_path / "résultat.txt").read_text() == "é"
+
+
+def test_s3_remote_archive_corrupted_download_raises(
+    s3_remote_archive: S3Remote, tmp_path: Path
+):
+    """A corrupted (random-bytes) archive raises a clear error on download."""
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET_NAME,
+        Key=f"{PREFIX}corrupted-id.tar.zst",
+        Body=b"not a valid zstd archive at all",
+    )
+
+    download_path = tmp_path / "downloaded"
+    with pytest.raises(Exception):
+        # Specific exception type depends on pyzstd; just verify it raises.
+        s3_remote_archive.download("corrupted-id", download_path)
