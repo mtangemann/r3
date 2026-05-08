@@ -398,7 +398,7 @@ def test_index_get_unknown_id_raises_keyerror(storage: Storage):
 def test_index_find_remote_job_with_no_cached_files_returns_none(
     storage: Storage,
 ):
-    """When files IS NULL for a remote job, the constructed Job has cached_file_paths=None."""
+    """When files IS NULL for a remote job, cached_file_paths stays None."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)

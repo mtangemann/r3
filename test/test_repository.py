@@ -1057,7 +1057,7 @@ def test_contains_remote_job_dependency_with_path_in_file_list(
 def test_contains_remote_job_dependency_with_default_source(
     repository_with_remote: Repository,
 ) -> None:
-    """A JobDependency with source=Path('.') on a remote job is contained when file list non-empty."""
+    """source=Path('.') is contained when the file list is non-empty."""
     base_job = get_dummy_job("base")
     base_job = repository_with_remote.commit(base_job)
     assert base_job.id is not None
@@ -1070,7 +1070,7 @@ def test_contains_remote_job_dependency_with_default_source(
 def test_contains_dependency_on_unknown_job_returns_false(
     repository_with_remote: Repository,
 ) -> None:
-    """A JobDependency on an unknown job ID returns False (no local file, no index entry)."""
+    """Unknown job ID returns False (no local file, no index entry)."""
     dep = JobDependency(
         destination="dest", job="nonexistent-id", source=Path("anything.txt")
     )
@@ -1107,13 +1107,13 @@ def test_format_version_is_beta_9() -> None:
 
 def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
     """The migration script bumps version and adds the files column via ALTER TABLE."""
+    import importlib.util
     import sqlite3
 
     from click.testing import CliRunner
 
     # Import the migration's click command. The migration file isn't a package,
     # so import via importlib for a clean test.
-    import importlib.util
     spec = importlib.util.spec_from_file_location(
         "migration_beta_9", "migration/1_0_0_beta_9.py"
     )
