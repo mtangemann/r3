@@ -321,3 +321,26 @@ def test_index_rebuild_creates_files_column(storage: Storage):
     columns = {row[1] for row in cursor.fetchall()}
     conn.close()
     assert "files" in columns
+
+
+def test_index_set_and_get_file_list(storage: Storage):
+    """File list round-trips through SQLite as a JSON array of POSIX strings."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("output/result.pt")]
+    index.set_file_list(job.id, paths)
+    result = index.get_file_list(job.id)
+    assert result == paths
+
+
+def test_index_get_file_list_returns_none_when_unset(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    assert index.get_file_list(job.id) is None

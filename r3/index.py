@@ -263,6 +263,30 @@ class Index:
 
         return result[0]
 
+    def set_file_list(self, job_id: str, paths: List[Path]) -> None:
+        """Sets the cached file list for a job.
+
+        Paths are stored as POSIX strings in a JSON array, regardless of
+        platform, so the cached list is portable.
+        """
+        files_json = json.dumps([p.as_posix() for p in paths])
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "UPDATE jobs SET files = ? WHERE id = ?",
+                (files_json, job_id),
+            )
+
+    def get_file_list(self, job_id: str) -> Optional[List[Path]]:
+        """Returns the cached file list for a job, or None if unset."""
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "SELECT files FROM jobs WHERE id = ?", (job_id,)
+            )
+            result = transaction.fetchone()
+        if result is None or result[0] is None:
+            return None
+        return [Path(s) for s in json.loads(result[0])]
+
     def find(
         self,
         query: Dict[str, Any],
