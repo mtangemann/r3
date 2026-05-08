@@ -50,6 +50,12 @@ archive = ["pyzstd~=0.16"]
 r3 = "r3.cli:cli"
 
 
+[tool.pytest.ini_options]
+markers = [
+    "live_s3: tests against a live S3-compatible endpoint (requires env vars; opt-in)",
+]
+
+
 [tool.mypy]
 exclude = "^test/data"
 
