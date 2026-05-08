@@ -174,3 +174,21 @@ def test_s3_remote_from_config_rejects_unknown_archive_format():
     }
     with pytest.raises(ValueError, match="archive_format"):
         S3Remote.from_config(config)
+
+
+@pytest.fixture
+def s3_remote_archive():
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket=BUCKET_NAME)
+        yield S3Remote(bucket=BUCKET_NAME, prefix=PREFIX, archive_format="tar.zst")
+
+
+def test_s3_remote_upload_archive_creates_single_object(
+    s3_remote_archive: S3Remote, job_dir: Path
+):
+    s3_remote_archive.upload("test-job-id", job_dir)
+    client = boto3.client("s3", region_name="us-east-1")
+    response = client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=PREFIX)
+    keys = [obj["Key"] for obj in response.get("Contents", [])]
+    assert keys == [f"{PREFIX}test-job-id.tar.zst"]
