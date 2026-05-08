@@ -134,3 +134,43 @@ def test_remote_default_cache_file_list_is_false():
 def test_s3_remote_caches_file_list():
     """S3 storage is immutable, so S3Remote caches file lists."""
     assert S3Remote.cache_file_list is True
+
+
+def test_s3_remote_from_config_accepts_archive_fields():
+    config = {
+        "type": "s3",
+        "bucket": "b",
+        "prefix": "p/",
+        "archive_format": "tar.zst",
+        "archive_frame_size": 8388608,
+    }
+    remote = S3Remote.from_config(config)
+    assert remote.archive_format == "tar.zst"
+    assert remote.archive_frame_size == 8388608
+
+
+def test_s3_remote_archive_format_defaults_to_none():
+    remote = S3Remote(bucket="b")
+    assert remote.archive_format is None
+    assert remote.archive_frame_size == 16 * 1024 * 1024
+
+
+def test_s3_remote_from_config_rejects_invalid_frame_size():
+    config = {
+        "type": "s3",
+        "bucket": "b",
+        "archive_format": "tar.zst",
+        "archive_frame_size": 0,
+    }
+    with pytest.raises(ValueError, match="archive_frame_size"):
+        S3Remote.from_config(config)
+
+
+def test_s3_remote_from_config_rejects_unknown_archive_format():
+    config = {
+        "type": "s3",
+        "bucket": "b",
+        "archive_format": "tar.gz",
+    }
+    with pytest.raises(ValueError, match="archive_format"):
+        S3Remote.from_config(config)
