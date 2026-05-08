@@ -242,19 +242,10 @@ class Repository:
     def get_job_by_id(self, job_id: str):
         """Returns the job with the given ID.
 
-        If the job does not exist in the repository it will raise a KeyError.
-
-        Parameters:
-            job_id: ID of the job to retrieve from the repository.
-
-        Returns:
-            The job with the given ID.
+        For remote jobs, returns a Job with cached_file_paths populated from the
+        index (no local files). For unknown IDs, raises KeyError.
         """
-        try:
-            return self._storage.get(job_id=job_id)
-        except FileNotFoundError as error:
-            message = f"Job with ID {job_id} not found in this repository."
-            raise KeyError(message) from error
+        return self._index.get(job_id)
 
     def find(
         self,

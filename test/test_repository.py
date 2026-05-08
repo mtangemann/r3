@@ -1012,3 +1012,23 @@ def test_rebuild_index_preserves_remote_job_file_list(
 
     file_list_after = repository_with_remote._index.get_file_list(job.id)
     assert file_list_after == file_list_before
+
+
+def test_get_job_by_id_returns_remote_job(
+    repository_with_remote: Repository,
+) -> None:
+    """A remote job is retrievable by ID with its file list populated."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+    expected_files = sorted(job.files.keys())
+
+    repository_with_remote.move(job.id, "archive")
+
+    found = repository_with_remote.get_job_by_id(job.id)
+    assert sorted(found.files.keys()) == expected_files
+
+
+def test_get_job_by_id_unknown_raises_keyerror(repository: Repository) -> None:
+    with pytest.raises(KeyError):
+        repository.get_job_by_id("nonexistent-id")
