@@ -235,17 +235,36 @@ class S3Remote(Remote):
                 f"Job not found on remote: {job_id}"
             )
 
-        prefix = self._job_prefix(job_id)
-        paginator = self._client.get_paginator("list_objects_v2")
+        if self.archive_format == "tar.zst":
+            pyzstd = self._import_pyzstd()
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False)
+            tmp_path = Path(tmp.name)
+            tmp.close()
+            try:
+                self._client.download_file(
+                    self.bucket, self._archive_key(job_id), str(tmp_path)
+                )
+                destination.mkdir(parents=True, exist_ok=True)
+                with pyzstd.SeekableZstdFile(str(tmp_path), "r") as zfh:
+                    with tarfile.open(fileobj=zfh, mode="r|") as tar:
+                        # tarfile resolves leading "./" in member names to
+                        # destination itself, so files land in destination/<rel>
+                        # not destination/./<rel>. No post-processing needed.
+                        tar.extractall(path=str(destination))
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        else:
+            prefix = self._job_prefix(job_id)
+            paginator = self._client.get_paginator("list_objects_v2")
 
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                s3_key = obj["Key"]
-                relative_path = s3_key[len(prefix):]
-                local_path = destination / relative_path
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    s3_key = obj["Key"]
+                    relative_path = s3_key[len(prefix):]
+                    local_path = destination / relative_path
 
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                self._client.download_file(self.bucket, s3_key, str(local_path))
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._client.download_file(self.bucket, s3_key, str(local_path))
 
     def remove(self, job_id: str) -> None:
         """Removes a job from S3.
@@ -274,6 +293,16 @@ class S3Remote(Remote):
         Returns:
             True if the job exists, False otherwise.
         """
+        if self.archive_format == "tar.zst":
+            try:
+                self._client.head_object(
+                    Bucket=self.bucket, Key=self._archive_key(job_id)
+                )
+                return True
+            except self._client.exceptions.ClientError as e:
+                if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                    return False
+                raise
         prefix = self._job_prefix(job_id)
         response = self._client.list_objects_v2(
             Bucket=self.bucket, Prefix=prefix, MaxKeys=1

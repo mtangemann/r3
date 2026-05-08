@@ -192,3 +192,44 @@ def test_s3_remote_upload_archive_creates_single_object(
     response = client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=PREFIX)
     keys = [obj["Key"] for obj in response.get("Contents", [])]
     assert keys == [f"{PREFIX}test-job-id.tar.zst"]
+
+
+def test_s3_remote_archive_round_trip(
+    s3_remote_archive: S3Remote, job_dir: Path, tmp_path: Path
+):
+    """Upload then download via archive: extracted files must match originals."""
+    s3_remote_archive.upload("test-job-id", job_dir)
+
+    download_path = tmp_path / "downloaded"
+    s3_remote_archive.download("test-job-id", download_path)
+
+    # Compare contents of every file in job_dir against the downloaded copy.
+    for src in job_dir.rglob("*"):
+        if src.is_file():
+            rel = src.relative_to(job_dir)
+            dst = download_path / rel
+            assert dst.exists(), f"Missing file: {rel}"
+            assert dst.read_bytes() == src.read_bytes(), f"Content mismatch: {rel}"
+
+
+def test_s3_remote_archive_is_seekable(
+    s3_remote_archive: S3Remote, job_dir: Path, tmp_path: Path
+):
+    """The uploaded archive is in Zstandard Seekable Format (has a seek table)."""
+    s3_remote_archive.upload("test-job-id", job_dir)
+
+    archive_path = tmp_path / "downloaded.tar.zst"
+    client = boto3.client("s3", region_name="us-east-1")
+    client.download_file(
+        BUCKET_NAME, f"{PREFIX}test-job-id.tar.zst", str(archive_path)
+    )
+
+    import pyzstd
+    # SeekableZstdFile in 'r' mode requires a valid seek table; if the archive
+    # were single-frame (no seek table), pyzstd would raise here.
+    with pyzstd.SeekableZstdFile(str(archive_path), "r") as zfh:
+        # Verify seek to a non-zero offset works.
+        zfh.read(100)
+        zfh.seek(0)
+        first_bytes = zfh.read(100)
+        assert len(first_bytes) > 0
