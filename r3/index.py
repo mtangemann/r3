@@ -179,8 +179,8 @@ class Index:
         """
         with Transaction(self._path) as transaction:
             transaction.execute(
-                "SELECT timestamp, metadata FROM jobs WHERE id = ?",
-                (job_id,)
+                "SELECT timestamp, metadata, files FROM jobs WHERE id = ?",
+                (job_id,),
             )
             result = transaction.fetchone()
 
@@ -189,7 +189,20 @@ class Index:
 
         cached_timestamp = datetime.fromisoformat(result[0])
         cached_metadata = json.loads(result[1])
-        return self.storage.get(job_id, cached_timestamp, cached_metadata)
+        cached_file_paths: Optional[List[Path]] = None
+        if result[2] is not None:
+            cached_file_paths = [Path(s) for s in json.loads(result[2])]
+
+        try:
+            return self.storage.get(job_id, cached_timestamp, cached_metadata)
+        except FileNotFoundError:
+            return Job(
+                self.storage.root / "jobs" / job_id,
+                job_id,
+                cached_timestamp=cached_timestamp,
+                cached_metadata=cached_metadata,
+                cached_file_paths=cached_file_paths,
+            )
 
     def update(self, job: Job) -> None:
         """Updates a job in the index.
@@ -305,7 +318,10 @@ class Index:
         Returns:
             The jobs that match the given query.
         """
-        sql_query = f"SELECT id, timestamp, metadata FROM jobs WHERE {mongo_to_sql(query)}"  # noqa: E501
+        sql_query = (
+            f"SELECT id, timestamp, metadata, files FROM jobs WHERE "
+            f"{mongo_to_sql(query)}"
+        )
         if location is not None:
             sql_query += f" AND location = '{location}'"
         if latest:
@@ -320,19 +336,21 @@ class Index:
             job_id = result[0]
             cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
+            cached_file_paths: Optional[List[Path]] = None
+            if result[3] is not None:
+                cached_file_paths = [Path(s) for s in json.loads(result[3])]
             try:
                 jobs.append(
                     self.storage.get(job_id, cached_timestamp, cached_metadata)
                 )
             except FileNotFoundError:
-                # Job may have been moved to a remote; construct from cached data.
-                # Note: the resulting Job has valid metadata/timestamp but no local
-                # files. Accessing job.files or job._config will fail.
+                # Job is on a remote; construct from cached data including file list.
                 job = Job(
                     self.storage.root / "jobs" / job_id,
                     job_id,
                     cached_timestamp=cached_timestamp,
                     cached_metadata=cached_metadata,
+                    cached_file_paths=cached_file_paths,
                 )
                 jobs.append(job)
         return jobs

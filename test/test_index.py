@@ -344,3 +344,74 @@ def test_index_get_file_list_returns_none_when_unset(storage: Storage):
     index.add(job)
     assert job.id is not None
     assert index.get_file_list(job.id) is None
+
+
+def test_index_find_returns_remote_job_with_cached_file_paths(storage: Storage):
+    """When find() returns a remote job, its cached_file_paths come from the index."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    # Simulate the move: set location to remote and store a file list
+    index.set_location(job.id, "archive")
+    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("run.py")]
+    index.set_file_list(job.id, paths)
+
+    # Force the FileNotFoundError fallback by removing the local files
+    storage.remove(job)
+
+    results = index.find({"tags": "test"})
+    assert len(results) == 1
+    found_job = results[0]
+    assert set(found_job.files.keys()) == set(paths)
+    assert all(v is None for v in found_job.files.values())
+
+
+def test_index_get_returns_remote_job_with_cached_file_paths(
+    storage: Storage,
+):
+    """Index.get() also applies the FileNotFoundError fallback."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_location(job.id, "archive")
+    paths = [Path("r3.yaml"), Path("run.py")]
+    index.set_file_list(job.id, paths)
+
+    storage.remove(job)
+
+    found = index.get(job.id)
+    assert set(found.files.keys()) == set(paths)
+
+
+def test_index_get_unknown_id_raises_keyerror(storage: Storage):
+    index = Index(storage)
+    with pytest.raises(KeyError):
+        index.get("nonexistent-id")
+
+
+def test_index_find_remote_job_with_no_cached_files_returns_none(
+    storage: Storage,
+):
+    """When files IS NULL for a remote job, the constructed Job has cached_file_paths=None."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_location(job.id, "archive")
+    # Note: no set_file_list call — files column stays NULL.
+    storage.remove(job)
+
+    results = index.find({"tags": "test"})
+    assert len(results) == 1
+    found_job = results[0]
+    # cached_file_paths is None, so accessing files should raise (not silently
+    # succeed with a wrong dict).
+    assert found_job._cached_file_paths is None
