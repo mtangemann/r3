@@ -1098,3 +1098,72 @@ def test_repository_re_move_after_fetch_preserves_file_list(
     assert second_list is not None
     second = sorted(second_list)
     assert second == expected
+
+
+def test_format_version_is_beta_9() -> None:
+    from r3.repository import R3_FORMAT_VERSION
+    assert R3_FORMAT_VERSION == "1.0.0-beta.9"
+
+
+def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
+    """The migration script bumps version and adds the files column via ALTER TABLE."""
+    import sqlite3
+
+    from click.testing import CliRunner
+
+    # Import the migration's click command. The migration file isn't a package,
+    # so import via importlib for a clean test.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "migration_beta_9", "migration/1_0_0_beta_9.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Set up a fake beta.8 repository: r3.yaml + a beta.8-shaped index.
+    repo_path = tmp_path / "old-repo"
+    repo_path.mkdir()
+    (repo_path / "r3.yaml").write_text("version: 1.0.0-beta.8\n")
+
+    conn = sqlite3.connect(str(repo_path / "index.sqlite"))
+    conn.execute(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            metadata JSON NOT NULL,
+            location TEXT NOT NULL DEFAULT 'local'
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+        ("test-id", "2026-01-01T00:00:00", '{"tags": ["test"]}'),
+    )
+    conn.commit()
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        module.migrate,
+        ["--repository", str(repo_path)],
+        input="y\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+
+    # Verify the version bump.
+    with open(repo_path / "r3.yaml") as f:
+        new_config = yaml.safe_load(f)
+    assert new_config["version"] == "1.0.0-beta.9"
+
+    # Verify the column was added and existing row preserved with NULL files.
+    conn = sqlite3.connect(str(repo_path / "index.sqlite"))
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+    assert "files" in columns
+    row = conn.execute(
+        "SELECT id, files FROM jobs WHERE id = 'test-id'"
+    ).fetchone()
+    assert row[0] == "test-id"
+    assert row[1] is None
+    conn.close()
