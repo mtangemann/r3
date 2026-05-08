@@ -20,13 +20,19 @@ class Job:
         id: Optional[str] = None,
         cached_timestamp: Optional[datetime] = None,
         cached_metadata: Optional[Dict[str, Any]] = None,
+        cached_file_paths: Optional[Sequence[Path]] = None,
     ) -> None:
         """Initializes a job instance.
 
         Parameters:
             path: Path to the job's root directory.
-            id: Job id for committed jobs. This is set automatically for jobs retrieved
-                from a repository.
+            id: Job id for committed jobs. This is set automatically for jobs
+                retrieved from a repository.
+            cached_timestamp: Pre-loaded timestamp from the index.
+            cached_metadata: Pre-loaded metadata from the index.
+            cached_file_paths: Pre-loaded file path list from the index. Used for
+                remote jobs whose files are not available locally; when set,
+                `job.files` returns these paths with None values.
         """
         self._path = Path(path).absolute()
         self.id = id
@@ -34,7 +40,8 @@ class Job:
         self._metadata: Optional[Dict[str, Any]] = cached_metadata
         self._metadata_from_cache = cached_metadata is not None
         self._timestamp = cached_timestamp
-        self._files: Optional[Dict[Path, Path]] = None
+        self._cached_file_paths: Optional[Sequence[Path]] = cached_file_paths
+        self._files: Optional[Dict[Path, Optional[Path]]] = None
         self.__config: Optional[Dict[str, Any]] = None
         self._dependencies: Optional[Sequence["Dependency"]] = None
         self._hash: Optional[str] = None
@@ -114,18 +121,27 @@ class Job:
 
     # REVIEW: Replace with a method that returns an iterator?
     @property
-    def files(self) -> Mapping[Path, Path]:
-        """Files belonging to this job."""
+    def files(self) -> Mapping[Path, Optional[Path]]:
+        """Files belonging to this job.
+
+        For local jobs, values are absolute paths to the file on disk. For
+        remote jobs constructed with `cached_file_paths`, the keys are the
+        relative paths and the values are `None` (files not available
+        locally).
+        """
         if self._files is None:
-            ignore = self._config.get("ignore", [])
+            if self._cached_file_paths is not None:
+                self._files = {p: None for p in self._cached_file_paths}
+            else:
+                ignore = self._config.get("ignore", [])
 
-            for dependency in self.dependencies:
-                ignore.append(f"/{dependency.destination}")
+                for dependency in self.dependencies:
+                    ignore.append(f"/{dependency.destination}")
 
-            self._files = {
-                file: (self.path / file).absolute()
-                for file in r3.utils.find_files(self.path, ignore)
-            }
+                self._files = {
+                    file: (self.path / file).absolute()
+                    for file in r3.utils.find_files(self.path, ignore)
+                }
 
         return self._files
 
@@ -169,6 +185,10 @@ class Job:
                 necessary. If set to `True`, this will recompute the job hash in any
                 case.
         """
+        if self._cached_file_paths is not None:
+            raise ValueError(
+                "Cannot compute hash of a remote job: files are not available locally"
+            )
         if self._hash is None or recompute:
             hashes = dict()
 
@@ -176,6 +196,9 @@ class Job:
                 if destination in (Path("r3.yaml"), Path("metadata.yaml")):
                     continue
 
+                # The cached_file_paths guard above ensures we don't reach here
+                # for remote jobs, so source is always a real Path.
+                assert source is not None
                 hashes[str(destination)] = r3.utils.hash_file(source)
 
             for dependency in self.dependencies:
