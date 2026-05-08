@@ -124,3 +124,13 @@ def test_s3_remote_from_config_with_optional_fields():
     assert remote.prefix == "my-prefix/"
     assert remote.profile == "my-profile"
     assert remote.endpoint_url == "http://localhost:9000"
+
+
+def test_remote_default_cache_file_list_is_false():
+    """Subclasses without explicit override should not cache file lists."""
+    assert Remote.cache_file_list is False
+
+
+def test_s3_remote_caches_file_list():
+    """S3 storage is immutable, so S3Remote caches file lists."""
+    assert S3Remote.cache_file_list is True
