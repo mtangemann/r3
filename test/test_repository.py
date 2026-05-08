@@ -961,6 +961,52 @@ def test_rebuild_index_preserves_remote_jobs(
     assert location == "archive"
 
 
+def test_rebuild_index_does_not_duplicate_dependency_rows(
+    repository_with_remote: Repository,
+) -> None:
+    """Rebuild must not duplicate rows for local-child → remote-parent edges.
+
+    The remote-jobs preservation loop should only keep edges where the
+    child is remote; edges with a local child are re-inserted from each
+    local job's r3.yaml during the rebuild.
+    """
+    import sqlite3
+
+    base = repository_with_remote.commit(get_dummy_job("base"))
+    assert base.id is not None
+
+    dep_src = repository_with_remote.path.parent / "dep-src"
+    dep_src.mkdir()
+    (dep_src / "r3.yaml").write_text(
+        yaml.dump(
+            {"dependencies": [JobDependency("out", base.id).to_config()]}
+        )
+    )
+    (dep_src / "metadata.yaml").write_text("tags: [dep]\n")
+    repository_with_remote.commit(Job(dep_src))
+
+    repository_with_remote.move(base.id, "archive")
+
+    def edge_count() -> int:
+        conn = sqlite3.connect(
+            str(repository_with_remote.path / "index.sqlite")
+        )
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM job_dependencies"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    before = edge_count()
+    repository_with_remote.rebuild_index()
+    after_first = edge_count()
+    repository_with_remote.rebuild_index()
+    after_second = edge_count()
+
+    assert before == after_first == after_second
+
+
 def test_move_populates_file_list_when_remote_caches(
     repository_with_remote: Repository,
 ) -> None:
