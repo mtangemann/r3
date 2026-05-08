@@ -19,7 +19,6 @@ import pytest
 import yaml
 
 from r3 import Repository
-from r3.remote import S3Remote  # noqa: F401  (imported for visibility/type assertion)
 
 _LIVE_ENDPOINT = os.environ.get("R3_TEST_S3_ENDPOINT_URL")
 _LIVE_BUCKET = os.environ.get("R3_TEST_S3_BUCKET")
