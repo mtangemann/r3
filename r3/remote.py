@@ -9,6 +9,12 @@ from typing import Any, Dict, Optional
 class Remote(ABC):
     """Abstract base class for remote storage backends."""
 
+    cache_file_list: bool = False
+    """Whether the remote's storage is immutable enough to cache the file list
+    in the index. Subclasses that store immutable copies (S3) override this
+    to True; subclasses pointing at potentially-mutable storage (live shared
+    filesystems) leave it False."""
+
     @abstractmethod
     def upload(self, job_id: str, job_path: Path) -> None:
         """Uploads a job directory to the remote.
@@ -74,6 +80,8 @@ class Remote(ABC):
 
 class S3Remote(Remote):
     """Remote storage backend using Amazon S3."""
+
+    cache_file_list: bool = True
 
     def __init__(
         self,
