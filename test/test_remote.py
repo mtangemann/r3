@@ -273,3 +273,56 @@ def test_s3_remote_archive_upload_cleans_temp_on_failure(
     after = {p.name for p in Path(tempdir).iterdir() if p.suffix == ".zst"}
     new_files = after - before
     assert not new_files, f"Temp files leaked: {new_files}"
+
+
+def test_s3_remote_archive_empty_job(
+    s3_remote_archive: S3Remote, tmp_path: Path
+):
+    """A job with only metadata files round-trips correctly."""
+    job_path = tmp_path / "empty-job"
+    job_path.mkdir()
+    (job_path / "r3.yaml").write_text("dependencies: []\n")
+    (job_path / "metadata.yaml").write_text("tags: []\n")
+
+    s3_remote_archive.upload("empty-job-id", job_path)
+
+    download_path = tmp_path / "downloaded"
+    s3_remote_archive.download("empty-job-id", download_path)
+    assert (download_path / "r3.yaml").exists()
+    assert (download_path / "metadata.yaml").exists()
+
+
+def test_s3_remote_archive_deep_nested_paths(
+    s3_remote_archive: S3Remote, tmp_path: Path
+):
+    """Deeply nested file paths survive a round-trip."""
+    job_path = tmp_path / "nested-job"
+    job_path.mkdir()
+    (job_path / "r3.yaml").write_text("dependencies: []\n")
+    (job_path / "metadata.yaml").write_text("tags: []\n")
+    deep = job_path / "a" / "b" / "c" / "d"
+    deep.mkdir(parents=True)
+    (deep / "result.txt").write_text("deep")
+
+    s3_remote_archive.upload("nested-job-id", job_path)
+    download_path = tmp_path / "downloaded"
+    s3_remote_archive.download("nested-job-id", download_path)
+    assert (download_path / "a" / "b" / "c" / "d" / "result.txt").read_text() == "deep"
+
+
+def test_s3_remote_archive_special_characters_in_paths(
+    s3_remote_archive: S3Remote, tmp_path: Path
+):
+    """Spaces and non-ASCII in paths survive a round-trip."""
+    job_path = tmp_path / "special-job"
+    job_path.mkdir()
+    (job_path / "r3.yaml").write_text("dependencies: []\n")
+    (job_path / "metadata.yaml").write_text("tags: []\n")
+    (job_path / "file with spaces.txt").write_text("ok")
+    (job_path / "résultat.txt").write_text("é")
+
+    s3_remote_archive.upload("special-job-id", job_path)
+    download_path = tmp_path / "downloaded"
+    s3_remote_archive.download("special-job-id", download_path)
+    assert (download_path / "file with spaces.txt").read_text() == "ok"
+    assert (download_path / "résultat.txt").read_text() == "é"
