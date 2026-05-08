@@ -1,6 +1,8 @@
 """Remote storage backends for R3 repositories."""
 
 import os
+import tarfile
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -167,19 +169,56 @@ class S3Remote(Remote):
         """Returns the S3 key prefix for a job."""
         return f"{self.prefix}{job_id}/"
 
+    def _import_pyzstd(self) -> Any:
+        """Lazily imports pyzstd with a friendly error message."""
+        try:
+            import pyzstd
+        except ImportError as e:
+            raise ImportError(
+                "archive_format='tar.zst' requires pyzstd. "
+                "Install it with: pip install pyzstd"
+            ) from e
+        return pyzstd
+
+    def _archive_key(self, job_id: str) -> str:
+        """Returns the S3 key for a job's archive."""
+        return f"{self.prefix}{job_id}.tar.zst"
+
     def upload(self, job_id: str, job_path: Path) -> None:
         """Uploads a job directory to S3.
+
+        With archive_format='tar.zst', creates a single seekable .tar.zst
+        object. Without archive_format, uploads individual files.
 
         Parameters:
             job_id: The ID of the job to upload.
             job_path: The local path of the job directory.
         """
-        for root, _dirs, files in os.walk(job_path):
-            for filename in files:
-                local_path = Path(root) / filename
-                relative_path = local_path.relative_to(job_path)
-                s3_key = f"{self._job_prefix(job_id)}{relative_path}"
-                self._client.upload_file(str(local_path), self.bucket, s3_key)
+        if self.archive_format == "tar.zst":
+            pyzstd = self._import_pyzstd()
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False)
+            tmp_path = Path(tmp.name)
+            tmp.close()
+            try:
+                with pyzstd.SeekableZstdFile(
+                    str(tmp_path),
+                    "w",
+                    max_frame_content_size=self.archive_frame_size,
+                ) as zfh:
+                    with tarfile.open(fileobj=zfh, mode="w|") as tar:
+                        tar.add(str(job_path), arcname=".")
+                self._client.upload_file(
+                    str(tmp_path), self.bucket, self._archive_key(job_id)
+                )
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        else:
+            for root, _dirs, files in os.walk(job_path):
+                for filename in files:
+                    local_path = Path(root) / filename
+                    relative_path = local_path.relative_to(job_path)
+                    s3_key = f"{self._job_prefix(job_id)}{relative_path}"
+                    self._client.upload_file(str(local_path), self.bucket, s3_key)
 
     def download(self, job_id: str, destination: Path) -> None:
         """Downloads a job from S3.
