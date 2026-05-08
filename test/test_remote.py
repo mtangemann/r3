@@ -7,6 +7,7 @@ import boto3
 import pytest
 import yaml
 from moto import mock_aws
+from pytest_mock.plugin import MockerFixture
 
 from r3.remote import Remote, S3Remote
 
@@ -248,3 +249,27 @@ def test_s3_remote_archive_remove(s3_remote_archive: S3Remote, job_dir: Path):
     client = boto3.client("s3", region_name="us-east-1")
     response = client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=PREFIX)
     assert response.get("KeyCount", 0) == 0
+
+
+def test_s3_remote_archive_upload_cleans_temp_on_failure(
+    s3_remote_archive: S3Remote, job_dir: Path, mocker: MockerFixture
+):
+    """If upload_file raises, no .tar.zst temp file is left behind."""
+    import tempfile as _tempfile
+
+    tempdir = _tempfile.gettempdir()
+    before = {
+        p.name for p in Path(tempdir).iterdir() if p.suffix == ".zst"
+    }
+
+    mocker.patch.object(
+        s3_remote_archive._client, "upload_file",
+        side_effect=RuntimeError("simulated network failure")
+    )
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        s3_remote_archive.upload("test-job-id", job_dir)
+
+    after = {p.name for p in Path(tempdir).iterdir() if p.suffix == ".zst"}
+    new_files = after - before
+    assert not new_files, f"Temp files leaked: {new_files}"
