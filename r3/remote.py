@@ -93,6 +93,7 @@ class S3Remote(Remote):
         endpoint_url: Optional[str] = None,
         archive_format: Optional[str] = None,
         archive_frame_size: int = 16 * 1024 * 1024,
+        addressing_style: Optional[str] = None,
     ) -> None:
         """Initializes an S3 remote.
 
@@ -108,6 +109,9 @@ class S3Remote(Remote):
                 seekable zstd archive. Smaller frames give finer-grained
                 random access at a small compression cost. Defaults to
                 16 MiB.
+            addressing_style: S3 addressing style. One of "auto" (boto3's
+                default), "path", or "virtual". CEPH RGW typically requires
+                "path". Defaults to None (boto3 default).
         """
         self.bucket = bucket
         self.prefix = prefix.rstrip("/") + "/" if prefix else ""
@@ -115,6 +119,7 @@ class S3Remote(Remote):
         self.endpoint_url = endpoint_url
         self.archive_format = archive_format
         self.archive_frame_size = archive_frame_size
+        self.addressing_style = addressing_style
 
         self._client_instance: Any = None
 
@@ -123,10 +128,18 @@ class S3Remote(Remote):
         """Returns the S3 client, creating it lazily on first access."""
         if self._client_instance is None:
             import boto3
+            from botocore.config import Config
 
             session = boto3.Session(profile_name=self.profile)
+            client_config: Optional[Config] = None
+            if self.addressing_style is not None:
+                client_config = Config(
+                    s3={"addressing_style": self.addressing_style},  # type: ignore[arg-type]
+                )
             self._client_instance = session.client(
-                "s3", endpoint_url=self.endpoint_url
+                "s3",
+                endpoint_url=self.endpoint_url,
+                config=client_config,
             )
         return self._client_instance
 
@@ -156,6 +169,15 @@ class S3Remote(Remote):
                 f"got {archive_frame_size!r}"
             )
 
+        addressing_style = config.get("addressing_style")
+        if addressing_style is not None and addressing_style not in (
+            "auto", "path", "virtual",
+        ):
+            raise ValueError(
+                f"addressing_style must be one of 'auto', 'path', 'virtual'; "
+                f"got {addressing_style!r}"
+            )
+
         return S3Remote(
             bucket=config["bucket"],
             prefix=config.get("prefix", ""),
@@ -163,6 +185,7 @@ class S3Remote(Remote):
             endpoint_url=config.get("endpoint_url"),
             archive_format=archive_format,
             archive_frame_size=archive_frame_size,
+            addressing_style=addressing_style,
         )
 
     def _job_prefix(self, job_id: str) -> str:

@@ -5,6 +5,8 @@ These tests are skipped by default. To run, set:
 - R3_TEST_S3_BUCKET: existing bucket the user has access to
 - R3_TEST_S3_PREFIX: optional base prefix within the bucket
 - R3_TEST_S3_PROFILE: optional AWS credential profile
+- R3_TEST_S3_ADDRESSING_STYLE: optional "auto" | "path" | "virtual"
+  (CEPH RGW typically requires "path")
 
 Then: pytest -m live_s3
 """
@@ -12,11 +14,12 @@ Then: pytest -m live_s3
 import os
 import uuid
 from pathlib import Path
-from typing import Generator, List
+from typing import Generator, List, Optional
 
 import boto3
 import pytest
 import yaml
+from botocore.config import Config
 
 from r3 import Repository
 
@@ -24,6 +27,7 @@ _LIVE_ENDPOINT = os.environ.get("R3_TEST_S3_ENDPOINT_URL")
 _LIVE_BUCKET = os.environ.get("R3_TEST_S3_BUCKET")
 _LIVE_PREFIX = os.environ.get("R3_TEST_S3_PREFIX", "").rstrip("/")
 _LIVE_PROFILE = os.environ.get("R3_TEST_S3_PROFILE")
+_LIVE_ADDRESSING_STYLE = os.environ.get("R3_TEST_S3_ADDRESSING_STYLE")
 
 
 pytestmark = [
@@ -37,7 +41,12 @@ pytestmark = [
 
 def _live_client():
     session = boto3.Session(profile_name=_LIVE_PROFILE)
-    return session.client("s3", endpoint_url=_LIVE_ENDPOINT)
+    client_config: Optional[Config] = None
+    if _LIVE_ADDRESSING_STYLE:
+        client_config = Config(s3={"addressing_style": _LIVE_ADDRESSING_STYLE})
+    return session.client(
+        "s3", endpoint_url=_LIVE_ENDPOINT, config=client_config
+    )
 
 
 @pytest.fixture
@@ -96,6 +105,8 @@ def _make_repo(tmp_path: Path, run_prefix: str, archive: bool) -> Repository:
     }
     if _LIVE_PROFILE:
         remote_config["profile"] = _LIVE_PROFILE
+    if _LIVE_ADDRESSING_STYLE:
+        remote_config["addressing_style"] = _LIVE_ADDRESSING_STYLE
     if archive:
         remote_config["archive_format"] = "tar.zst"
     config["remotes"] = {"archive": remote_config}

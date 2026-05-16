@@ -177,6 +177,35 @@ def test_s3_remote_from_config_rejects_unknown_archive_format():
         S3Remote.from_config(config)
 
 
+def test_s3_remote_addressing_style_defaults_to_none():
+    """Without explicit config, addressing_style is None (boto3's default 'auto')."""
+    remote = S3Remote(bucket="b")
+    assert remote.addressing_style is None
+
+
+def test_s3_remote_from_config_accepts_addressing_style():
+    """CEPH RGW typically needs path-style addressing."""
+    config = {"type": "s3", "bucket": "b", "addressing_style": "path"}
+    remote = S3Remote.from_config(config)
+    assert remote.addressing_style == "path"
+
+
+def test_s3_remote_from_config_rejects_unknown_addressing_style():
+    config = {"type": "s3", "bucket": "b", "addressing_style": "wrong"}
+    with pytest.raises(ValueError, match="addressing_style"):
+        S3Remote.from_config(config)
+
+
+def test_s3_remote_client_uses_addressing_style():
+    """The S3 client should be created with the configured addressing_style."""
+    remote = S3Remote(bucket="b", addressing_style="path")
+    with mock_aws():
+        client = remote._client
+        # botocore exposes the config; check the addressing style propagated
+        assert client.meta.config.s3 is not None
+        assert client.meta.config.s3.get("addressing_style") == "path"
+
+
 @pytest.fixture
 def s3_remote_archive():
     with mock_aws():
