@@ -11,10 +11,22 @@ default. To run:
 ```bash
 export R3_TEST_S3_ENDPOINT_URL=https://your-ceph.example.com
 export R3_TEST_S3_BUCKET=your-existing-bucket
-export R3_TEST_S3_PREFIX=r3-smoke-tests/   # optional sub-prefix
-# AWS credentials via env vars or AWS profile (R3_TEST_S3_PROFILE)
-pytest -m live_s3
+export R3_TEST_S3_PREFIX=r3-smoke-tests/        # optional sub-prefix
+export R3_TEST_S3_ADDRESSING_STYLE=path         # required for CEPH RGW
+# AWS credentials: either direct env vars
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+# OR a configured profile in ~/.aws/credentials
+# export R3_TEST_S3_PROFILE=ceph-prod
+
+python -m pytest -m live_s3
 ```
+
+`R3_TEST_S3_ADDRESSING_STYLE` should usually be `path` for CEPH RGW (and
+some MinIO setups). Boto3 defaults to virtual-host-style, which CEPH
+typically does not support — leaving this unset against such a backend
+will yield cryptic `InvalidAccessKeyId` errors. If your s3cmd config has
+`host_base == host_bucket` (no `%(bucket)s` placeholder), use `path`.
 
 Each test run uses a UUID-scoped sub-prefix and cleans up its own keys at
 teardown. If teardown fails, the test surfaces a clear error so you can
