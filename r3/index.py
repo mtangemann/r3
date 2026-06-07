@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from r3.job import Job, JobDependency
 from r3.query import mongo_to_sql
@@ -16,7 +16,7 @@ class Index:
 
     def __init__(self, storage: Storage) -> None:
         """Initializes the index.
-        
+
         Parameters:
             storage: The storage with the jobs to index.
         """
@@ -28,7 +28,34 @@ class Index:
 
     def rebuild(self) -> None:
         """Rebuilds the index from the storage."""
+        # Preserve remote job rows before dropping the index, since remote jobs
+        # have no local files and cannot be reconstructed from storage alone.
+        remote_jobs: list[tuple[str, str, str, str, Optional[str]]] = []
+        remote_job_dependencies: list[tuple[str, str]] = []
+
         if self._path.exists():
+            with Transaction(self._path) as transaction:
+                transaction.execute(
+                    "SELECT id, timestamp, metadata, location, files FROM jobs"
+                    " WHERE location != 'local'"
+                )
+                remote_jobs = transaction.fetchall()
+
+                if remote_jobs:
+                    remote_ids = [row[0] for row in remote_jobs]
+                    placeholders = ",".join("?" * len(remote_ids))
+                    # Only preserve edges where the child is remote — edges
+                    # with a local child get re-inserted by the local jobs
+                    # loop below (which reads dependencies from each local
+                    # job's r3.yaml). Including those here would duplicate
+                    # them.
+                    transaction.execute(
+                        f"SELECT child_id, parent_id FROM job_dependencies"
+                        f" WHERE child_id IN ({placeholders})",
+                        remote_ids,
+                    )
+                    remote_job_dependencies = transaction.fetchall()
+
             self._path.unlink()
 
         with Transaction(self._path) as transaction:
@@ -37,7 +64,9 @@ class Index:
                 CREATE TABLE jobs (
                     id TEXT PRIMARY KEY,
                     timestamp TEXT NOT NULL,
-                    metadata JSON NOT NULL
+                    metadata JSON NOT NULL,
+                    location TEXT NOT NULL DEFAULT 'local',
+                    files JSON
                 )
                 """
             )
@@ -70,7 +99,7 @@ class Index:
                 )
 
             transaction.executemany(
-                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                "INSERT INTO jobs (id, timestamp, metadata, location) VALUES (?, ?, ?, 'local')",  # noqa: E501
                 job_data,
             )
             transaction.executemany(
@@ -78,18 +107,31 @@ class Index:
                 job_dependency_data,
             )
 
+            # Re-insert remote jobs that were preserved before the rebuild.
+            if remote_jobs:
+                transaction.executemany(
+                    "INSERT INTO jobs (id, timestamp, metadata, location, files)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    remote_jobs,
+                )
+                transaction.executemany(
+                    "INSERT INTO job_dependencies (child_id, parent_id)"
+                    " VALUES (?, ?)",
+                    remote_job_dependencies,
+                )
+
     def __len__(self) -> int:
         """Returns the number of jobs in the index."""
         with Transaction(self._path) as transaction:
             transaction.execute("SELECT COUNT(*) FROM jobs")
             return transaction.fetchone()[0]
-    
+
     def __contains__(self, job: Job) -> bool:
         """Checks if a job is in the index.
-        
+
         Parameters:
             job: The job to check.
-        
+
         Returns:
             Whether the job is in the index.
         """
@@ -105,7 +147,7 @@ class Index:
 
     def add(self, job: Job) -> None:
         """Adds a job to the index.
-        
+
         Parameters:
             job: The job to add.
         """
@@ -118,7 +160,7 @@ class Index:
 
         with Transaction(self._path) as transaction:
             transaction.execute(
-                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                "INSERT INTO jobs (id, timestamp, metadata, location) VALUES (?, ?, ?, 'local')",  # noqa: E501
                 (job.id, job.timestamp.isoformat(), json.dumps(job.metadata))
             )
             transaction.executemany(
@@ -132,17 +174,17 @@ class Index:
 
     def get(self, job_id: str) -> Job:
         """Gets a job by ID.
-        
+
         Parameters:
             job_id: The ID of the job to get.
-        
+
         Returns:
             The job with the given ID.
         """
         with Transaction(self._path) as transaction:
             transaction.execute(
-                "SELECT timestamp, metadata FROM jobs WHERE id = ?",
-                (job_id,)
+                "SELECT timestamp, metadata, files FROM jobs WHERE id = ?",
+                (job_id,),
             )
             result = transaction.fetchone()
 
@@ -151,11 +193,24 @@ class Index:
 
         cached_timestamp = datetime.fromisoformat(result[0])
         cached_metadata = json.loads(result[1])
-        return self.storage.get(job_id, cached_timestamp, cached_metadata)
-    
+        cached_file_paths: Optional[List[Path]] = None
+        if result[2] is not None:
+            cached_file_paths = [Path(s) for s in json.loads(result[2])]
+
+        try:
+            return self.storage.get(job_id, cached_timestamp, cached_metadata)
+        except FileNotFoundError:
+            return Job(
+                self.storage.root / "jobs" / job_id,
+                job_id,
+                cached_timestamp=cached_timestamp,
+                cached_metadata=cached_metadata,
+                cached_file_paths=cached_file_paths,
+            )
+
     def update(self, job: Job) -> None:
         """Updates a job in the index.
-        
+
         This does not update the dependency graph, since that is not expected to change.
 
         Parameters:
@@ -174,7 +229,7 @@ class Index:
 
     def remove(self, job: Job) -> None:
         """Removes a job from the index.
-        
+
         Parameters:
             job: The job to remove.
         """
@@ -191,18 +246,88 @@ class Index:
                 (job.id, job.id)
             )
 
-    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
+    def set_location(self, job_id: str, location: str) -> None:
+        """Sets the location of a job.
+
+        Parameters:
+            job_id: The ID of the job.
+            location: The location to set.
+        """
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "UPDATE jobs SET location = ? WHERE id = ?",
+                (location, job_id)
+            )
+
+    def get_location(self, job_id: str) -> str:
+        """Gets the location of a job.
+
+        Parameters:
+            job_id: The ID of the job.
+
+        Returns:
+            The location of the job.
+        """
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "SELECT location FROM jobs WHERE id = ?",
+                (job_id,)
+            )
+            result = transaction.fetchone()
+
+        if result is None:
+            raise KeyError(f"Job not found: {job_id}")
+
+        return result[0]
+
+    def set_file_list(self, job_id: str, paths: List[Path]) -> None:
+        """Sets the cached file list for a job.
+
+        Paths are stored as POSIX strings in a JSON array, regardless of
+        platform, so the cached list is portable.
+        """
+        files_json = json.dumps([p.as_posix() for p in paths])
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "UPDATE jobs SET files = ? WHERE id = ?",
+                (files_json, job_id),
+            )
+
+    def get_file_list(self, job_id: str) -> Optional[List[Path]]:
+        """Returns the cached file list for a job, or None if unset."""
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "SELECT files FROM jobs WHERE id = ?", (job_id,)
+            )
+            result = transaction.fetchone()
+        if result is None or result[0] is None:
+            return None
+        return [Path(s) for s in json.loads(result[0])]
+
+    def find(
+        self,
+        query: Dict[str, Any],
+        latest: bool = False,
+        location: Optional[str] = None,
+    ) -> List[Job]:
         """Finds jobs by tags.
-        
+
         Parameters:
             query: The query to match jobs against. The query is specified as a
                 MongoDB-style query document.
             latest: Whether to return the latest job or all jobs with the given tags.
+            location: Optional location filter. When provided, only jobs with the
+                given location are returned.
 
         Returns:
             The jobs that match the given query.
         """
-        sql_query = f"SELECT id, timestamp, metadata FROM jobs WHERE {mongo_to_sql(query)}"  # noqa: E501
+        sql_query = (
+            f"SELECT id, timestamp, metadata, files FROM jobs WHERE "
+            f"{mongo_to_sql(query)}"
+        )
+        if location is not None:
+            sql_query += f" AND location = '{location}'"
         if latest:
             sql_query += " ORDER BY timestamp DESC LIMIT 1"
 
@@ -215,7 +340,23 @@ class Index:
             job_id = result[0]
             cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
-            jobs.append(self.storage.get(job_id, cached_timestamp, cached_metadata))
+            cached_file_paths: Optional[List[Path]] = None
+            if result[3] is not None:
+                cached_file_paths = [Path(s) for s in json.loads(result[3])]
+            try:
+                jobs.append(
+                    self.storage.get(job_id, cached_timestamp, cached_metadata)
+                )
+            except FileNotFoundError:
+                # Job is on a remote; construct from cached data including file list.
+                job = Job(
+                    self.storage.root / "jobs" / job_id,
+                    job_id,
+                    cached_timestamp=cached_timestamp,
+                    cached_metadata=cached_metadata,
+                    cached_file_paths=cached_file_paths,
+                )
+                jobs.append(job)
         return jobs
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
@@ -224,7 +365,7 @@ class Index:
         Parameters:
             job: The job to find dependents for.
             recursive: Whether to find dependents recursively.
-        
+
         Returns:
             The jobs that directly depend on the given job.
         """

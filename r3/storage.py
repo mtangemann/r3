@@ -139,6 +139,8 @@ class Storage:
             if destination in [Path("r3.yaml"), Path("metadata.yaml")]:
                 continue
 
+            # Storage.add is only called for local jobs, so source is never None.
+            assert source is not None
             target = job_path / destination
 
             os.makedirs(target.parent, exist_ok=True)

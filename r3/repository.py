@@ -6,7 +6,7 @@ The `Repository` class should be imported not from this module but from the top-
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 import yaml
 from executor import execute
@@ -24,9 +24,10 @@ from r3.job import (
     QueryAllDependency,
     QueryDependency,
 )
+from r3.remote import Remote
 from r3.storage import Storage
 
-R3_FORMAT_VERSION = "1.0.0-beta.7"
+R3_FORMAT_VERSION = "1.0.0-beta.9"
 
 
 class Repository:
@@ -63,6 +64,15 @@ class Repository:
 
         self._storage = Storage(self.path)
         self._index = Index(self._storage)
+
+        self._remotes: Dict[str, Remote] = {}
+        for name, remote_config in config.get("remotes", {}).items():
+            self._remotes[name] = Remote.from_config(remote_config)
+
+    @property
+    def remotes(self) -> Dict[str, "Remote"]:
+        """Returns the configured remotes."""
+        return self._remotes
 
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> "Repository":
@@ -115,7 +125,14 @@ class Repository:
 
         if isinstance(resolved_item, JobDependency):
             target = self.path / "jobs" / resolved_item.job / resolved_item.source
-            return target.exists()
+            if target.exists():
+                return True
+            file_list = self._index.get_file_list(resolved_item.job)
+            if file_list is not None:
+                if resolved_item.source == Path("."):
+                    return len(file_list) > 0
+                return resolved_item.source in file_list
+            return False
 
         if isinstance(resolved_item, GitDependency):
             assert resolved_item.commit is not None
@@ -168,14 +185,37 @@ class Repository:
         Parameters:
             item: The job or dependency to check out.
             path: The path to check out the job or dependency to.
+
+        Raises:
+            ValueError: If the job or any of its dependencies is archived.
         """
         resolved_item = self.resolve(item)
 
         if isinstance(resolved_item, list):
             for dependency in resolved_item:
+                if isinstance(dependency, JobDependency):
+                    self._check_job_is_local(dependency.job)
                 self._storage.checkout(dependency, path)
-        else:
+        elif isinstance(resolved_item, Job):
+            assert resolved_item.id is not None
+            self._check_job_is_local(resolved_item.id)
+            for dep in resolved_item.dependencies:
+                if isinstance(dep, JobDependency):
+                    self._check_job_is_local(dep.job)
             self._storage.checkout(resolved_item, path)
+        else:
+            if isinstance(resolved_item, JobDependency):
+                self._check_job_is_local(resolved_item.job)
+            self._storage.checkout(resolved_item, path)
+
+    def _check_job_is_local(self, job_id: str) -> None:
+        """Raises ValueError if a job is not stored locally."""
+        location = self._index.get_location(job_id)
+        if location != "local":
+            raise ValueError(
+                f"Job {job_id} is archived on remote \"{location}\". "
+                f"Run `r3 fetch {job_id}` to retrieve it first."
+            )
 
     def remove(self, job: Job) -> None:
         """Removes a job from the repository.
@@ -209,31 +249,29 @@ class Repository:
     def get_job_by_id(self, job_id: str):
         """Returns the job with the given ID.
 
-        If the job does not exist in the repository it will raise a KeyError.
-
-        Parameters:
-            job_id: ID of the job to retrieve from the repository.
-
-        Returns:
-            The job with the given ID.
+        For remote jobs, returns a Job with cached_file_paths populated from the
+        index (no local files). For unknown IDs, raises KeyError.
         """
-        try:
-            return self._storage.get(job_id=job_id)
-        except FileNotFoundError as error:
-            message = f"Job with ID {job_id} not found in this repository."
-            raise KeyError(message) from error
+        return self._index.get(job_id)
 
-    def find(self, query: Dict[str, Any], latest: bool = False) -> List[Job]:
+    def find(
+        self,
+        query: Dict[str, Any],
+        latest: bool = False,
+        location: Optional[str] = None,
+    ) -> List[Job]:
         """Finds jobs by a query.
 
         Parameters:
             query: The mongo-style query document to find jobs by.
             latest: Whether to return the latest job or all jobs with the given tags.
+            location: Optional location filter. When provided, only jobs with the
+                given location are returned.
 
         Returns:
             The jobs that match the given tags.
         """
-        return self._index.find(query, latest)
+        return self._index.find(query, latest, location=location)
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
         """Finds jobs that depend on the given job.
@@ -246,6 +284,69 @@ class Repository:
             The jobs that depend on the given job.
         """
         return self._index.find_dependents(job, recursive)
+
+    def move(self, job_id: str, remote_name: str) -> Set[Job]:
+        """Moves a job to a remote storage backend.
+
+        The job files are uploaded to the remote, verified, and then removed
+        locally. The job remains in the index with its location updated.
+
+        Parameters:
+            job_id: The ID of the job to move.
+            remote_name: The name of the remote to move the job to.
+
+        Returns:
+            The set of jobs that depend on the moved job.
+
+        Raises:
+            ValueError: If the remote name is not configured.
+            KeyError: If the job does not exist.
+            RuntimeError: If the upload verification fails.
+        """
+        if remote_name not in self._remotes:
+            raise ValueError(f"Unknown remote: {remote_name}")
+
+        remote = self._remotes[remote_name]
+        job = self.get_job_by_id(job_id)
+
+        file_list: Optional[List[Path]] = None
+        if remote.cache_file_list:
+            file_list = list(job.files.keys())
+
+        remote.upload(job_id, job.path)
+
+        if not remote.exists(job_id):
+            raise RuntimeError(f"Upload verification failed for job {job_id}")
+
+        dependents = self._index.find_dependents(job)
+        self._storage.remove(job)
+        self._index.set_location(job_id, remote_name)
+
+        if file_list is not None:
+            self._index.set_file_list(job_id, file_list)
+
+        return dependents
+
+    def fetch(self, job_id: str) -> None:
+        """Fetches a job from a remote storage backend.
+
+        Downloads the job files from the remote and restores them locally.
+
+        Parameters:
+            job_id: The ID of the job to fetch.
+
+        Raises:
+            ValueError: If the job is already local.
+            KeyError: If the remote is not configured.
+        """
+        location = self._index.get_location(job_id)
+
+        if location == "local":
+            raise ValueError(f"Job {job_id} is already local.")
+
+        remote = self._remotes[location]
+        remote.download(job_id, self._storage.root / "jobs" / job_id)
+        self._index.set_location(job_id, "local")
 
     def rebuild_index(self):
         """Rebuilds the job index.

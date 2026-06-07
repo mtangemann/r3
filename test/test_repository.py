@@ -5,11 +5,13 @@ import os
 import stat
 from datetime import datetime
 from pathlib import Path
-from typing import Union
+from typing import Generator, Union
 
+import boto3
 import pytest
 import yaml
 from executor import execute
+from moto import mock_aws
 from pytest_mock.plugin import MockerFixture
 
 from r3.job import (
@@ -754,7 +756,7 @@ def test_repository_get_job_by_id(repository: Repository) -> None:
     job = get_dummy_job("base")
     job = repository.commit(job)
     assert job.id is not None
-    
+
     retrieved_job = repository.get_job_by_id(job.id)
     retrieved_job_syntax_sugar = repository[job.id]
 
@@ -764,3 +766,450 @@ def test_repository_get_job_by_id(repository: Repository) -> None:
         repository.get_job_by_id("invalid-job-id")
     with pytest.raises(KeyError):
         repository["invalid-job-id"]
+
+
+# --- Remote / move / fetch tests ---
+
+BUCKET = "test-bucket"
+PREFIX = "r3/jobs/"
+
+
+@pytest.fixture
+def repository_with_remote(tmp_path: Path) -> Generator[Repository, None, None]:
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket=BUCKET)
+
+        repo = Repository.init(tmp_path / "repository")
+        config_path = repo.path / "r3.yaml"
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        config["remotes"] = {
+            "archive": {"type": "s3", "bucket": BUCKET, "prefix": PREFIX}
+        }
+
+        with open(config_path, "w") as f:
+            yaml.dump(config, f)
+
+        repo = Repository(repo.path)
+        yield repo
+
+
+def test_repository_loads_remotes_from_config(
+    repository_with_remote: Repository,
+) -> None:
+    assert "archive" in repository_with_remote.remotes
+
+
+def test_repository_without_remotes(repository: Repository) -> None:
+    assert len(repository.remotes) == 0
+
+
+def test_repository_move_uploads_and_removes_local(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    job_path = repository_with_remote.path / "jobs" / job.id
+    assert job_path.exists()
+
+    repository_with_remote.move(job.id, "archive")
+
+    # Local files should be gone
+    assert not job_path.exists()
+
+    # Index should still find the job
+
+    location = repository_with_remote._index.get_location(job.id)
+    assert location == "archive"
+
+
+def test_repository_move_raises_for_unknown_remote(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    with pytest.raises(ValueError):
+        repository_with_remote.move(job.id, "nonexistent")
+
+
+def test_repository_move_raises_for_unknown_job(
+    repository_with_remote: Repository,
+) -> None:
+    with pytest.raises(KeyError):
+        repository_with_remote.move("nonexistent-job-id", "archive")
+
+
+def test_repository_fetch_downloads_and_restores_local(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    job_path = repository_with_remote.path / "jobs" / job.id
+    assert not job_path.exists()
+
+    repository_with_remote.fetch(job.id)
+
+    assert job_path.exists()
+    location = repository_with_remote._index.get_location(job.id)
+    assert location == "local"
+
+
+def test_repository_fetch_raises_for_local_job(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    with pytest.raises(ValueError):
+        repository_with_remote.fetch(job.id)
+
+
+def test_repository_move_warns_about_dependents(
+    repository_with_remote: Repository,
+) -> None:
+    base_job = get_dummy_job("base")
+    base_job = repository_with_remote.commit(base_job)
+    assert base_job.id is not None
+
+    dependent_job = get_dummy_job("base")
+    dependency = JobDependency("destination", base_job.id)
+    dependent_job._dependencies = [dependency]
+    dependent_job._config["dependencies"] = [dependency.to_config()]
+    dependent_job = repository_with_remote.commit(dependent_job)
+
+    dependents = repository_with_remote.move(base_job.id, "archive")
+    assert len(dependents) > 0
+    assert dependent_job.id in {j.id for j in dependents}
+
+
+def test_repository_find_still_works_after_move(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job.metadata["tags"] = ["findme"]
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    results = repository_with_remote.find({"tags": "findme"})
+    assert len(results) == 1
+    assert results[0].id == job.id
+
+
+def test_checkout_raises_for_archived_job(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch"):
+        repository_with_remote.checkout(job, tmp_path / "checkout")
+
+
+def test_checkout_raises_for_archived_dependency(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    dep_job = get_dummy_job("base")
+    dep_job.metadata["tags"] = ["dep"]
+    dep_job = repository_with_remote.commit(dep_job)
+    assert dep_job.id is not None
+
+    main_job = get_dummy_job("base")
+    dependency = JobDependency("data", dep_job.id, "run.py")
+    main_job._dependencies = [dependency]
+    main_job._config["dependencies"] = [dependency.to_config()]
+    main_job = repository_with_remote.commit(main_job)
+
+    repository_with_remote.move(dep_job.id, "archive")
+
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch"):
+        repository_with_remote.checkout(main_job, tmp_path / "checkout")
+
+
+def test_rebuild_index_preserves_remote_jobs(
+    repository_with_remote: Repository,
+) -> None:
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+    repository_with_remote.rebuild_index()
+
+    # Job must still be findable by query
+    results = repository_with_remote.find({"tags": "test"})
+    assert len(results) == 1
+    assert results[0].id == job.id
+
+    # Location must still be "archive", not reverted to "local"
+    location = repository_with_remote._index.get_location(job.id)
+    assert location == "archive"
+
+
+def test_rebuild_index_does_not_duplicate_dependency_rows(
+    repository_with_remote: Repository,
+) -> None:
+    """Rebuild must not duplicate rows for local-child → remote-parent edges.
+
+    The remote-jobs preservation loop should only keep edges where the
+    child is remote; edges with a local child are re-inserted from each
+    local job's r3.yaml during the rebuild.
+    """
+    import sqlite3
+
+    base = repository_with_remote.commit(get_dummy_job("base"))
+    assert base.id is not None
+
+    dep_src = repository_with_remote.path.parent / "dep-src"
+    dep_src.mkdir()
+    (dep_src / "r3.yaml").write_text(
+        yaml.dump(
+            {"dependencies": [JobDependency("out", base.id).to_config()]}
+        )
+    )
+    (dep_src / "metadata.yaml").write_text("tags: [dep]\n")
+    repository_with_remote.commit(Job(dep_src))
+
+    repository_with_remote.move(base.id, "archive")
+
+    def edge_count() -> int:
+        conn = sqlite3.connect(
+            str(repository_with_remote.path / "index.sqlite")
+        )
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM job_dependencies"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    before = edge_count()
+    repository_with_remote.rebuild_index()
+    after_first = edge_count()
+    repository_with_remote.rebuild_index()
+    after_second = edge_count()
+
+    assert before == after_first == after_second
+
+
+def test_move_populates_file_list_when_remote_caches(
+    repository_with_remote: Repository,
+) -> None:
+    """When the remote sets cache_file_list=True, move stores the file list."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    expected_files = sorted(job.files.keys())
+
+    repository_with_remote.move(job.id, "archive")
+
+    cached = repository_with_remote._index.get_file_list(job.id)
+    assert cached is not None
+    assert sorted(cached) == expected_files
+
+
+def test_move_skips_file_list_when_remote_does_not_cache(
+    repository_with_remote: Repository,
+) -> None:
+    """When the remote sets cache_file_list=False, move does not store a file list."""
+    repository_with_remote.remotes["archive"].cache_file_list = False
+    try:
+        job = get_dummy_job("base")
+        job = repository_with_remote.commit(job)
+        assert job.id is not None
+
+        repository_with_remote.move(job.id, "archive")
+        assert repository_with_remote._index.get_file_list(job.id) is None
+    finally:
+        repository_with_remote.remotes["archive"].cache_file_list = True
+
+
+def test_rebuild_index_preserves_remote_job_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """The cached file list for remote jobs must survive rebuild_index."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    file_list_before = repository_with_remote._index.get_file_list(job.id)
+    assert file_list_before is not None
+    assert len(file_list_before) > 0
+
+    repository_with_remote.rebuild_index()
+
+    file_list_after = repository_with_remote._index.get_file_list(job.id)
+    assert file_list_after == file_list_before
+
+
+def test_get_job_by_id_returns_remote_job(
+    repository_with_remote: Repository,
+) -> None:
+    """A remote job is retrievable by ID with its file list populated."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+    expected_files = sorted(job.files.keys())
+
+    repository_with_remote.move(job.id, "archive")
+
+    found = repository_with_remote.get_job_by_id(job.id)
+    assert sorted(found.files.keys()) == expected_files
+
+
+def test_get_job_by_id_unknown_raises_keyerror(repository: Repository) -> None:
+    with pytest.raises(KeyError):
+        repository.get_job_by_id("nonexistent-id")
+
+
+def test_contains_remote_job_dependency_with_path_in_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """A JobDependency on a remote job is contained iff source is in cached files."""
+    base_job = get_dummy_job("base")
+    base_job = repository_with_remote.commit(base_job)
+    assert base_job.id is not None
+    repository_with_remote.move(base_job.id, "archive")
+
+    dep_present = JobDependency(
+        destination="dest", job=base_job.id, source=Path("run.py")
+    )
+    dep_absent = JobDependency(
+        destination="dest", job=base_job.id, source=Path("does-not-exist.txt")
+    )
+
+    assert dep_present in repository_with_remote
+    assert dep_absent not in repository_with_remote
+
+
+def test_contains_remote_job_dependency_with_default_source(
+    repository_with_remote: Repository,
+) -> None:
+    """source=Path('.') is contained when the file list is non-empty."""
+    base_job = get_dummy_job("base")
+    base_job = repository_with_remote.commit(base_job)
+    assert base_job.id is not None
+    repository_with_remote.move(base_job.id, "archive")
+
+    dep = JobDependency(destination="dest", job=base_job.id)
+    assert dep in repository_with_remote
+
+
+def test_contains_dependency_on_unknown_job_returns_false(
+    repository_with_remote: Repository,
+) -> None:
+    """Unknown job ID returns False (no local file, no index entry)."""
+    dep = JobDependency(
+        destination="dest", job="nonexistent-id", source=Path("anything.txt")
+    )
+    assert dep not in repository_with_remote
+
+
+def test_repository_re_move_after_fetch_preserves_file_list(
+    repository_with_remote: Repository,
+) -> None:
+    """move → fetch → move: file list is captured fresh each time."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+    expected = sorted(job.files.keys())
+
+    repository_with_remote.move(job.id, "archive")
+    first_list = repository_with_remote._index.get_file_list(job.id)
+    assert first_list is not None
+    first = sorted(first_list)
+    assert first == expected
+
+    repository_with_remote.fetch(job.id)
+    repository_with_remote.move(job.id, "archive")
+    second_list = repository_with_remote._index.get_file_list(job.id)
+    assert second_list is not None
+    second = sorted(second_list)
+    assert second == expected
+
+
+def test_format_version_is_beta_9() -> None:
+    from r3.repository import R3_FORMAT_VERSION
+    assert R3_FORMAT_VERSION == "1.0.0-beta.9"
+
+
+def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
+    """The migration script bumps version and adds the files column via ALTER TABLE."""
+    import importlib.util
+    import sqlite3
+
+    from click.testing import CliRunner
+
+    # Import the migration's click command. The migration file isn't a package,
+    # so import via importlib for a clean test.
+    spec = importlib.util.spec_from_file_location(
+        "migration_beta_9", "migration/1_0_0_beta_9.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Set up a fake beta.8 repository: r3.yaml + a beta.8-shaped index.
+    repo_path = tmp_path / "old-repo"
+    repo_path.mkdir()
+    (repo_path / "r3.yaml").write_text("version: 1.0.0-beta.8\n")
+
+    conn = sqlite3.connect(str(repo_path / "index.sqlite"))
+    conn.execute(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            metadata JSON NOT NULL,
+            location TEXT NOT NULL DEFAULT 'local'
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+        ("test-id", "2026-01-01T00:00:00", '{"tags": ["test"]}'),
+    )
+    conn.commit()
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        module.migrate,
+        ["--repository", str(repo_path)],
+        input="y\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+
+    # Verify the version bump.
+    with open(repo_path / "r3.yaml") as f:
+        new_config = yaml.safe_load(f)
+    assert new_config["version"] == "1.0.0-beta.9"
+
+    # Verify the column was added and existing row preserved with NULL files.
+    conn = sqlite3.connect(str(repo_path / "index.sqlite"))
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+    assert "files" in columns
+    row = conn.execute(
+        "SELECT id, files FROM jobs WHERE id = 'test-id'"
+    ).fetchone()
+    assert row[0] == "test-id"
+    assert row[1] is None
+    conn.close()
