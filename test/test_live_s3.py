@@ -7,6 +7,9 @@ These tests are skipped by default. To run, set:
 - R3_TEST_S3_PROFILE: optional AWS credential profile
 - R3_TEST_S3_ADDRESSING_STYLE: optional "auto" | "path" | "virtual"
   (CEPH RGW typically requires "path")
+- R3_TEST_S3_REQUEST_CHECKSUM_CALCULATION: optional "when_supported" |
+  "when_required" (older CEPH RGW builds need "when_required" or PUTs
+  fail with a misleading InvalidAccessKeyId)
 
 Then: pytest -m live_s3
 """
@@ -28,6 +31,7 @@ _LIVE_BUCKET = os.environ.get("R3_TEST_S3_BUCKET")
 _LIVE_PREFIX = os.environ.get("R3_TEST_S3_PREFIX", "").rstrip("/")
 _LIVE_PROFILE = os.environ.get("R3_TEST_S3_PROFILE")
 _LIVE_ADDRESSING_STYLE = os.environ.get("R3_TEST_S3_ADDRESSING_STYLE")
+_LIVE_REQUEST_CHECKSUM = os.environ.get("R3_TEST_S3_REQUEST_CHECKSUM_CALCULATION")
 
 
 pytestmark = [
@@ -41,9 +45,14 @@ pytestmark = [
 
 def _live_client():
     session = boto3.Session(profile_name=_LIVE_PROFILE)
-    client_config: Optional[Config] = None
+    config_kwargs: dict = {}
     if _LIVE_ADDRESSING_STYLE:
-        client_config = Config(s3={"addressing_style": _LIVE_ADDRESSING_STYLE})
+        config_kwargs["s3"] = {"addressing_style": _LIVE_ADDRESSING_STYLE}
+    if _LIVE_REQUEST_CHECKSUM:
+        config_kwargs["request_checksum_calculation"] = _LIVE_REQUEST_CHECKSUM
+    client_config: Optional[Config] = (
+        Config(**config_kwargs) if config_kwargs else None
+    )
     return session.client(
         "s3", endpoint_url=_LIVE_ENDPOINT, config=client_config
     )
@@ -107,6 +116,8 @@ def _make_repo(tmp_path: Path, run_prefix: str, archive: bool) -> Repository:
         remote_config["profile"] = _LIVE_PROFILE
     if _LIVE_ADDRESSING_STYLE:
         remote_config["addressing_style"] = _LIVE_ADDRESSING_STYLE
+    if _LIVE_REQUEST_CHECKSUM:
+        remote_config["request_checksum_calculation"] = _LIVE_REQUEST_CHECKSUM
     if archive:
         remote_config["archive_format"] = "tar.zst"
     config["remotes"] = {"archive": remote_config}

@@ -206,6 +206,41 @@ def test_s3_remote_client_uses_addressing_style():
         assert client.meta.config.s3.get("addressing_style") == "path"
 
 
+def test_s3_remote_request_checksum_defaults_to_none():
+    """Without config, request_checksum_calculation is None (boto3 default)."""
+    remote = S3Remote(bucket="b")
+    assert remote.request_checksum_calculation is None
+
+
+def test_s3_remote_from_config_accepts_request_checksum_calculation():
+    """CEPH RGW rejects boto3 1.36+'s when_supported checksums on PutObject."""
+    config = {
+        "type": "s3",
+        "bucket": "b",
+        "request_checksum_calculation": "when_required",
+    }
+    remote = S3Remote.from_config(config)
+    assert remote.request_checksum_calculation == "when_required"
+
+
+def test_s3_remote_from_config_rejects_unknown_request_checksum_calculation():
+    config = {
+        "type": "s3",
+        "bucket": "b",
+        "request_checksum_calculation": "wrong",
+    }
+    with pytest.raises(ValueError, match="request_checksum_calculation"):
+        S3Remote.from_config(config)
+
+
+def test_s3_remote_client_uses_request_checksum_calculation():
+    """The S3 client should be created with the configured checksum mode."""
+    remote = S3Remote(bucket="b", request_checksum_calculation="when_required")
+    with mock_aws():
+        client = remote._client
+        assert client.meta.config.request_checksum_calculation == "when_required"
+
+
 @pytest.fixture
 def s3_remote_archive():
     with mock_aws():

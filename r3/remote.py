@@ -94,6 +94,7 @@ class S3Remote(Remote):
         archive_format: Optional[str] = None,
         archive_frame_size: int = 16 * 1024 * 1024,
         addressing_style: Optional[str] = None,
+        request_checksum_calculation: Optional[str] = None,
     ) -> None:
         """Initializes an S3 remote.
 
@@ -112,6 +113,13 @@ class S3Remote(Remote):
             addressing_style: S3 addressing style. One of "auto" (boto3's
                 default), "path", or "virtual". CEPH RGW typically requires
                 "path". Defaults to None (boto3 default).
+            request_checksum_calculation: One of "when_supported" (boto3's
+                default since 1.36) or "when_required" (pre-1.36 behavior).
+                Some non-AWS S3 implementations (older CEPH RGW builds)
+                reject PutObject requests carrying the integrity headers
+                that "when_supported" adds, returning a misleading
+                InvalidAccessKeyId. Set to "when_required" to suppress
+                those headers. Defaults to None (boto3 default).
         """
         self.bucket = bucket
         self.prefix = prefix.rstrip("/") + "/" if prefix else ""
@@ -120,6 +128,7 @@ class S3Remote(Remote):
         self.archive_format = archive_format
         self.archive_frame_size = archive_frame_size
         self.addressing_style = addressing_style
+        self.request_checksum_calculation = request_checksum_calculation
 
         self._client_instance: Any = None
 
@@ -131,11 +140,14 @@ class S3Remote(Remote):
             from botocore.config import Config
 
             session = boto3.Session(profile_name=self.profile)
-            client_config: Optional[Config] = None
+            config_kwargs: Dict[str, Any] = {}
             if self.addressing_style is not None:
-                client_config = Config(
-                    s3={"addressing_style": self.addressing_style},  # type: ignore[arg-type]
+                config_kwargs["s3"] = {"addressing_style": self.addressing_style}
+            if self.request_checksum_calculation is not None:
+                config_kwargs["request_checksum_calculation"] = (
+                    self.request_checksum_calculation
                 )
+            client_config = Config(**config_kwargs) if config_kwargs else None
             self._client_instance = session.client(
                 "s3",
                 endpoint_url=self.endpoint_url,
@@ -178,6 +190,15 @@ class S3Remote(Remote):
                 f"got {addressing_style!r}"
             )
 
+        request_checksum_calculation = config.get("request_checksum_calculation")
+        if request_checksum_calculation is not None and (
+            request_checksum_calculation not in ("when_supported", "when_required")
+        ):
+            raise ValueError(
+                f"request_checksum_calculation must be one of 'when_supported', "
+                f"'when_required'; got {request_checksum_calculation!r}"
+            )
+
         return S3Remote(
             bucket=config["bucket"],
             prefix=config.get("prefix", ""),
@@ -186,6 +207,7 @@ class S3Remote(Remote):
             archive_format=archive_format,
             archive_frame_size=archive_frame_size,
             addressing_style=addressing_style,
+            request_checksum_calculation=request_checksum_calculation,
         )
 
     def _job_prefix(self, job_id: str) -> str:
