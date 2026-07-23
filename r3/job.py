@@ -117,7 +117,12 @@ class Job:
     def files(self) -> Mapping[Path, Path]:
         """Files belonging to this job."""
         if self._files is None:
-            ignore = self._config.get("ignore", [])
+            # Copy the config's ignore list rather than mutating it: it is written
+            # verbatim to the committed r3.yaml.
+            ignore = list(self._config.get("ignore", []))
+            # output is always ignored: it is mutable and must not be frozen into
+            # the committed job or its hashes.
+            ignore.append("/output")
 
             for dependency in self.dependencies:
                 ignore.append(f"/{dependency.destination}")
