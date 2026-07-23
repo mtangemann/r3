@@ -387,6 +387,40 @@ def test_commit_copies_nested_files(repository: Repository) -> None:
     )
 
 
+def test_commit_excludes_output_directory_by_default(
+    repository: Repository, tmp_path: Path
+) -> None:
+    """Commit should exclude ``output/`` from the committed job and its hashes.
+
+    ``output/`` holds re-runnable results. Per the repository format specification, its
+    contents are not part of the job's identity and must not be frozen into the
+    committed job. This must hold even when the job does not declare ``ignore:
+    [/output]``, and it must cover nested output files.
+    """
+    job_path = tmp_path / "job"
+    (job_path / "output" / "sub").mkdir(parents=True)
+    with open(job_path / "run.py", "w") as file:
+        file.write("print('hello')\n")
+    with open(job_path / "r3.yaml", "w") as file:
+        yaml.dump({"dependencies": []}, file)
+    with open(job_path / "output" / "top.txt", "w") as file:
+        file.write("top result\n")
+    with open(job_path / "output" / "sub" / "nested.txt", "w") as file:
+        file.write("nested result\n")
+
+    committed_job = repository.commit(Job(job_path))
+
+    # The committed job has an (empty) output directory; no output files are copied.
+    assert (committed_job.path / "output").is_dir()
+    assert list((committed_job.path / "output").iterdir()) == []
+
+    # No output files are folded into the job hashes, but regular files still are.
+    with open(committed_job.path / "r3.yaml") as config_file:
+        config = yaml.safe_load(config_file)
+    assert "run.py" in config["hashes"]
+    assert not any(path.startswith("output") for path in config["hashes"])
+
+
 def test_commit_adds_git_tags_to_prevent_garbage_collection(
     tmp_path: Path, mocker: MockerFixture,
 ) -> None:
