@@ -21,6 +21,15 @@ def cli() -> None:
     pass
 
 
+def _get_job(repository: r3.Repository, job_id: str) -> r3.Job:
+    """Returns the job with the given ID, reporting a missing job to the user."""
+    try:
+        return repository.get_job_by_id(job_id)
+    except KeyError as error:
+        # `str` of a KeyError is the repr of its argument, which would add quotes.
+        raise click.ClickException(str(error.args[0])) from error
+
+
 @cli.command()
 @click.argument("path", type=click.Path(file_okay=False, exists=False, path_type=Path))
 def init(path: Path):
@@ -111,12 +120,7 @@ def remove(job_id: str, repository_path: Path) -> None:
     If any other job in the R3 repository depends on the job, removing it will fail.
     """
     repository = r3.Repository(repository_path)
-
-    try:
-        job = repository.get_job_by_id(job_id)
-    except KeyError as error:
-        # `str` of a KeyError is the repr of its argument, which would add quotes.
-        raise click.ClickException(str(error.args[0])) from error
+    job = _get_job(repository, job_id)
 
     try:
         repository.remove(job)
@@ -193,14 +197,11 @@ def rebuild_index(repository_path: Path):
 def edit(job_id: str, repository_path: Path) -> None:
     """Edit a jobs metadata."""
     repository = r3.Repository(repository_path)
-    try:
-        job = repository[job_id]
-    except KeyError:
-        print(f"The job with ID {job_id} was not found in the repository.")
+    job = _get_job(repository, job_id)
 
     # Let user edit the metadata file of the job
     metadata_file_path = job.path / "metadata.yaml"
-    click.edit(filename=metadata_file_path)
+    click.edit(filename=str(metadata_file_path))
 
     # Update job in search index (SQLite DB)
     repository._index.update(job)
