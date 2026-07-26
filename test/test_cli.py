@@ -3,7 +3,9 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
+from pytest_mock.plugin import MockerFixture
 
 from r3.cli import cli
 from r3.job import Job, JobDependency
@@ -89,3 +91,79 @@ def test_remove_fails_if_job_does_not_exist(repository: Repository) -> None:
     assert job_id in result.output
     # ``str(KeyError(...))`` is a repr and would wrap the whole message in quotes.
     assert "Error: '" not in result.output
+
+
+def test_edit_updates_metadata_and_index(
+    repository: Repository, mocker: MockerFixture
+) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    def edit_metadata(filename: str) -> None:
+        with open(filename, "r") as metadata_file:
+            metadata = yaml.safe_load(metadata_file)
+        metadata["tags"].append("edited")
+        with open(filename, "w") as metadata_file:
+            yaml.dump(metadata, metadata_file)
+
+    mocker.patch("r3.cli.click.edit", side_effect=edit_metadata)
+
+    result = CliRunner().invoke(
+        cli, ["edit", job.id, "--repository", str(repository.path)]
+    )
+
+    assert result.exit_code == 0
+
+    # Read the repository afresh, so that the index is queried rather than any state
+    # cached by the repository instance used above.
+    jobs = Repository(repository.path).find({"tags": {"$all": ["edited"]}})
+    assert [found_job.id for found_job in jobs] == [job.id]
+
+
+def test_edit_fails_if_job_does_not_exist(repository: Repository) -> None:
+    job_id = "00000000-0000-0000-0000-000000000000"
+
+    result = CliRunner().invoke(
+        cli, ["edit", job_id, "--repository", str(repository.path)]
+    )
+
+    assert result.exit_code != 0
+    # The error must be reported, not raised as an unhandled exception.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert job_id in result.output
+    # ``str(KeyError(...))`` is a repr and would wrap the whole message in quotes.
+    assert "Error: '" not in result.output
+
+
+def test_checkout_checks_out_job(repository: Repository, tmp_path: Path) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    assert job.id is not None
+    target_path = tmp_path / "checkout"
+
+    result = CliRunner().invoke(
+        cli,
+        ["checkout", job.id, str(target_path), "--repository", str(repository.path)],
+    )
+
+    assert result.exit_code == 0
+    assert (target_path / "run.py").is_file()
+
+
+def test_checkout_fails_if_job_does_not_exist(
+    repository: Repository, tmp_path: Path
+) -> None:
+    job_id = "00000000-0000-0000-0000-000000000000"
+    target_path = tmp_path / "checkout"
+
+    result = CliRunner().invoke(
+        cli,
+        ["checkout", job_id, str(target_path), "--repository", str(repository.path)],
+    )
+
+    assert result.exit_code != 0
+    # The error must be reported, not raised as an unhandled exception.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert job_id in result.output
+    # ``str(KeyError(...))`` is a repr and would wrap the whole message in quotes.
+    assert "Error: '" not in result.output
+    assert not target_path.exists()
