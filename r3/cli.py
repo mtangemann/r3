@@ -102,7 +102,7 @@ def checkout(job_id: str, target_path: Path, repository_path: Path) -> None:
     ```
     """
     repository = r3.Repository(repository_path)
-    job = repository.get_job_by_id(job_id)
+    job = _get_job(repository, job_id)
     repository.checkout(job, target_path)
 
 

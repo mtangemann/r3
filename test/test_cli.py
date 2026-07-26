@@ -133,3 +133,37 @@ def test_edit_fails_if_job_does_not_exist(repository: Repository) -> None:
     assert job_id in result.output
     # ``str(KeyError(...))`` is a repr and would wrap the whole message in quotes.
     assert "Error: '" not in result.output
+
+
+def test_checkout_checks_out_job(repository: Repository, tmp_path: Path) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    assert job.id is not None
+    target_path = tmp_path / "checkout"
+
+    result = CliRunner().invoke(
+        cli,
+        ["checkout", job.id, str(target_path), "--repository", str(repository.path)],
+    )
+
+    assert result.exit_code == 0
+    assert (target_path / "run.py").is_file()
+
+
+def test_checkout_fails_if_job_does_not_exist(
+    repository: Repository, tmp_path: Path
+) -> None:
+    job_id = "00000000-0000-0000-0000-000000000000"
+    target_path = tmp_path / "checkout"
+
+    result = CliRunner().invoke(
+        cli,
+        ["checkout", job_id, str(target_path), "--repository", str(repository.path)],
+    )
+
+    assert result.exit_code != 0
+    # The error must be reported, not raised as an unhandled exception.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert job_id in result.output
+    # ``str(KeyError(...))`` is a repr and would wrap the whole message in quotes.
+    assert "Error: '" not in result.output
+    assert not target_path.exists()
