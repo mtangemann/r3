@@ -115,13 +115,13 @@ def remove(job_id: str, repository_path: Path) -> None:
     try:
         job = repository.get_job_by_id(job_id)
     except KeyError as error:
-        print(error)
-        return
+        # `str` of a KeyError is the repr of its argument, which would add quotes.
+        raise click.ClickException(str(error.args[0])) from error
 
     try:
         repository.remove(job)
     except ValueError as error:
-        print(f"Error removing job: {error}")
+        raise click.ClickException(str(error)) from error
 
 
 @cli.command()

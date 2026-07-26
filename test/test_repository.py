@@ -5,7 +5,7 @@ import os
 import stat
 from datetime import datetime
 from pathlib import Path
-from typing import Union
+from typing import Sequence, Union
 
 import pytest
 import yaml
@@ -70,6 +70,24 @@ def repository(tmp_path: Path) -> Repository:
 def get_dummy_job(name: str) -> Job:
     path = DATA_PATH / "jobs" / name
     return Job(path)
+
+
+def assert_lists_dependents(message: str, dependent_ids: Sequence[str]) -> None:
+    """Asserts that the message lists the given dependents below an explanation.
+
+    This checks the structure of the message rather than its wording, so that it can
+    be reworded freely: each dependent must be listed on a line of its own, in the
+    given order, below a line explaining the refusal. The explanation used to be
+    written as the *separator* between the dependents instead of as a prefix.
+    """
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    listed = [line for line in lines if any(id in line for id in dependent_ids)]
+
+    assert len(listed) == len(dependent_ids)
+    for line, dependent_id in zip(listed, dependent_ids):
+        assert line.endswith(dependent_id)
+
+    assert lines[0] not in listed
 
 
 def test_init_fails_if_path_exists(tmp_path: Path) -> None:
@@ -486,11 +504,39 @@ def test_repository_remove_fails_if_other_jobs_depend_on_job(
     base_job._config["dependencies"] = [dependency.to_config()]
     dependent_job = repository.commit(base_job)
 
-    with pytest.raises(ValueError):
+    assert dependent_job.id is not None
+
+    with pytest.raises(ValueError) as exception_info:
         repository.remove(job)
+
+    assert_lists_dependents(str(exception_info.value), [dependent_job.id])
 
     repository.remove(dependent_job)
     repository.remove(job)
+
+
+def test_repository_remove_error_message_lists_all_dependents(
+    repository: Repository
+) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    dependent_ids = []
+    for index in range(2):
+        dependent_job = get_dummy_job("base")
+        dependency = JobDependency(f"destination{index}", job.id)
+        dependent_job._dependencies = [dependency]
+        dependent_job._config["dependencies"] = [dependency.to_config()]
+        dependent_job = repository.commit(dependent_job)
+        assert dependent_job.id is not None
+        dependent_ids.append(dependent_job.id)
+
+    with pytest.raises(ValueError) as exception_info:
+        repository.remove(job)
+
+    # Sorted, since ``Index.find_dependents`` returns an unordered set and the message
+    # should not depend on the iteration order.
+    assert_lists_dependents(str(exception_info.value), sorted(dependent_ids))
 
 
 def test_find_dependents_requires_job_id(repository: Repository) -> None:
