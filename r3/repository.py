@@ -194,9 +194,10 @@ class Repository:
 
         dependents = self._index.find_dependents(job)
         if len(dependents) > 0:
+            dependent_ids = sorted(str(dependent.id) for dependent in dependents)
             raise ValueError(
-                "Cannot remove job since other jobs depend on it: \n"
-                "\n".join(f"  - {dependent.id}" for dependent in dependents)
+                "Cannot remove job since other jobs depend on it:\n"
+                + "\n".join(f"  - {dependent_id}" for dependent_id in dependent_ids)
             )
 
         self._storage.remove(job)
