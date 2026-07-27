@@ -49,6 +49,10 @@ class Storage:
     def __contains__(self, job_or_job_id: Union[Job, str]) -> bool:
         """Checks whether a job is in the storage.
 
+        A job is contained if it has an ID, a job with that ID is stored, and the job
+        points at that stored job. The latter matters because `remove` and
+        `checkout_job` use this check to guard operations on `job.path`.
+
         Parameters:
             job_or_job_id: The job or job ID to check for.
         """
@@ -56,8 +60,14 @@ class Storage:
             return (self.root / "jobs" / job_or_job_id).exists()
 
         if isinstance(job_or_job_id, Job):
-            job_path = job_or_job_id.path.resolve()
-            return job_path.parent.parent == self.root
+            if job_or_job_id.id is None:
+                return False
+
+            job_path = self.root / "jobs" / job_or_job_id.id
+            return (
+                job_path.exists()
+                and job_or_job_id.path.resolve() == job_path.resolve()
+            )
 
         raise TypeError(f"Expected Job or str, got {type(job_or_job_id)}")
 

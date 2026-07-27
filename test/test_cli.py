@@ -36,19 +36,6 @@ def commit_dependent_job(repository: Repository, job: Job, destination: str) -> 
     return repository.commit(dependent_job)
 
 
-def is_in_repository(repository: Repository, job_id: str) -> bool:
-    """Checks whether a job with the given ID exists in the repository.
-
-    ``job in repository`` only checks whether the job path points into the repository,
-    which stays true after the job has been removed.
-    """
-    try:
-        repository.get_job_by_id(job_id)
-    except KeyError:
-        return False
-    return True
-
-
 def test_remove_removes_job(repository: Repository) -> None:
     job = repository.commit(get_dummy_job("base"))
     assert job.id is not None
@@ -58,7 +45,7 @@ def test_remove_removes_job(repository: Repository) -> None:
     )
 
     assert result.exit_code == 0
-    assert not is_in_repository(repository, job.id)
+    assert job not in repository
 
 
 def test_remove_fails_if_other_jobs_depend_on_job(repository: Repository) -> None:
@@ -77,7 +64,7 @@ def test_remove_fails_if_other_jobs_depend_on_job(repository: Repository) -> Non
     # The dependent must be reported with an explanation, not on its own. The exact
     # wording is asserted in ``test_repository.py``.
     assert len(lines) > 1
-    assert is_in_repository(repository, job.id)
+    assert job in repository
 
 
 def test_remove_fails_if_job_does_not_exist(repository: Repository) -> None:
