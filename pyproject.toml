@@ -60,4 +60,8 @@ lint.select = ["B", "E", "F", "FIX", "I", "T20"]
 
 
 [tool.setuptools]
-py-modules = ["r3"]
+packages = ["r3"]
+
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
