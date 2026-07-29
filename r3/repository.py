@@ -203,11 +203,11 @@ class Repository:
         self._storage.remove(job)
         self._index.remove(job)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Job:
         """Get jobs by their ID with the repository[job_id] syntax."""
         return self.get_job_by_id(key)
 
-    def get_job_by_id(self, job_id: str):
+    def get_job_by_id(self, job_id: str) -> Job:
         """Returns the job with the given ID.
 
         If the job does not exist in the repository it will raise a KeyError.
@@ -248,7 +248,7 @@ class Repository:
         """
         return self._index.find_dependents(job, recursive)
 
-    def rebuild_index(self):
+    def rebuild_index(self) -> None:
         """Rebuilds the job index.
 
         The job index is used to efficiently query for jobs. The index is automatically
