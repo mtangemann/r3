@@ -539,6 +539,16 @@ def test_repository_remove_error_message_lists_all_dependents(
     assert_lists_dependents(str(exception_info.value), sorted(dependent_ids))
 
 
+def test_repository_remove_fails_if_job_was_already_removed(
+    repository: Repository
+) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    repository.remove(job)
+
+    with pytest.raises(ValueError):
+        repository.remove(job)
+
+
 def test_find_dependents_requires_job_id(repository: Repository) -> None:
     job = get_dummy_job("base")
     job = repository.commit(job)
