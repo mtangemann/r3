@@ -292,7 +292,7 @@ class Storage:
                     destination / dependency.destination,
                 )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Returns a string representation of the storage."""
         return f"Storage({self.root})"
 
