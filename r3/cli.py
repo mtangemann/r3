@@ -3,7 +3,7 @@
 
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import click
 
@@ -19,6 +19,20 @@ import r3
 @click.version_option(r3.__version__, message="%(version)s")
 def cli() -> None:
     pass
+
+
+def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
+    """Returns the repository at the given path, reporting problems to the user."""
+    if repository_path is None:
+        raise click.UsageError(
+            "No repository given. Use --repository or set the R3_REPOSITORY "
+            "environment variable."
+        )
+
+    try:
+        return r3.Repository(repository_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
 
 
 def _get_job(repository: r3.Repository, job_id: str) -> r3.Job:
@@ -52,8 +66,9 @@ def init(path: Path):
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
+    show_envvar=True,
 )
-def commit(path: Path, repository_path: Path) -> None:
+def commit(path: Path, repository_path: Optional[Path]) -> None:
     """Adds the job at PATH to the repository.
 
     This command resolves all dependencies of the job and copies the job files to the R3
@@ -69,7 +84,7 @@ def commit(path: Path, repository_path: Path) -> None:
     4b2146f3-5594-4f05-ae13-2e053ef7bfda
     ```
     """
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     job = r3.Job(path)
     job = repository.commit(job)
     print(job.id)
@@ -83,8 +98,9 @@ def commit(path: Path, repository_path: Path) -> None:
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
+    show_envvar=True,
 )
-def checkout(job_id: str, target_path: Path, repository_path: Path) -> None:
+def checkout(job_id: str, target_path: Path, repository_path: Optional[Path]) -> None:
     """Checks out the job with JOB_ID to TARGET_PATH.
 
     This copies all job files from JOB_PATH in the R3 repository to the TARGET_PATH.
@@ -101,7 +117,7 @@ def checkout(job_id: str, target_path: Path, repository_path: Path) -> None:
     output/ -> /repository/jobs/4b2146f3-5594-4f05-ae13-2e053ef7bfda/output
     ```
     """
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     job = _get_job(repository, job_id)
     repository.checkout(job, target_path)
 
@@ -113,13 +129,14 @@ def checkout(job_id: str, target_path: Path, repository_path: Path) -> None:
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
+    show_envvar=True,
 )
-def remove(job_id: str, repository_path: Path) -> None:
+def remove(job_id: str, repository_path: Optional[Path]) -> None:
     """Removes the job with JOB_ID from the R3 repository.
 
     If any other job in the R3 repository depends on the job, removing it will fail.
     """
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     job = _get_job(repository, job_id)
 
     try:
@@ -151,10 +168,13 @@ def remove(job_id: str, repository_path: Path) -> None:
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
+    show_envvar=True,
 )
-def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -> None:
+def find(
+    tags: Iterable[str], latest: bool, long: bool, repository_path: Optional[Path]
+) -> None:
     """Searches the R3 repository for jobs matching the given conditions."""
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     query = {"tags": {"$all": tags}}
     for job in repository.find(query, latest):
         if long:
@@ -172,15 +192,16 @@ def find(tags: Iterable[str], latest: bool, long: bool, repository_path: Path) -
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
+    show_envvar=True,
 )
-def rebuild_index(repository_path: Path):
+def rebuild_index(repository_path: Optional[Path]):
     """Rebuild the search index.
     
     The index is used when querying for jobs. All R3 commands properly update the index.
     When job metadata is modified manually, however, the index needs to be rebuilt in
     order for the changes to take effect.
     """
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     repository.rebuild_index()
 
 
@@ -193,10 +214,11 @@ def rebuild_index(repository_path: Path):
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
+    show_envvar=True,
 )
-def edit(job_id: str, repository_path: Path) -> None:
+def edit(job_id: str, repository_path: Optional[Path]) -> None:
     """Edit a jobs metadata."""
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     job = _get_job(repository, job_id)
 
     # Let user edit the metadata file of the job
