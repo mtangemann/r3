@@ -136,6 +136,34 @@ def test_storage_contains(fs: FakeFilesystem):
     assert committed_job in storage
     assert committed_job.id in storage
 
+    storage.remove(committed_job)
+    assert committed_job not in storage
+    assert committed_job.id not in storage
+
+
+def test_storage_does_not_contain_job_at_a_different_path(fs: FakeFilesystem):
+    """A job is not contained just because a job with the same ID is.
+
+    `Storage.remove` deletes `job.path` once this check passes, so a job pointing
+    somewhere else must not pass it.
+    """
+    fs.create_dir("/repository")
+    storage = Storage.init("/repository")
+
+    committed_job = storage.add(get_dummy_job(fs, "base"))
+    assert committed_job.id is not None
+
+    fs.create_dir("/elsewhere")
+    assert Job("/elsewhere", id=committed_job.id) not in storage
+
+
+def test_storage_does_not_contain_paths_outside_the_jobs_directory(fs: FakeFilesystem):
+    fs.create_dir("/repository")
+    storage = Storage.init("/repository")
+
+    fs.create_dir("/repository/git/some-clone")
+    assert Job("/repository/git/some-clone") not in storage
+
 
 def test_storage_contains_works_with_relative_paths(fs: FakeFilesystem):
     fs.create_dir("/path")

@@ -11,12 +11,13 @@ authors = [
 ]
 license = {file = "LICENSE"}
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "boto3~=1.35",
     "click~=8.1",
     "executor~=23.2",
     "pyyaml~=6.0",
+    "pyzstd~=0.16",
     "tqdm~=4.66"
 ]
 dynamic = ["version"]
@@ -40,10 +41,6 @@ dev = [
     "types-pyyaml~=6.0",
     "types-tqdm~=4.66",
 ]
-
-
-[project.optional-dependencies]
-archive = ["pyzstd~=0.16"]
 
 
 [project.scripts]
@@ -75,4 +72,8 @@ lint.select = ["B", "E", "F", "FIX", "I", "T20"]
 
 
 [tool.setuptools]
-py-modules = ["r3"]
+packages = ["r3"]
+
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}

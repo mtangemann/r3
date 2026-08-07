@@ -234,19 +234,20 @@ class Repository:
 
         dependents = self._index.find_dependents(job)
         if len(dependents) > 0:
+            dependent_ids = sorted(str(dependent.id) for dependent in dependents)
             raise ValueError(
-                "Cannot remove job since other jobs depend on it: \n"
-                "\n".join(f"  - {dependent.id}" for dependent in dependents)
+                "Cannot remove job since other jobs depend on it:\n"
+                + "\n".join(f"  - {dependent_id}" for dependent_id in dependent_ids)
             )
 
         self._storage.remove(job)
         self._index.remove(job)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Job:
         """Get jobs by their ID with the repository[job_id] syntax."""
         return self.get_job_by_id(key)
 
-    def get_job_by_id(self, job_id: str):
+    def get_job_by_id(self, job_id: str) -> Job:
         """Returns the job with the given ID.
 
         For remote jobs, returns a Job with cached_file_paths populated from the
@@ -348,7 +349,7 @@ class Repository:
         remote.download(job_id, self._storage.root / "jobs" / job_id)
         self._index.set_location(job_id, "local")
 
-    def rebuild_index(self):
+    def rebuild_index(self) -> None:
         """Rebuilds the job index.
 
         The job index is used to efficiently query for jobs. The index is automatically

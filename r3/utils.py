@@ -24,12 +24,12 @@ def _find_files(path: Path, ignore_patterns: Iterable[str]) -> Iterable[Path]:
 
         elif child.is_dir():
             prefix = f"/{child.name}"
-            ignore_patterns = [
+            sub_patterns = [
                 pattern[len(prefix) :]
                 for pattern in ignore_patterns
                 if pattern.startswith(prefix)
             ]
-            yield from _find_files(child, ignore_patterns)
+            yield from _find_files(child, sub_patterns)
 
 
 def _is_ignored(path: Path, ignore_patterns: Iterable[str]):

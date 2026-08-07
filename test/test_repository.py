@@ -5,7 +5,7 @@ import os
 import stat
 from datetime import datetime
 from pathlib import Path
-from typing import Generator, Union
+from typing import Generator, Sequence, Union
 
 import boto3
 import pytest
@@ -72,6 +72,24 @@ def repository(tmp_path: Path) -> Repository:
 def get_dummy_job(name: str) -> Job:
     path = DATA_PATH / "jobs" / name
     return Job(path)
+
+
+def assert_lists_dependents(message: str, dependent_ids: Sequence[str]) -> None:
+    """Asserts that the message lists the given dependents below an explanation.
+
+    This checks the structure of the message rather than its wording, so that it can
+    be reworded freely: each dependent must be listed on a line of its own, in the
+    given order, below a line explaining the refusal. The explanation used to be
+    written as the *separator* between the dependents instead of as a prefix.
+    """
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    listed = [line for line in lines if any(id in line for id in dependent_ids)]
+
+    assert len(listed) == len(dependent_ids)
+    for index, dependent_id in enumerate(dependent_ids):
+        assert listed[index].endswith(dependent_id)
+
+    assert lines[0] not in listed
 
 
 def test_init_fails_if_path_exists(tmp_path: Path) -> None:
@@ -389,6 +407,40 @@ def test_commit_copies_nested_files(repository: Repository) -> None:
     )
 
 
+def test_commit_excludes_output_directory_by_default(
+    repository: Repository, tmp_path: Path
+) -> None:
+    """Commit should exclude ``output/`` from the committed job and its hashes.
+
+    ``output/`` holds re-runnable results. Per the repository format specification, its
+    contents are not part of the job's identity and must not be frozen into the
+    committed job. This must hold even when the job does not declare ``ignore:
+    [/output]``, and it must cover nested output files.
+    """
+    job_path = tmp_path / "job"
+    (job_path / "output" / "sub").mkdir(parents=True)
+    with open(job_path / "run.py", "w") as file:
+        file.write("print('hello')\n")
+    with open(job_path / "r3.yaml", "w") as file:
+        yaml.dump({"dependencies": []}, file)
+    with open(job_path / "output" / "top.txt", "w") as file:
+        file.write("top result\n")
+    with open(job_path / "output" / "sub" / "nested.txt", "w") as file:
+        file.write("nested result\n")
+
+    committed_job = repository.commit(Job(job_path))
+
+    # The committed job has an (empty) output directory; no output files are copied.
+    assert (committed_job.path / "output").is_dir()
+    assert list((committed_job.path / "output").iterdir()) == []
+
+    # No output files are folded into the job hashes, but regular files still are.
+    with open(committed_job.path / "r3.yaml") as config_file:
+        config = yaml.safe_load(config_file)
+    assert "run.py" in config["hashes"]
+    assert not any(path.startswith("output") for path in config["hashes"])
+
+
 def test_commit_adds_git_tags_to_prevent_garbage_collection(
     tmp_path: Path, mocker: MockerFixture,
 ) -> None:
@@ -454,11 +506,49 @@ def test_repository_remove_fails_if_other_jobs_depend_on_job(
     base_job._config["dependencies"] = [dependency.to_config()]
     dependent_job = repository.commit(base_job)
 
-    with pytest.raises(ValueError):
+    assert dependent_job.id is not None
+
+    with pytest.raises(ValueError) as exception_info:
         repository.remove(job)
+
+    assert_lists_dependents(str(exception_info.value), [dependent_job.id])
 
     repository.remove(dependent_job)
     repository.remove(job)
+
+
+def test_repository_remove_error_message_lists_all_dependents(
+    repository: Repository
+) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    dependent_ids = []
+    for index in range(2):
+        dependent_job = get_dummy_job("base")
+        dependency = JobDependency(f"destination{index}", job.id)
+        dependent_job._dependencies = [dependency]
+        dependent_job._config["dependencies"] = [dependency.to_config()]
+        dependent_job = repository.commit(dependent_job)
+        assert dependent_job.id is not None
+        dependent_ids.append(dependent_job.id)
+
+    with pytest.raises(ValueError) as exception_info:
+        repository.remove(job)
+
+    # Sorted, since ``Index.find_dependents`` returns an unordered set and the message
+    # should not depend on the iteration order.
+    assert_lists_dependents(str(exception_info.value), sorted(dependent_ids))
+
+
+def test_repository_remove_fails_if_job_was_already_removed(
+    repository: Repository
+) -> None:
+    job = repository.commit(get_dummy_job("base"))
+    repository.remove(job)
+
+    with pytest.raises(ValueError):
+        repository.remove(job)
 
 
 def test_find_dependents_requires_job_id(repository: Repository) -> None:
