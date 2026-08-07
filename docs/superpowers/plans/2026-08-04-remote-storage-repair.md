@@ -269,3 +269,8 @@ Prerequisite for everything else. Merge (don't rebase — published branch).
 `job.file_paths`/mounting; ratarmount; `FilesystemRemote`; `r3 copy`/replicas; the
 mutating `r3 gc`; shared/collaborator remotes; an enforced repository lock; power-loss
 `fsync`; query-based batch `move`; manifest v2 per-file offsets.
+
+**Follow-up (separate branch):** add Python 3.13 support — raise the `requires-python`
+upper bound from `<3.13` to `<3.14`, verify all deps (esp. `pyzstd`, `boto3`) install
+and the suite passes on 3.13, and extend the CI matrix. Kept out of this branch to
+stay focused.
