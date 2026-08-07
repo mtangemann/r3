@@ -1,19 +1,30 @@
 #!/usr/bin/env python
 """Migrates a repository from 1.0.0-beta.8 to 1.0.0-beta.9.
 
-Adds the 'files' column to the index for caching remote-job file lists.
-Existing rows get NULL (no cached file list, which behaves the same as
-before this version).
+Adds the nullable ``files`` column to the index for caching remote-job file lists.
+Existing rows get NULL (no cached list — the same behaviour as before this version).
+The change is applied directly with SQLite (no version-strict ``Repository``, no live
+``Index``); the index is backed up first and the new version written last, so an
+interruption leaves the old version and a usable index (design §12).
 """
 
-import sqlite3
+import sys
 from pathlib import Path
 
 import click
-import yaml
+
+sys.path.insert(0, str(Path(__file__).parent))
+import _util  # noqa: E402
 
 OLD_VERSION = "1.0.0-beta.8"
 NEW_VERSION = "1.0.0-beta.9"
+
+ADD_FILES_COLUMN = "ALTER TABLE jobs ADD COLUMN files JSON"
+
+
+def apply(repository_path: Path) -> None:
+    """Apply the beta.8 -> beta.9 migration (no prompts; for the CLI and tests)."""
+    _util.apply_column_migration(repository_path, ADD_FILES_COLUMN, NEW_VERSION)
 
 
 @click.command()
@@ -28,9 +39,7 @@ def migrate(repository_path: Path) -> None:
         click.echo("This is not a valid R3 repository.")
         return
 
-    with open(repository_path / "r3.yaml") as file:
-        config = yaml.safe_load(file)
-    if config["version"] != OLD_VERSION:
+    if _util.read_version(repository_path) != OLD_VERSION:
         click.echo(f"This repository is not at version {OLD_VERSION}.")
         return
 
@@ -38,40 +47,17 @@ def migrate(repository_path: Path) -> None:
     click.echo(f"  {repository_path} ({OLD_VERSION} -> {NEW_VERSION})")
     click.echo()
     click.echo("Changes:")
-    click.echo("  - Update repository format version")
-    click.echo("  - Add 'files' column to index (existing rows get NULL)")
+    click.echo("  - Add 'files' column to the index (existing rows get NULL)")
+    click.echo("  - Update repository format version (written last)")
     click.echo()
 
     click.confirm("Do you want to continue?", abort=True)
     click.confirm("Do you have a backup of your data?", abort=True)
     click.echo()
 
-    click.echo("Updating repository version...")
-    config["version"] = NEW_VERSION
-    with open(repository_path / "r3.yaml", "w") as file:
-        yaml.safe_dump(config, file)
-
-    click.echo("Adding 'files' column to index...")
-    index_path = repository_path / "index.sqlite"
-    if index_path.exists():
-        conn = sqlite3.connect(str(index_path))
-        # SQLite ALTER TABLE ADD COLUMN is idempotent-ish: it raises
-        # OperationalError if the column already exists. Catch and continue.
-        try:
-            conn.execute("ALTER TABLE jobs ADD COLUMN files JSON")
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" in str(e).lower():
-                click.echo("  (column already exists, skipping)")
-            else:
-                raise
-        finally:
-            conn.close()
-    else:
-        click.echo("  (no index file; will be created on next access)")
+    apply(repository_path)
 
     click.echo("Done.")
-    click.echo()
     click.echo("Migration complete.")
 
 
