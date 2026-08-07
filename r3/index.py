@@ -183,7 +183,7 @@ class Index:
         """
         with Transaction(self._path) as transaction:
             transaction.execute(
-                "SELECT timestamp, metadata, files FROM jobs WHERE id = ?",
+                "SELECT timestamp, metadata, location FROM jobs WHERE id = ?",
                 (job_id,),
             )
             result = transaction.fetchone()
@@ -193,20 +193,20 @@ class Index:
 
         cached_timestamp = datetime.fromisoformat(result[0])
         cached_metadata = json.loads(result[1])
-        cached_file_paths: Optional[List[Path]] = None
-        if result[2] is not None:
-            cached_file_paths = [Path(s) for s in json.loads(result[2])]
+        location = result[2]
 
-        try:
+        if location == "local":
             return self.storage.get(job_id, cached_timestamp, cached_metadata)
-        except FileNotFoundError:
-            return Job(
-                self.storage.root / "jobs" / job_id,
-                job_id,
-                cached_timestamp=cached_timestamp,
-                cached_metadata=cached_metadata,
-                cached_file_paths=cached_file_paths,
-            )
+
+        # Remote job: return a metadata-only projection. Its files/hash/dependencies
+        # raise FilesUnavailableError until the job is fetched (design §8).
+        return Job(
+            self.storage.root / "jobs" / job_id,
+            job_id,
+            cached_timestamp=cached_timestamp,
+            cached_metadata=cached_metadata,
+            remote_location=location,
+        )
 
     def update(self, job: Job) -> None:
         """Updates a job in the index.
@@ -323,7 +323,7 @@ class Index:
             The jobs that match the given query.
         """
         sql_query = (
-            f"SELECT id, timestamp, metadata, files FROM jobs WHERE "
+            f"SELECT id, timestamp, metadata, location FROM jobs WHERE "
             f"{mongo_to_sql(query)}"
         )
         if location is not None:
@@ -340,23 +340,22 @@ class Index:
             job_id = result[0]
             cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
-            cached_file_paths: Optional[List[Path]] = None
-            if result[3] is not None:
-                cached_file_paths = [Path(s) for s in json.loads(result[3])]
-            try:
+            row_location = result[3]
+            if row_location == "local":
                 jobs.append(
                     self.storage.get(job_id, cached_timestamp, cached_metadata)
                 )
-            except FileNotFoundError:
-                # Job is on a remote; construct from cached data including file list.
-                job = Job(
-                    self.storage.root / "jobs" / job_id,
-                    job_id,
-                    cached_timestamp=cached_timestamp,
-                    cached_metadata=cached_metadata,
-                    cached_file_paths=cached_file_paths,
+            else:
+                # Remote job: metadata-only projection (design §8).
+                jobs.append(
+                    Job(
+                        self.storage.root / "jobs" / job_id,
+                        job_id,
+                        cached_timestamp=cached_timestamp,
+                        cached_metadata=cached_metadata,
+                        remote_location=row_location,
+                    )
                 )
-                jobs.append(job)
         return jobs
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:

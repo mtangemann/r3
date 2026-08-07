@@ -606,18 +606,21 @@ def test_git_dependency_is_resolved_if_commit_is_not_none() -> None:
     assert not dependency.is_resolved()
 
 
-def test_job_with_cached_file_paths_returns_none_values():
-    """A job constructed with cached_file_paths returns those paths with None values."""
-    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("output/result.pt")]
-    job = r3.Job("/nonexistent/path", id="abc", cached_file_paths=paths)
-    files = job.files
-    assert set(files.keys()) == set(paths)
-    assert all(v is None for v in files.values())
-
-
-def test_job_hash_raises_for_remote_job():
-    """Computing hash on a job with cached_file_paths raises ValueError."""
-    paths = [Path("r3.yaml"), Path("output/result.pt")]
-    job = r3.Job("/nonexistent/path", id="abc", cached_file_paths=paths)
-    with pytest.raises(ValueError, match="remote job"):
+def test_job_remote_projection_raises_on_file_access():
+    """A remote projection exposes cached metadata but raises on file access."""
+    job = r3.Job(
+        "/nonexistent/path",
+        id="abc",
+        cached_metadata={"tags": ["x"]},
+        remote_location="archive",
+    )
+    # Metadata / id remain available from the cache.
+    assert job.id == "abc"
+    assert job.metadata == {"tags": ["x"]}
+    # Files, hash, and dependencies are not available until the job is fetched.
+    with pytest.raises(r3.FilesUnavailableError):
+        _ = job.files
+    with pytest.raises(r3.FilesUnavailableError):
         job.hash()
+    with pytest.raises(r3.FilesUnavailableError):
+        _ = job.dependencies

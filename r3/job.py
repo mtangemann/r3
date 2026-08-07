@@ -11,6 +11,15 @@ import yaml
 import r3.utils
 
 
+class FilesUnavailableError(RuntimeError):
+    """Raised when a job's files are not locally available (the job is on a remote).
+
+    A job retrieved from the index while stored on a remote is a metadata-only
+    projection: its `files`, `hash()`, and `dependencies` are not available until the
+    job is fetched back to local storage.
+    """
+
+
 class Job:
     """A computational job."""
 
@@ -20,7 +29,7 @@ class Job:
         id: Optional[str] = None,
         cached_timestamp: Optional[datetime] = None,
         cached_metadata: Optional[Dict[str, Any]] = None,
-        cached_file_paths: Optional[Sequence[Path]] = None,
+        remote_location: Optional[str] = None,
     ) -> None:
         """Initializes a job instance.
 
@@ -30,9 +39,10 @@ class Job:
                 retrieved from a repository.
             cached_timestamp: Pre-loaded timestamp from the index.
             cached_metadata: Pre-loaded metadata from the index.
-            cached_file_paths: Pre-loaded file path list from the index. Used for
-                remote jobs whose files are not available locally; when set,
-                `job.files` returns these paths with None values.
+            remote_location: If set, this job is a metadata-only projection of a job
+                stored on the named remote. Its files are not available locally, so
+                `files`, `hash()`, and `dependencies` raise `FilesUnavailableError`
+                until the job is fetched.
         """
         self._path = Path(path).absolute()
         self.id = id
@@ -40,8 +50,8 @@ class Job:
         self._metadata: Optional[Dict[str, Any]] = cached_metadata
         self._metadata_from_cache = cached_metadata is not None
         self._timestamp = cached_timestamp
-        self._cached_file_paths: Optional[Sequence[Path]] = cached_file_paths
-        self._files: Optional[Dict[Path, Optional[Path]]] = None
+        self._remote_location: Optional[str] = remote_location
+        self._files: Optional[Dict[Path, Path]] = None
         self.__config: Optional[Dict[str, Any]] = None
         self._dependencies: Optional[Sequence["Dependency"]] = None
         self._hash: Optional[str] = None
@@ -119,40 +129,51 @@ class Job:
         """
         return self._timestamp is not None
 
+    def _require_local(self, what: str) -> None:
+        """Raises FilesUnavailableError if this job is a remote projection."""
+        if self._remote_location is not None:
+            raise FilesUnavailableError(
+                f"Cannot access {what} of job {self.id}: it is stored on remote "
+                f"'{self._remote_location}'. Run `r3 fetch {self.id}` first."
+            )
+
     # REVIEW: Replace with a method that returns an iterator?
     @property
-    def files(self) -> Mapping[Path, Optional[Path]]:
-        """Files belonging to this job.
+    def files(self) -> Mapping[Path, Path]:
+        """Files belonging to this job, mapping each relative path to its absolute
+        path on disk.
 
-        For local jobs, values are absolute paths to the file on disk. For
-        remote jobs constructed with `cached_file_paths`, the keys are the
-        relative paths and the values are `None` (files not available
-        locally).
+        Raises:
+            FilesUnavailableError: If this job is a remote projection (files not
+                available locally).
         """
+        self._require_local("files")
         if self._files is None:
-            if self._cached_file_paths is not None:
-                self._files = {p: None for p in self._cached_file_paths}
-            else:
-                # Copy the config's ignore list rather than mutating it: it is written
-                # verbatim to the committed r3.yaml.
-                ignore = list(self._config.get("ignore", []))
-                # output is always ignored: it is mutable and must not be frozen into
-                # the committed job or its hashes.
-                ignore.append("/output")
+            # Copy the config's ignore list rather than mutating it: it is written
+            # verbatim to the committed r3.yaml.
+            ignore = list(self._config.get("ignore", []))
+            # output is always ignored: it is mutable and must not be frozen into
+            # the committed job or its hashes.
+            ignore.append("/output")
 
-                for dependency in self.dependencies:
-                    ignore.append(f"/{dependency.destination}")
+            for dependency in self.dependencies:
+                ignore.append(f"/{dependency.destination}")
 
-                self._files = {
-                    file: (self.path / file).absolute()
-                    for file in r3.utils.find_files(self.path, ignore)
-                }
+            self._files = {
+                file: (self.path / file).absolute()
+                for file in r3.utils.find_files(self.path, ignore)
+            }
 
         return self._files
 
     @property
     def dependencies(self) -> Sequence["Dependency"]:
-        """Dependencies of this job."""
+        """Dependencies of this job.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection.
+        """
+        self._require_local("dependencies")
         if self._dependencies is None:
             self._dependencies = [
                 Dependency.from_config(config)
@@ -190,10 +211,7 @@ class Job:
                 necessary. If set to `True`, this will recompute the job hash in any
                 case.
         """
-        if self._cached_file_paths is not None:
-            raise ValueError(
-                "Cannot compute hash of a remote job: files are not available locally"
-            )
+        self._require_local("hash")
         if self._hash is None or recompute:
             hashes = dict()
 
@@ -201,9 +219,6 @@ class Job:
                 if destination in (Path("r3.yaml"), Path("metadata.yaml")):
                     continue
 
-                # The cached_file_paths guard above ensures we don't reach here
-                # for remote jobs, so source is always a real Path.
-                assert source is not None
                 hashes[str(destination)] = r3.utils.hash_file(source)
 
             for dependency in self.dependencies:

@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from r3.index import Index
-from r3.job import Job, JobDependency
+from r3.job import FilesUnavailableError, Job, JobDependency
 from r3.storage import Storage
 
 DATA_PATH = Path(__file__).parent / "data"
@@ -346,33 +346,34 @@ def test_index_get_file_list_returns_none_when_unset(storage: Storage):
     assert index.get_file_list(job.id) is None
 
 
-def test_index_find_returns_remote_job_with_cached_file_paths(storage: Storage):
-    """When find() returns a remote job, its cached_file_paths come from the index."""
+def test_index_find_returns_remote_projection(storage: Storage):
+    """find() returns a remote job as a metadata-only projection (design §8)."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
     index.add(job)
     assert job.id is not None
 
-    # Simulate the move: set location to remote and store a file list
+    # Simulate the move: set location to remote, store a file list, drop local files.
     index.set_location(job.id, "archive")
     paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("run.py")]
     index.set_file_list(job.id, paths)
-
-    # Force the FileNotFoundError fallback by removing the local files
     storage.remove(job)
 
     results = index.find({"tags": "test"})
     assert len(results) == 1
     found_job = results[0]
-    assert set(found_job.files.keys()) == set(paths)
-    assert all(v is None for v in found_job.files.values())
+    assert found_job.id == job.id
+    assert isinstance(found_job.metadata, dict)
+    # Files are not on the projection; they raise until fetched.
+    with pytest.raises(FilesUnavailableError):
+        _ = found_job.files
+    # The cached file list lives in the index, not on the Job.
+    assert index.get_file_list(job.id) == paths
 
 
-def test_index_get_returns_remote_job_with_cached_file_paths(
-    storage: Storage,
-):
-    """Index.get() also applies the FileNotFoundError fallback."""
+def test_index_get_returns_remote_projection(storage: Storage):
+    """Index.get() returns a remote job as a metadata-only projection."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -380,13 +381,12 @@ def test_index_get_returns_remote_job_with_cached_file_paths(
     assert job.id is not None
 
     index.set_location(job.id, "archive")
-    paths = [Path("r3.yaml"), Path("run.py")]
-    index.set_file_list(job.id, paths)
-
     storage.remove(job)
 
     found = index.get(job.id)
-    assert set(found.files.keys()) == set(paths)
+    assert found.id == job.id
+    with pytest.raises(FilesUnavailableError):
+        _ = found.files
 
 
 def test_index_get_unknown_id_raises_keyerror(storage: Storage):
@@ -395,10 +395,10 @@ def test_index_get_unknown_id_raises_keyerror(storage: Storage):
         index.get("nonexistent-id")
 
 
-def test_index_find_remote_job_with_no_cached_files_returns_none(
+def test_index_find_remote_job_without_file_list(
     storage: Storage,
 ):
-    """When files IS NULL for a remote job, cached_file_paths stays None."""
+    """A remote job with no cached file list is still a projection; files raise."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -412,6 +412,6 @@ def test_index_find_remote_job_with_no_cached_files_returns_none(
     results = index.find({"tags": "test"})
     assert len(results) == 1
     found_job = results[0]
-    # cached_file_paths is None, so accessing files should raise (not silently
-    # succeed with a wrong dict).
-    assert found_job._cached_file_paths is None
+    assert index.get_file_list(job.id) is None
+    with pytest.raises(FilesUnavailableError):
+        _ = found_job.files

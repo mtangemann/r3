@@ -15,6 +15,7 @@ from moto import mock_aws
 from pytest_mock.plugin import MockerFixture
 
 from r3.job import (
+    FilesUnavailableError,
     FindAllDependency,
     FindLatestDependency,
     GitDependency,
@@ -1150,19 +1151,21 @@ def test_rebuild_index_preserves_remote_job_file_list(
     assert file_list_after == file_list_before
 
 
-def test_get_job_by_id_returns_remote_job(
+def test_get_job_by_id_returns_remote_projection(
     repository_with_remote: Repository,
 ) -> None:
-    """A remote job is retrievable by ID with its file list populated."""
+    """A moved job is retrievable by ID as a metadata-only projection."""
     job = get_dummy_job("base")
     job = repository_with_remote.commit(job)
     assert job.id is not None
-    expected_files = sorted(job.files.keys())
 
     repository_with_remote.move(job.id, "archive")
 
     found = repository_with_remote.get_job_by_id(job.id)
-    assert sorted(found.files.keys()) == expected_files
+    assert found.id == job.id
+    assert isinstance(found.metadata, dict)
+    with pytest.raises(FilesUnavailableError):
+        _ = found.files
 
 
 def test_get_job_by_id_unknown_raises_keyerror(repository: Repository) -> None:
