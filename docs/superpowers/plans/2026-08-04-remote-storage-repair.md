@@ -27,9 +27,14 @@ build+`safe_extract` (B2 archive-builder + B3), and the `Job` remote projection 
 §8 revert (B4). The **S3Remote transport rewrite** originally listed under B2 is
 **moved to the head of Phase D**: it defines the 4-object layout jointly with the
 `move`/`fetch` state machines and cannot be swapped in without rewriting them at the
-same time (the old and new object layouts are mutually exclusive). All green at each
-step (285 tests, ruff, mypy). Next: Phase C (migrations, independent) then Phase D
-(S3Remote transport + move/fetch/remove).
+same time (the old and new object layouts are mutually exclusive). Phase B was also
+hardened per review (closed-schema manifest; extraction bounded by the manifest, not
+a 1 TiB cap; stdlib tar data-filter). Phase C (migrations, F-02) done: beta.8/beta.9
+rewritten crash-safe via a migration-local helper (no version-strict Repository,
+version-written-last, `.bak`-preserving) with a beta.7->beta.9 end-to-end +
+rollback/refuse-backup/idempotent tests. All green at each step (292 tests, ruff,
+mypy). Next: Phase D (S3Remote transport + move/fetch/remove state machines — the
+crash-safety core).
 
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
