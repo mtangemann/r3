@@ -84,6 +84,20 @@ def test_loads_rejects_missing_key() -> None:
         loads(dumps(manifest))
 
 
+def test_loads_rejects_unknown_top_level_key() -> None:
+    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest["surprise"] = "value"
+    with pytest.raises(ManifestError):
+        loads(dumps(manifest))
+
+
+def test_loads_rejects_unknown_file_entry_key() -> None:
+    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest["files"][0]["extra"] = 1
+    with pytest.raises(ManifestError):
+        loads(dumps(manifest))
+
+
 def test_loads_rejects_duplicate_path() -> None:
     manifest = build_manifest("j", _entries(), "d" * 64, 1)
     manifest["files"].append({"path": "r3.yaml", "size": 3, "sha256": "a" * 64})

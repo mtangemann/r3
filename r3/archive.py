@@ -19,14 +19,19 @@ import stat
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, List, Set
+from typing import Any, BinaryIO, List, Mapping, Set
 
 import r3.utils
 from r3.manifest import SIDECAR_PATHS, FileEntry
 
 DEFAULT_FRAME_SIZE = 16 * 1024 * 1024
-DEFAULT_MAX_MEMBERS = 1_000_000
-DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024 * 1024 * 1024  # 1 TiB extracted, sanity bound
+
+# The stdlib tar extraction filter (PEP 706) is the well-maintained reference guard
+# for the path-traversal / link-escape / special-file CVE class. It is present on
+# Python 3.10.12+ (our floor's patched releases); we fall back to a manual check on
+# older patch levels. Domain checks (manifest membership, size, dedup, sidecar,
+# files-only) are layered on top — no library provides those.
+_TAR_DATA_FILTER = getattr(tarfile, "data_filter", None)
 
 
 class ArchiveError(Exception):
@@ -130,50 +135,39 @@ def create_archive(
 def safe_extract(
     archive_path: Path,
     staging_dir: Path,
-    allowed_paths: Set[str],
-    max_members: int = DEFAULT_MAX_MEMBERS,
-    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    expected_sizes: Mapping[str, int],
 ) -> None:
     """Extracts ``archive_path`` into a fresh ``staging_dir``, validating each member.
 
-    Streams the archive (``r|``) and, before writing any member, rejects: absolute
-    paths, ``..`` components, any path resolving outside ``staging_dir``, non-regular
-    (non-file) members, duplicate names, sidecar names, names not in
-    ``allowed_paths``, and archives that exceed the member-count or total-size bounds.
+    Streams the archive (``r|``) and, before writing any member, rejects: unsafe
+    paths (absolute, ``..``, escaping the staging root) via the stdlib tar data
+    filter; non-regular (non-file) members; sidecar names; names not in
+    ``expected_sizes``; a declared size that disagrees with the manifest; and
+    duplicates. Because every accepted member must appear once in ``expected_sizes``
+    with a matching size, total extraction is bounded by the manifest — no arbitrary
+    byte or count cap is needed (fixing the previous 1 TiB ceiling on honest jobs).
     Parent directories are created as needed and a conventional ``output/`` is ensured.
 
     Parameters:
-        allowed_paths: The archive-resident manifest paths (manifest files minus the
-            two sidecars). Every member name must be in this set.
+        expected_sizes: The archive-resident manifest entries as ``{path: size}``
+            (manifest files minus the two sidecars). Every member name must be a key,
+            and every member's declared size must equal the mapped value.
 
     Raises:
-        ArchiveError: On any unsafe or unexpected member.
+        ArchiveError: On any unsafe, unexpected, or size-mismatched member.
     """
     pyzstd = _import_pyzstd()
     staging_dir.mkdir(parents=True, exist_ok=True)
     staging_root = staging_dir.resolve()
 
     seen: Set[str] = set()
-    count = 0
-    total = 0
 
     with pyzstd.SeekableZstdFile(str(archive_path), "r") as compressed:
         with tarfile.open(fileobj=compressed, mode="r|") as tar:
             for member in tar:
-                count += 1
-                if count > max_members:
-                    raise ArchiveError("Archive exceeds the maximum member count.")
+                _validate_member(member, expected_sizes, seen, staging_root)
 
-                _validate_member(member, allowed_paths, seen)
-                total += member.size
-                if total > max_total_bytes:
-                    raise ArchiveError("Archive exceeds the maximum extracted size.")
-
-                dest = (staging_dir / member.name)
-                if not _is_within(dest, staging_root):
-                    raise ArchiveError(
-                        f"Member escapes the staging directory: {member.name!r}"
-                    )
+                dest = staging_dir / member.name
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 source = tar.extractfile(member)
                 assert source is not None  # guaranteed for regular files
@@ -184,25 +178,45 @@ def safe_extract(
 
 
 def _validate_member(
-    member: tarfile.TarInfo, allowed_paths: Set[str], seen: Set[str]
+    member: tarfile.TarInfo,
+    expected_sizes: Mapping[str, int],
+    seen: Set[str],
+    staging_root: Path,
 ) -> None:
     name = member.name
 
+    # Path-traversal / link-escape safety: delegate to the stdlib data filter where
+    # available (PEP 706), plus a manual within-root check as defense in depth.
+    if _TAR_DATA_FILTER is not None:
+        try:
+            _TAR_DATA_FILTER(member, str(staging_root))
+        except tarfile.FilterError as error:
+            raise ArchiveError(f"Unsafe archive member {name!r}: {error}") from error
+    else:  # pragma: no cover - only on Python < 3.10.12
+        pure = PurePosixPath(name)
+        if pure.is_absolute() or name.startswith("/") or ".." in pure.parts:
+            raise ArchiveError(f"Unsafe archive member path: {name!r}")
+    if not _is_within(staging_root / name, staging_root):
+        raise ArchiveError(f"Member escapes the staging directory: {name!r}")
+
+    # Only regular files (the stdlib filter tolerates dirs/safe symlinks; we do not).
     if not member.isreg():
         raise ArchiveError(
             f"Refusing non-regular archive member: {name!r} "
             f"(type {member.type!r} — only regular files are allowed)."
         )
 
-    pure = PurePosixPath(name)
-    if pure.is_absolute() or name.startswith("/") or ".." in pure.parts:
-        raise ArchiveError(f"Unsafe archive member path: {name!r}")
-
     if name in SIDECAR_PATHS:
         raise ArchiveError(f"Sidecar {name!r} must not appear inside the archive.")
 
-    if name not in allowed_paths:
+    if name not in expected_sizes:
         raise ArchiveError(f"Archive member not listed in the manifest: {name!r}")
+
+    if member.size != expected_sizes[name]:
+        raise ArchiveError(
+            f"Archive member {name!r} declares size {member.size}, "
+            f"manifest expects {expected_sizes[name]}."
+        )
 
     if name in seen:
         raise ArchiveError(f"Duplicate archive member: {name!r}")

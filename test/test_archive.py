@@ -55,8 +55,8 @@ def test_create_archive_round_trips_via_safe_extract(
     result = create_archive(job_dir, _member_paths(), archive_path)
 
     staging = tmp_path / "staging"
-    allowed = {e.path for e in result.entries}
-    safe_extract(archive_path, staging, allowed)
+    expected = {e.path: e.size for e in result.entries}
+    safe_extract(archive_path, staging, expected)
 
     assert (staging / "input.txt").read_text() == "input data"
     assert (staging / "output" / "result.txt").read_text() == "result data"
@@ -78,7 +78,7 @@ def test_safe_extract_creates_output_dir_when_absent(
     archive_path = tmp_path / "a.tar.zst"
     result = create_archive(job_dir, [Path("input.txt")], archive_path)
     staging = tmp_path / "staging"
-    safe_extract(archive_path, staging, {e.path for e in result.entries})
+    safe_extract(archive_path, staging, {e.path: e.size for e in result.entries})
     assert (staging / "output").is_dir()
 
 
@@ -105,7 +105,7 @@ def test_safe_extract_rejects_parent_traversal(tmp_path: Path) -> None:
     _write_evil_archive(archive, [_regular("../escaped.txt", b"pwned")])
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"../escaped.txt"})
+        safe_extract(archive, staging, {"../escaped.txt": 5})
     assert not (tmp_path / "escaped.txt").exists()
 
 
@@ -114,7 +114,7 @@ def test_safe_extract_rejects_absolute_path(tmp_path: Path) -> None:
     _write_evil_archive(archive, [_regular("/tmp/r3-abs-escape", b"pwned")])
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"/tmp/r3-abs-escape"})
+        safe_extract(archive, staging, {"/tmp/r3-abs-escape": 5})
     assert not Path("/tmp/r3-abs-escape").exists()
 
 
@@ -126,7 +126,7 @@ def test_safe_extract_rejects_symlink_member(tmp_path: Path) -> None:
     _write_evil_archive(archive, [(info, None)])
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"link"})
+        safe_extract(archive, staging, {"link": 0})
     assert not (staging / "link").exists()
 
 
@@ -138,7 +138,7 @@ def test_safe_extract_rejects_hardlink_member(tmp_path: Path) -> None:
     _write_evil_archive(archive, [(info, None)])
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"hard"})
+        safe_extract(archive, staging, {"hard": 0})
 
 
 def test_safe_extract_rejects_directory_member(tmp_path: Path) -> None:
@@ -148,7 +148,7 @@ def test_safe_extract_rejects_directory_member(tmp_path: Path) -> None:
     _write_evil_archive(archive, [(info, None)])
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"adir"})
+        safe_extract(archive, staging, {"adir": 0})
 
 
 def test_safe_extract_rejects_duplicate_member(tmp_path: Path) -> None:
@@ -158,7 +158,7 @@ def test_safe_extract_rejects_duplicate_member(tmp_path: Path) -> None:
     )
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"a.txt"})
+        safe_extract(archive, staging, {"a.txt": 3})
 
 
 def test_safe_extract_rejects_member_not_in_allowed(tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ def test_safe_extract_rejects_member_not_in_allowed(tmp_path: Path) -> None:
     _write_evil_archive(archive, [_regular("surprise.txt", b"x")])
     staging = tmp_path / "staging"
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"expected.txt"})
+        safe_extract(archive, staging, {"expected.txt": 1})
     assert not (staging / "surprise.txt").exists()
 
 
@@ -176,4 +176,4 @@ def test_safe_extract_rejects_sidecar_member(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     # even if it were "allowed", a sidecar name inside the archive is rejected
     with pytest.raises(ArchiveError):
-        safe_extract(archive, staging, {"r3.yaml"})
+        safe_extract(archive, staging, {"r3.yaml": 10})

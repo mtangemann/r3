@@ -266,6 +266,27 @@ from the authoritative `r3.yaml`, I1) and **no** absolute object keys:
   presence means the archive and both sidecars are already fully uploaded **and
   content-verified** (§5).
 
+### 4.1.1 The manifest is not a universal `job.file_paths`
+
+The manifest is the **S3 / immutable-representation's** integrity+listing record.
+Its per-file `sha256` values are meaningful *only because an archived job is
+immutable* (I2). It is therefore **not** the general `job.file_paths` abstraction
+(the deferred proposal), and must not be promoted to one:
+
+- A future `job.file_paths` (logical file membership, available for local and remote
+  jobs) is a **backend-specific projection**: a local job walks its directory; an S3
+  remote job derives `file_paths` from *this manifest's* path list; a
+  `FilesystemRemote` job lists the live remote directory.
+- A `FilesystemRemote` points at a **mutable** shared filesystem (its `output/` is
+  not frozen), so binding per-file hashes there would be wrong — which is exactly why
+  the original design gives `FilesystemRemote` `cache_file_list = False`. Such a
+  backend needs a **hash-free listing**, not this manifest.
+
+So the manifest stays the S3 backend's record (in `r3.manifest`, used by
+`S3Remote`); `file_paths`, when it lands, is a thin logical view sourced per backend.
+This is documented so a future change does not assume "manifest = file_paths
+everywhere."
+
 ### 4.2 Why a manifest rather than reading the archive
 
 Reading the file list out of the archive requires walking every tar header; headers

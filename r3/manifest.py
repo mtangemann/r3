@@ -103,9 +103,23 @@ def validate(manifest: Any) -> None:
     if version != MANIFEST_VERSION:
         raise ManifestError(f"Unsupported manifest_version: {version!r}")
 
-    for key in ("job_id", "representation", "archive_sha256", "archive_size", "files"):
-        if key not in manifest:
-            raise ManifestError(f"Manifest missing required key: {key!r}")
+    # A manifest is a closed schema: reject unknown keys rather than ignore them, so
+    # corruption/tampering/version drift fails closed (the schema is version-gated
+    # above, so additions come with a version bump).
+    allowed = {
+        "manifest_version",
+        "job_id",
+        "representation",
+        "archive_sha256",
+        "archive_size",
+        "files",
+    }
+    missing = allowed - set(manifest)
+    if missing:
+        raise ManifestError(f"Manifest missing required keys: {sorted(missing)}")
+    unknown = set(manifest) - allowed
+    if unknown:
+        raise ManifestError(f"Manifest has unknown keys: {sorted(unknown)}")
 
     if manifest["representation"] != REPRESENTATION_TAR_ZST:
         raise ManifestError(f"Unknown representation: {manifest['representation']!r}")
@@ -118,12 +132,10 @@ def validate(manifest: Any) -> None:
 
     seen = set()
     for entry in manifest["files"]:
-        if not isinstance(entry, dict) or not {
-            "path",
-            "size",
-            "sha256",
-        } <= set(entry):
+        if not isinstance(entry, dict) or set(entry) != {"path", "size", "sha256"}:
             raise ManifestError(f"Malformed file entry: {entry!r}")
+        if not isinstance(entry["size"], int):
+            raise ManifestError(f"File entry size must be an integer: {entry!r}")
         path = entry["path"]
         _validate_path(path)
         if path in seen:
