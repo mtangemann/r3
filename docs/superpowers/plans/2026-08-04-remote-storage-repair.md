@@ -21,6 +21,16 @@ CLI/lifecycle. TDD; one commit per task; a regression test for every bug fixed.
 Final gate: full pytest (minus `live_s3`), ruff, mypy (`r3 test migration`),
 `git diff --check`.
 
+**Execution status (2026-08-07):** Phase A done (merge + Python 3.10). Phase B done
+for the backend-agnostic reusable layer — `r3.manifest` (B1), `r3.archive`
+build+`safe_extract` (B2 archive-builder + B3), and the `Job` remote projection +
+§8 revert (B4). The **S3Remote transport rewrite** originally listed under B2 is
+**moved to the head of Phase D**: it defines the 4-object layout jointly with the
+`move`/`fetch` state machines and cannot be swapped in without rewriting them at the
+same time (the old and new object layouts are mutually exclusive). All green at each
+step (285 tests, ruff, mypy). Next: Phase C (migrations, independent) then Phase D
+(S3Remote transport + move/fetch/remove).
+
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
 (sidecar), `manifest.json` (integrity/listing; published last via verified
