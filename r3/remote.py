@@ -1,12 +1,11 @@
 """Remote storage backends for R3 repositories.
 
-A remote stores each job as four objects under ``{prefix}{job_id}/`` (design §4):
+A remote stores each job as four objects under ``{prefix}{job_id}/``:
 ``data.tar.zst`` (the payload archive), ``r3.yaml`` and ``metadata.yaml`` (sidecars),
-and ``manifest.json`` (the integrity/listing record and completion marker). The
-``Remote`` interface is object-transport for those logical objects; the archive and
-manifest *content* logic lives in ``r3.archive`` / ``r3.manifest`` (the generic half
-of the seam). ``Repository`` orchestrates the crash-safe ``move``/``fetch`` state
-machines on top.
+and ``manifest.json`` (the integrity/listing record, written last as the completion
+marker). The ``Remote`` interface is object-transport for those logical objects; the
+archive and manifest *content* logic lives in ``r3.archive`` / ``r3.manifest``.
+``Repository`` orchestrates the crash-safe ``move``/``fetch`` state machines on top.
 """
 
 from abc import ABC, abstractmethod
@@ -31,7 +30,12 @@ class RemoteError(Exception):
 
 
 class Remote(ABC):
-    """Object transport for a job's remote representation (design §4)."""
+    """Abstract base class for remote storage backends.
+
+    Provides object transport for a job's remote representation — the payload
+    archive, the ``r3.yaml``/``metadata.yaml`` sidecars, and the manifest completion
+    marker. Concrete backends (currently ``S3Remote``) implement the transport.
+    """
 
     cache_file_list: bool = False
     """Whether the remote's storage is immutable enough to cache the job's file list
@@ -185,7 +189,7 @@ class S3Remote(Remote):
             response_checksum_validation=config.get("response_checksum_validation"),
         )
 
-    # -- key scheme (design §4) --------------------------------------------------
+    # -- key scheme --------------------------------------------------------------
 
     def _job_prefix(self, job_id: str) -> str:
         return f"{self.prefix}{job_id}/"
@@ -294,11 +298,12 @@ class S3Remote(Remote):
         )
 
     def publish_manifest(self, job_id: str, manifest_bytes: bytes) -> None:
-        """Publishes the manifest via a verified staging-copy (design §5 step 5).
+        """Publishes the manifest via a verified staging-copy.
 
         PUT to a staging key, GET it back and byte-compare, then server-side copy the
         verified staging object to the final manifest key (bound to its ETag), then
-        delete staging. The final key therefore only ever appears post-verification.
+        delete staging. The final manifest key therefore only ever appears once its
+        bytes have been verified, closing the visible-but-unverified window.
         """
         staging_key = self._staging_manifest_key(job_id)
         final_key = self._manifest_key(job_id)

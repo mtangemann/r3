@@ -5,7 +5,7 @@ Adds the ``location`` column to the index (all existing jobs default to ``local`
 The change is applied directly with SQLite — the migration does not construct the
 version-strict ``Repository`` (which would reject the intermediate version) nor reuse
 the live ``Index``. The index is backed up first and the new version is written last,
-so an interruption leaves the old version and a usable index (design §12).
+so an interruption leaves the old version and a usable index.
 """
 
 import sys

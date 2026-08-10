@@ -294,7 +294,7 @@ class Repository:
         return self._index.find_dependents(job, recursive)
 
     def move(self, job_id: str, remote_name: str) -> Set[Job]:
-        """Moves a job to a remote, deleting the local copy (design §5).
+        """Moves a job to a remote, deleting the local copy.
 
         The job is archived (files-only) and its sidecars/archive are uploaded and
         **content-verified**; only then is the manifest published (verified
@@ -385,7 +385,7 @@ class Repository:
     def fetch(self, job_id: str) -> None:
         """Fetches a remote job back to local storage, deleting the remote copy.
 
-        The inverse of move (design §6): download and content-verify the archive,
+        The inverse of move: download and content-verify the archive,
         extract into a staging directory, place the sidecars, verify the whole
         directory against the manifest, atomically publish it locally, then delete
         the remote copy and flip the index to local last. A local manifest receipt
@@ -467,8 +467,8 @@ class Repository:
         sidecar_bytes: Dict[str, bytes],
         temp_dir: Path,
     ) -> None:
-        """Downloads every uploaded object back and content-verifies it (design §5
-        step 4). Raises RemoteError on any mismatch."""
+        """Downloads every uploaded object back and content-verifies it before the
+        manifest is published. Raises RemoteError on any mismatch."""
         verify_path = temp_dir / "verify.tar.zst"
         remote.download_archive(job_id, verify_path)
         if r3.utils.hash_file(verify_path) != archive_sha256:
@@ -520,9 +520,9 @@ class Repository:
             pass  # receipt is cleanup debris; the local transition already committed
 
     def _atomic_remove_local(self, job_id: str) -> None:
-        """Removes jobs/<id> via an atomic rename into .trash, then rmtree (design §5
-        step 8). The rename is instantaneous, so a complete jobs/<id> never lingers
-        after the index says remote."""
+        """Removes jobs/<id> via an atomic rename into .trash, then rmtree. The rename
+        is instantaneous, so a complete jobs/<id> never lingers after the index says
+        remote."""
         job_dir = self._storage.root / "jobs" / job_id
         if not job_dir.exists():
             return
@@ -710,7 +710,7 @@ def _dir_snapshot(job_dir: Path) -> Dict[Path, Tuple[int, int]]:
     """Returns {relative path: (size, mtime_ns)} for every file under job_dir.
 
     Used both to enumerate the job's files and to detect mutation between the move
-    capture and the local deletion (the quiescence re-check, design §5 step 6).
+    capture and the local deletion (the quiescence re-check before deleting local).
     """
     snapshot: Dict[Path, Tuple[int, int]] = {}
     for child in job_dir.rglob("*"):

@@ -199,7 +199,7 @@ class Index:
             return self.storage.get(job_id, cached_timestamp, cached_metadata)
 
         # Remote job: return a metadata-only projection. Its files/hash/dependencies
-        # raise FilesUnavailableError until the job is fetched (design §8).
+        # raise FilesUnavailableError until the job is fetched.
         return Job(
             self.storage.root / "jobs" / job_id,
             job_id,
@@ -346,7 +346,7 @@ class Index:
                     self.storage.get(job_id, cached_timestamp, cached_metadata)
                 )
             else:
-                # Remote job: metadata-only projection (design §8).
+                # Remote job: metadata-only projection.
                 jobs.append(
                     Job(
                         self.storage.root / "jobs" / job_id,

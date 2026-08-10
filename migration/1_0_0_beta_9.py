@@ -5,7 +5,7 @@ Adds the nullable ``files`` column to the index for caching remote-job file list
 Existing rows get NULL (no cached list — the same behaviour as before this version).
 The change is applied directly with SQLite (no version-strict ``Repository``, no live
 ``Index``); the index is backed up first and the new version written last, so an
-interruption leaves the old version and a usable index (design §12).
+interruption leaves the old version and a usable index.
 """
 
 import sys

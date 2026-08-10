@@ -6,7 +6,6 @@ recreates the *current* HEAD schema, not the era being migrated to). Instead the
 perform their SQLite change directly here, back up the index first, and write the new
 format version **last** so a failure leaves the old version and a usable index.
 
-See the durable remote-storage design, §12.
 """
 
 import os

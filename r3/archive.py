@@ -1,14 +1,14 @@
 """Backend-agnostic archive handling: build a files-only ``tar.zst`` and extract it
 safely.
 
-This is the generic half of the remote-storage seam (design §3, §11): it knows about
+This is the generic half of the remote-storage layer: it knows about
 tar/zstd and path safety, but nothing about S3. ``S3Remote`` uses it to create the
 payload archive and to reconstruct a job directory on fetch.
 
 The archive contains **file members only** — no directory entries and no ``r3.yaml``
 / ``metadata.yaml`` sidecars (those are stored as separate objects). Each member is
 hashed as it is written, so the returned entries describe exactly the archive's
-contents (design §5 step 1). Extraction validates every member before writing it,
+contents. Extraction validates every member before writing it,
 which closes the F-01 path-traversal blocker.
 """
 

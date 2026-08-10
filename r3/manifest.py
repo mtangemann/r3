@@ -1,13 +1,12 @@
 """The job manifest: a remote job's integrity + listing record.
 
-See the durable remote-storage design, §4.1. The manifest is a pure
-integrity/listing record — it deliberately carries no dependency graph or timestamp
-(those live in the authoritative ``r3.yaml`` sidecar) and no absolute object keys
-(keys are derived from ``{prefix}{job_id}`` at read time).
+The manifest is a pure integrity/listing record — it deliberately carries no
+dependency graph or timestamp (those live in the authoritative ``r3.yaml`` sidecar)
+and no absolute object keys (keys are derived from ``{prefix}{job_id}`` at read time).
 
-Per-file hashes are computed by the caller in the same pass that writes the archive
-(design §5 step 1); this module only assembles, (de)serialises, and verifies — it
-does not walk the job directory to build a manifest.
+Per-file hashes are computed by the caller in the same pass that writes the archive;
+this module only assembles, (de)serialises, and verifies — it does not walk the job
+directory to build a manifest.
 """
 
 import json
