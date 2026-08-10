@@ -28,8 +28,8 @@ build+`safe_extract` (B2 archive-builder + B3), and the `Job` remote projection 
 **moved to the head of Phase D**: it defines the 4-object layout jointly with the
 `move`/`fetch` state machines and cannot be swapped in without rewriting them at the
 same time (the old and new object layouts are mutually exclusive). Phase B was also
-hardened per review (closed-schema manifest; extraction bounded by the manifest, not
-a 1 TiB cap; stdlib tar data-filter). Phase C (migrations, F-02) done: beta.8/beta.9
+hardened per review (closed-schema manifest; extraction bounded by the manifest;
+stdlib tar data-filter). Phase C (migrations, F-02) done: beta.8/beta.9
 rewritten crash-safe via a migration-local helper (no version-strict Repository,
 version-written-last, `.bak`-preserving) with a beta.7->beta.9 end-to-end +
 rollback/refuse-backup/idempotent tests. All green at each step (292 tests, ruff,
@@ -43,6 +43,39 @@ it is deselected and must be rewritten for the new transport + multipart in Phas
 Next: Phase E (index durability: rollback + bucket-backed atomic rebuild), F
 (dependencies), G (CLI + remove protocol + remote check), H (failure tests, docs,
 live-S3, final gate).
+
+**Execution status (2026-08-11) — A–D independent review + remediation.** Ran an
+independent 5-way code review over the committed A–D code (migrations; archive +
+manifest; S3 transport; move/fetch; Job/index/merge). Most High/Blocker findings were
+confirmations of already-planned later-phase work and were left for those phases:
+durable bucket-backed fail-closed rebuild-index → E2; `Transaction.__exit__` rollback
+→ E1; location-aware `find_dependents` → F; `remove` protocol for remote jobs → G1;
+`from_config` unknown-key/config validation → G3; `edit` refuses remote jobs → G4;
+multipart + live-S3/CEPH copy-if-match/delete semantics → H2. Five genuinely-new
+defects in shipped A–D code were fixed subagent-driven (per task: failing test → fix →
+independent spec review → independent code-quality review; plus a final holistic
+review), each with regression tests:
+1. Migration `index.sqlite.bak` is now written atomically (temp + `os.replace`) and
+   version-stamped, and the "backup exists" refusal no longer advises a destructive
+   restore of a corrupt backup.
+2. Re-added the absolute extraction backstop cap the design mandates (total-bytes /
+   file-count / per-file, reject-before-write); tightened the files-only gate to
+   `REGTYPE`/`AREGTYPE`; `manifest.validate` now enforces 64-hex `sha256` and
+   non-negative non-bool sizes; `_validate_path` rejects empty/`.`/`..` segments;
+   `safe_extract` wraps member-write and data-filter `OSError` as `ArchiveError`.
+3. `publish_manifest` now validates the `CopyObject` result and re-GETs the final
+   manifest byte-for-byte (defends against a spec-divergent `CopyObject` on CEPH that
+   returns success without materializing the key), and cleans up staging on any
+   failure.
+4. `move` now round-trips (extract + `verify_directory`) the just-built archive before
+   any remote mutation, so it never deletes the sole local copy of a non-restorable
+   job; `fetch` step-0 persists a receipt before finalize (closing a recovery
+   dead-end); `move` sweeps a stale fetch receipt at the start; fetched job dirs are
+   write-protected to match committed jobs (I2).
+5. F-11: bound the `location` parameter in `Index.find` (pulled forward from E4; the
+   lazy file-list part of E4 remains).
+All green (320 tests, 3 live-S3 skipped, ruff, mypy). Commits `8df8b07..5e1eb83`
+(not pushed). Next: Phase E.
 
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
