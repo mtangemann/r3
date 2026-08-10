@@ -33,8 +33,16 @@ a 1 TiB cap; stdlib tar data-filter). Phase C (migrations, F-02) done: beta.8/be
 rewritten crash-safe via a migration-local helper (no version-strict Repository,
 version-written-last, `.bak`-preserving) with a beta.7->beta.9 end-to-end +
 rollback/refuse-backup/idempotent tests. All green at each step (292 tests, ruff,
-mypy). Next: Phase D (S3Remote transport + move/fetch/remove state machines — the
-crash-safety core).
+mypy). Phase D core done: archive-only S3Remote transport (4-object layout,
+staging-copy publish, Errors-inspecting deletes, paginated list) + crash-safe
+`move`/`fetch` state machines (content-verify-all, quiescence re-check, atomic local
+delete; receipt + idempotent finalize) with crash-safety regression tests (F-04,
+F-05). All green (283, ruff, mypy). `remove` still handles only local jobs (its
+remote protocol is Phase G). `test_live_s3.py` still targets the OLD S3Remote API —
+it is deselected and must be rewritten for the new transport + multipart in Phase H2.
+Next: Phase E (index durability: rollback + bucket-backed atomic rebuild), F
+(dependencies), G (CLI + remove protocol + remote check), H (failure tests, docs,
+live-S3, final gate).
 
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
