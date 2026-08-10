@@ -310,7 +310,8 @@ class Repository:
             ValueError: If the remote is unknown or the job is not local.
             KeyError: If the job does not exist.
             RemoteError: If an uploaded object fails content verification.
-            RuntimeError: If the job changed during the move (not quiescent).
+            RuntimeError: If the job changed during the move (not quiescent), or the
+                built archive does not round-trip.
         """
         if remote_name not in self._remotes:
             raise ValueError(f"Unknown remote: {remote_name}")
@@ -318,6 +319,12 @@ class Repository:
 
         if self._index.get_location(job_id) != "local":
             raise ValueError(f"Job {job_id} is not local; cannot move it.")
+
+        # A prior fetch's receipt is stale for a fresh move: archive_sha256 is not
+        # deterministic across re-moves (tar headers embed mtimes), so a leftover
+        # would make a later fetch step-0 spuriously report remote/receipt
+        # disagreement. Invalidate it now (missing_ok also tolerates no .fetch dir).
+        (self.path / ".fetch" / f"{job_id}.receipt.json").unlink(missing_ok=True)
 
         job = self._storage.get(job_id)
         job_dir = job.path
@@ -342,6 +349,24 @@ class Repository:
                 job_id, entries, result.sha256, result.size
             )
             manifest_bytes = r3.manifest.dumps(manifest)
+
+            # 1b. Local round-trip check: prove the just-built archive + sidecars
+            #     reconstruct the job (safe_extract + verify_directory, exactly as
+            #     fetch does) BEFORE any remote mutation. move deletes the sole local
+            #     copy, so a non-restorable archive must abort here, local untouched.
+            roundtrip_dir = temp_dir / "roundtrip"
+            expected = _payload_sizes(manifest)
+            try:
+                r3.archive.safe_extract(archive_path, roundtrip_dir, expected)
+                for name in SIDECAR_PATHS:
+                    (roundtrip_dir / name).write_bytes(sidecar_bytes[name])
+                r3.manifest.verify_directory(roundtrip_dir, manifest)
+            except (r3.archive.ArchiveError, r3.manifest.ManifestError) as error:
+                raise RuntimeError(
+                    f"Built archive for job {job_id} does not round-trip "
+                    f"(safe_extract + verify_directory failed): {error}. Aborted "
+                    "before any remote mutation; local files are untouched."
+                ) from error
 
             # 2. Invalidate any stale publication before overwriting payload keys.
             remote.delete_manifest(job_id)
@@ -412,7 +437,8 @@ class Repository:
 
         # 0. Idempotent finalize: a prior fetch/move may have left a complete jobs/<id>.
         if job_dir.exists():
-            manifest = self._finalize_manifest(remote, job_id, receipt_path)
+            manifest_bytes = self._finalize_manifest(remote, job_id, receipt_path)
+            manifest = r3.manifest.loads(manifest_bytes)
             try:
                 r3.manifest.verify_directory(job_dir, manifest)
             except r3.manifest.ManifestError as error:
@@ -420,6 +446,14 @@ class Repository:
                     f"jobs/{job_id} exists but does not match its manifest "
                     f"(corruption): {error}. Manual intervention required."
                 ) from error
+            # Persist a recovery receipt before the remote is deleted, so a crash
+            # between the remote delete and the index flip stays finalizable on rerun.
+            # (The main path writes it earlier; a move crash between its index flip and
+            # local delete reaches here with none.)
+            if not receipt_path.exists():
+                _atomic_write_bytes(receipt_path, manifest_bytes)
+            # Restore committed-job immutability (idempotent if already protected).
+            self._storage.protect_job(job_dir)
             self._finalize_fetch(remote, job_id, receipt_path)
             return
 
@@ -438,11 +472,7 @@ class Repository:
                 raise RemoteError(f"Archive checksum mismatch fetching job {job_id}.")
 
             # 3-4. Extract into staging, then place the sidecars.
-            expected = {
-                entry["path"]: entry["size"]
-                for entry in manifest["files"]
-                if entry["path"] not in SIDECAR_PATHS
-            }
+            expected = _payload_sizes(manifest)
             r3.archive.safe_extract(archive_path, staging_dir, expected)
             for name in SIDECAR_PATHS:
                 (staging_dir / name).write_bytes(remote.get_sidecar(job_id, name))
@@ -456,7 +486,10 @@ class Repository:
             shutil.rmtree(temp_dir, ignore_errors=True)
             shutil.rmtree(staging_dir, ignore_errors=True)
 
-        # 7-8. Delete the remote copy, flip the index to local, drop the receipt.
+        # 7. Restore committed-job immutability on the freshly published directory.
+        self._storage.protect_job(job_dir)
+
+        # 8-9. Delete the remote copy, flip the index to local, drop the receipt.
         self._finalize_fetch(remote, job_id, receipt_path)
 
     def _verify_upload(
@@ -482,9 +515,11 @@ class Repository:
 
     def _finalize_manifest(
         self, remote: Remote, job_id: str, receipt_path: Path
-    ) -> Dict[str, Any]:
-        """Returns the manifest for the step-0 finalize, from the remote or the local
-        receipt (requiring agreement if both exist)."""
+    ) -> bytes:
+        """Returns the chosen manifest BYTES for the step-0 finalize, from the remote
+        or the local receipt (requiring agreement if both exist). The caller parses
+        them with ``r3.manifest.loads`` and, when no receipt exists yet, persists
+        these bytes as the recovery receipt before finalizing."""
         try:
             remote_bytes: Optional[bytes] = remote.get_manifest(job_id)
         except FileNotFoundError:
@@ -508,7 +543,7 @@ class Repository:
                 "manifest nor a local receipt is available to verify it. Manual "
                 "intervention required."
             )
-        return r3.manifest.loads(chosen)
+        return chosen
 
     def _finalize_fetch(self, remote: Remote, job_id: str, receipt_path: Path) -> None:
         """Deletes the remote copy, flips the index to local, drops the receipt."""
@@ -704,6 +739,19 @@ class Repository:
             commit,
             source=dependency.source,
         )
+
+
+def _payload_sizes(manifest: Dict[str, Any]) -> Dict[str, int]:
+    """Returns {path: size} for the archive-resident files (manifest minus sidecars).
+
+    This is the ``expected_sizes`` mapping ``r3.archive.safe_extract`` is bounded by,
+    used identically by the move round-trip check and by fetch.
+    """
+    return {
+        entry["path"]: entry["size"]
+        for entry in manifest["files"]
+        if entry["path"] not in SIDECAR_PATHS
+    }
 
 
 def _dir_snapshot(job_dir: Path) -> Dict[Path, Tuple[int, int]]:

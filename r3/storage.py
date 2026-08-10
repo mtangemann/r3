@@ -140,7 +140,6 @@ class Storage:
         with open(job_path / "r3.yaml", "w") as config_file:
             # REVIEW: Any way to avoid using the private attribute?
             yaml.dump(job._config, config_file)
-        _remove_write_permissions(job_path / "r3.yaml")
 
         with open(job_path / "metadata.yaml", "w") as metadata_file:
             yaml.dump(job.metadata, metadata_file)
@@ -155,11 +154,26 @@ class Storage:
 
             os.makedirs(target.parent, exist_ok=True)
             shutil.copy(source, target)
-            _remove_write_permissions(target)
 
-        _remove_write_permissions(job_path)
+        self.protect_job(job_path)
 
         return Job(job_path, job_id)
+
+    def protect_job(self, job_path: Union[str, os.PathLike]) -> None:
+        """Applies the write-protection a committed job gets.
+
+        The job directory, ``r3.yaml``, and every regular file except the top-level
+        ``metadata.yaml`` become read-only; ``metadata.yaml`` and all subdirectories
+        (including ``output/``) stay writable. Idempotent, so it is safe to re-apply
+        to an already protected directory — e.g. a job restored by ``fetch``, which
+        must match a committed job's permissions.
+        """
+        job_path = Path(job_path)
+        metadata = Path("metadata.yaml")
+        for child in job_path.rglob("*"):
+            if child.is_file() and child.relative_to(job_path) != metadata:
+                _remove_write_permissions(child)
+        _remove_write_permissions(job_path)
 
     def remove(self, job: Job) -> None:
         """Removes a job from the storage.

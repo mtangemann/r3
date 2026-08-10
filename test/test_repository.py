@@ -2,6 +2,7 @@
 
 import filecmp
 import os
+import shutil
 import stat
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from executor import execute
 from moto import mock_aws
 from pytest_mock.plugin import MockerFixture
 
+import r3.manifest
 import r3.repository
 from r3.job import (
     FilesUnavailableError,
@@ -1420,3 +1422,125 @@ def test_move_aborts_on_quiescence_violation(
     assert (repo.path / "jobs" / job.id).exists()
     assert repo._index.get_location(job.id) == "local"
     assert not repo.remotes["archive"].exists(job.id)  # stale manifest removed
+
+
+def test_move_aborts_before_upload_if_archive_not_restorable(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """move proves the just-built archive round-trips (safe_extract + verify_directory,
+    exactly as fetch does) BEFORE touching the remote. If it does not reconstruct the
+    job, move aborts with nothing uploaded and the sole local copy untouched."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+
+    def not_restorable(job_dir: Path, manifest: dict) -> None:
+        raise r3.manifest.ManifestError("simulated non-round-trip")
+
+    monkeypatch.setattr(r3.manifest, "verify_directory", not_restorable)
+
+    with pytest.raises(RuntimeError, match="round-trip"):
+        repo.move(job.id, "archive")
+
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "local"
+    assert not remote.exists(job.id)  # no manifest published
+    assert remote.archive_size(job.id) is None  # nothing uploaded
+
+
+def test_move_sweeps_stale_fetch_receipt(
+    repository_with_remote: Repository,
+) -> None:
+    """move invalidates any stale fetch receipt up front. A leftover receipt from an
+    earlier fetch would otherwise make a later fetch step-0 report a spurious
+    remote/receipt disagreement (archive_sha256 is not stable across re-moves)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    fetch_dir = repo.path / ".fetch"
+    fetch_dir.mkdir(exist_ok=True)
+    receipt = fetch_dir / f"{job.id}.receipt.json"
+    receipt.write_bytes(b"{}")
+
+    repo.move(job.id, "archive")
+
+    assert not receipt.exists()
+
+
+def test_fetch_step0_persists_receipt_before_finalize(
+    repository_with_remote: Repository,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step-0 finalize must persist a recovery receipt before deleting the remote, so
+    a crash after the remote delete but before the index flip stays recoverable. This
+    reproduces the move step-7↔step-8 window: jobs/<id> present, index remote, no
+    receipt (design: fetch recovery)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+
+    # Snapshot the exact committed bytes, then move (uploads, deletes local, writes no
+    # receipt). Recreating jobs/<id> from the snapshot reproduces the state a move
+    # crash leaves between the index flip (remote) and the local delete.
+    snapshot = tmp_path / "snapshot"
+    shutil.copytree(job_dir, snapshot)
+    repo.move(job.id, "archive")
+    assert not job_dir.exists()
+    shutil.copytree(snapshot, job_dir)
+    assert repo._index.get_location(job.id) == "archive"
+
+    receipt = repo.path / ".fetch" / f"{job.id}.receipt.json"
+    assert not receipt.exists()
+
+    # Simulate a crash after the remote delete but before the index flip on the first
+    # finalize; the rerun delegates to the real flip.
+    real_set_location = repo._index.set_location
+    state = {"tripped": False}
+
+    def flaky_set_location(job_id: str, location: str) -> None:
+        if location == "local" and not state["tripped"]:
+            state["tripped"] = True
+            raise RuntimeError("simulated crash after remote delete")
+        real_set_location(job_id, location)
+
+    monkeypatch.setattr(repo._index, "set_location", flaky_set_location)
+
+    with pytest.raises(RuntimeError):
+        repo.fetch(job.id)
+
+    # The receipt was persisted before the remote delete, so recovery is possible even
+    # though the remote manifest is now gone.
+    assert receipt.exists()
+    assert repo._index.get_location(job.id) == "archive"
+
+    # Rerun finalizes from the receipt (remote manifest already deleted) — the former
+    # dead-end ("Manual intervention required") is gone.
+    repo.fetch(job.id)
+    assert repo._index.get_location(job.id) == "local"
+    assert job_dir.exists()
+
+
+def test_fetch_write_protects_restored_job(
+    repository_with_remote: Repository,
+) -> None:
+    """A fetched job is write-protected exactly like a committed one: the job dir,
+    r3.yaml, and payload files are read-only, while metadata.yaml stays writable."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    repo.fetch(job.id)
+
+    job_dir = repo.path / "jobs" / job.id
+
+    def is_writable(path: Path) -> bool:
+        return bool(stat.S_IMODE(os.lstat(path).st_mode) & stat.S_IWUSR)
+
+    assert not is_writable(job_dir)
+    assert not is_writable(job_dir / "r3.yaml")
+    assert not is_writable(job_dir / "run.py")
+    assert is_writable(job_dir / "metadata.yaml")
