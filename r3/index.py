@@ -326,13 +326,15 @@ class Index:
             f"SELECT id, timestamp, metadata, location FROM jobs WHERE "
             f"{mongo_to_sql(query)}"
         )
+        params: List[Any] = []
         if location is not None:
-            sql_query += f" AND location = '{location}'"
+            sql_query += " AND location = ?"
+            params.append(location)
         if latest:
             sql_query += " ORDER BY timestamp DESC LIMIT 1"
 
         with Transaction(self._path) as transaction:
-            transaction.execute(sql_query)
+            transaction.execute(sql_query, params)
             results = transaction.fetchall()
 
         jobs = []

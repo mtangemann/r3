@@ -311,6 +311,20 @@ def test_index_find_with_location_filter(storage_with_jobs: Storage):
     assert len(all_jobs_again) == 3
 
 
+def test_index_find_location_filter_is_not_sql_injectable(storage_with_jobs: Storage):
+    """A crafted location value is a literal, not SQL that bypasses the filter.
+
+    With the value interpolated as a raw string literal, ``missing' OR 1=1 --``
+    breaks out of the quotes and the ``OR 1=1`` matches every row. Bound as a
+    parameter, it is treated as a location value that matches nothing.
+    """
+    index = Index(storage_with_jobs)
+    # The payload would match all rows if the filter were bypassed.
+    assert len(index.find({})) == 3
+    results = index.find({}, location="missing' OR 1=1 --")
+    assert len(results) == 0
+
+
 def test_index_rebuild_creates_files_column(storage: Storage):
     """The rebuilt schema must include the files column."""
     index = Index(storage)
