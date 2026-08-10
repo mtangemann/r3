@@ -12,6 +12,7 @@ from r3.manifest import (
     dumps,
     file_paths,
     loads,
+    validate,
     verify_directory,
 )
 
@@ -105,12 +106,46 @@ def test_loads_rejects_duplicate_path() -> None:
         loads(dumps(manifest))
 
 
-@pytest.mark.parametrize("bad", ["/abs/path", "../escape", "./leading", "a/../b"])
+@pytest.mark.parametrize(
+    "bad", ["/abs/path", "../escape", "./leading", "a/../b", ".", "a/./b"]
+)
 def test_loads_rejects_unsafe_path(bad: str) -> None:
     manifest = build_manifest("j", _entries(), "d" * 64, 1)
     manifest["files"].append({"path": bad, "size": 1, "sha256": "e" * 64})
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
+
+
+@pytest.mark.parametrize("bad", ["z" * 64, "a" * 63, "a" * 65, "A" * 64, ""])
+def test_validate_rejects_bad_archive_sha256(bad: str) -> None:
+    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest["archive_sha256"] = bad
+    with pytest.raises(ManifestError):
+        validate(manifest)
+
+
+@pytest.mark.parametrize("bad", ["z" * 64, "a" * 63, "A" * 64])
+def test_validate_rejects_bad_entry_sha256(bad: str) -> None:
+    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest["files"][0]["sha256"] = bad
+    with pytest.raises(ManifestError):
+        validate(manifest)
+
+
+@pytest.mark.parametrize("bad", [-1, True, False])
+def test_validate_rejects_bad_archive_size(bad: object) -> None:
+    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest["archive_size"] = bad
+    with pytest.raises(ManifestError):
+        validate(manifest)
+
+
+@pytest.mark.parametrize("bad", [-1, True, False])
+def test_validate_rejects_bad_entry_size(bad: object) -> None:
+    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest["files"][0]["size"] = bad
+    with pytest.raises(ManifestError):
+        validate(manifest)
 
 
 def test_file_paths() -> None:

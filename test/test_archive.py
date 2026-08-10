@@ -177,3 +177,91 @@ def test_safe_extract_rejects_sidecar_member(tmp_path: Path) -> None:
     # even if it were "allowed", a sidecar name inside the archive is rejected
     with pytest.raises(ArchiveError):
         safe_extract(archive, staging, {"r3.yaml": 10})
+
+
+def test_safe_extract_rejects_size_mismatch(tmp_path: Path) -> None:
+    # The linchpin manifest-bounded check: a member whose on-tape size disagrees
+    # with the manifest is rejected before it is written.
+    archive = tmp_path / "evil.tar.zst"
+    _write_evil_archive(archive, [_regular("a.txt", b"three")])  # 5 bytes
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive, staging, {"a.txt": 4})
+    assert not (staging / "a.txt").exists()
+
+
+def test_safe_extract_rejects_contiguous_member(tmp_path: Path) -> None:
+    # CONTTYPE (and GNUTYPE_SPARSE) satisfy tarfile.isreg() but are not plain
+    # regular files; the tightened type gate rejects them.
+    archive = tmp_path / "evil.tar.zst"
+    data = b"contig"
+    info = tarfile.TarInfo("cont.txt")
+    info.size = len(data)
+    info.type = tarfile.CONTTYPE
+    _write_evil_archive(archive, [(info, data)])
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive, staging, {"cont.txt": len(data)})
+    assert not (staging / "cont.txt").exists()
+
+
+def test_safe_extract_rejects_file_then_dir_parent(tmp_path: Path) -> None:
+    # Member 'a' (a file) followed by 'a/b' (which needs 'a' to be a directory). The
+    # stdlib data filter's realpath lstats the path and raises an unwrapped OSError
+    # (NotADirectoryError); safe_extract must still surface a clean ArchiveError.
+    archive = tmp_path / "evil.tar.zst"
+    _write_evil_archive(archive, [_regular("a", b"x"), _regular("a/b", b"y")])
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive, staging, {"a": 1, "a/b": 1})
+
+
+def test_safe_extract_wraps_write_collision(tmp_path: Path) -> None:
+    # Member 'a/b' (a file) creates directory 'a'; the later member 'a' (a file) then
+    # collides with that directory, so opening it for writing raises IsADirectoryError,
+    # which the per-member write wrap converts into a clean ArchiveError.
+    archive = tmp_path / "evil.tar.zst"
+    _write_evil_archive(archive, [_regular("a/b", b"x"), _regular("a", b"y")])
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive, staging, {"a/b": 1, "a": 1})
+
+
+def _staging_is_empty(staging: Path) -> bool:
+    return not staging.exists() or not any(staging.iterdir())
+
+
+def test_safe_extract_rejects_total_bytes_cap(tmp_path: Path, job_dir: Path) -> None:
+    archive_path = tmp_path / "a.tar.zst"
+    result = create_archive(job_dir, _member_paths(), archive_path)
+    expected = {e.path: e.size for e in result.entries}
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive_path, staging, expected, max_total_bytes=1)
+    assert _staging_is_empty(staging)
+
+
+def test_safe_extract_rejects_file_count_cap(tmp_path: Path, job_dir: Path) -> None:
+    archive_path = tmp_path / "a.tar.zst"
+    result = create_archive(job_dir, _member_paths(), archive_path)
+    expected = {e.path: e.size for e in result.entries}
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive_path, staging, expected, max_file_count=1)
+    assert _staging_is_empty(staging)
+
+
+def test_safe_extract_rejects_single_file_cap(tmp_path: Path, job_dir: Path) -> None:
+    archive_path = tmp_path / "a.tar.zst"
+    result = create_archive(job_dir, _member_paths(), archive_path)
+    expected = {e.path: e.size for e in result.entries}
+    staging = tmp_path / "staging"
+    with pytest.raises(ArchiveError):
+        safe_extract(archive_path, staging, expected, max_file_bytes=1)
+    assert _staging_is_empty(staging)
+
+
+def test_create_archive_rejects_sidecar_member(tmp_path: Path, job_dir: Path) -> None:
+    archive_path = tmp_path / "a.tar.zst"
+    with pytest.raises(ArchiveError):
+        create_archive(job_dir, [Path("input.txt"), Path("r3.yaml")], archive_path)

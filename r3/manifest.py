@@ -10,14 +10,18 @@ directory to build a manifest.
 """
 
 import json
+import re
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List
 
 import r3.utils
 
 MANIFEST_VERSION = 1
 REPRESENTATION_TAR_ZST = "tar.zst"
+
+#: A SHA-256 digest as stored/compared everywhere in the manifest: 64 lowercase hex.
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 #: Logical files stored as their own sidecar objects rather than inside the archive.
 SIDECAR_PATHS = ("r3.yaml", "metadata.yaml")
@@ -123,8 +127,17 @@ def validate(manifest: Any) -> None:
     if manifest["representation"] != REPRESENTATION_TAR_ZST:
         raise ManifestError(f"Unknown representation: {manifest['representation']!r}")
 
-    if not isinstance(manifest["archive_size"], int):
-        raise ManifestError("Manifest 'archive_size' must be an integer.")
+    if not _is_sha256(manifest["archive_sha256"]):
+        raise ManifestError(
+            "Manifest 'archive_sha256' must be 64 lowercase hex chars: "
+            f"{manifest['archive_sha256']!r}"
+        )
+
+    if not _is_valid_size(manifest["archive_size"]):
+        raise ManifestError(
+            "Manifest 'archive_size' must be a non-negative integer: "
+            f"{manifest['archive_size']!r}"
+        )
 
     if not isinstance(manifest["files"], list):
         raise ManifestError("Manifest 'files' must be a list.")
@@ -133,8 +146,14 @@ def validate(manifest: Any) -> None:
     for entry in manifest["files"]:
         if not isinstance(entry, dict) or set(entry) != {"path", "size", "sha256"}:
             raise ManifestError(f"Malformed file entry: {entry!r}")
-        if not isinstance(entry["size"], int):
-            raise ManifestError(f"File entry size must be an integer: {entry!r}")
+        if not _is_valid_size(entry["size"]):
+            raise ManifestError(
+                f"File entry size must be a non-negative integer: {entry!r}"
+            )
+        if not _is_sha256(entry["sha256"]):
+            raise ManifestError(
+                f"File entry sha256 must be 64 lowercase hex chars: {entry!r}"
+            )
         path = entry["path"]
         _validate_path(path)
         if path in seen:
@@ -142,13 +161,25 @@ def validate(manifest: Any) -> None:
         seen.add(path)
 
 
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
+
+
+def _is_valid_size(value: Any) -> bool:
+    # ``bool`` is a subclass of ``int``; reject True/False as sizes explicitly.
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def _validate_path(path: Any) -> None:
     if not isinstance(path, str) or not path:
         raise ManifestError(f"Invalid manifest path: {path!r}")
     if path.startswith("./") or path.startswith("/"):
         raise ManifestError(f"Unsafe manifest path: {path!r}")
-    pure = PurePosixPath(path)
-    if pure.is_absolute() or ".." in pure.parts:
+    # Reject degenerate segments directly. Splitting on "/" catches absolute paths
+    # (leading empty segment), "..", ".", and empty/collapsed segments ("a//b") that
+    # a PurePosixPath would silently drop — any of which would later confuse
+    # extraction (e.g. an IsADirectoryError on a "." component).
+    if any(segment in ("", ".", "..") for segment in path.split("/")):
         raise ManifestError(f"Unsafe manifest path: {path!r}")
 
 
