@@ -11,7 +11,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from r3.remote import Remote, S3Remote
+from r3.remote import Remote, RemoteError, S3Remote
 
 BUCKET = "test-remote-bucket"
 PREFIX = "r3/jobs/"
@@ -187,3 +187,97 @@ def test_empty_prefix(tmp_path: Path) -> None:
         remote.publish_manifest("job1", b"{}")
         assert list(remote.list_job_ids()) == ["job1"]
         assert remote.exists("job1")
+
+
+# ---------------------------------------------------------------- error paths
+
+
+def _keys_under(prefix: str) -> set:
+    client = boto3.client("s3", region_name="us-east-1")
+    return {
+        obj["Key"]
+        for obj in client.list_objects_v2(Bucket=BUCKET, Prefix=prefix).get(
+            "Contents", []
+        )
+    }
+
+
+def test_delete_reports_per_object_errors_as_remote_error(
+    s3_remote: S3Remote, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # moto never populates the per-object Errors array (a missing key is not an
+    # error), so stub the client to guard the "failed delete silently treated as
+    # success" hazard.
+    _publish(s3_remote, "job1", tmp_path)
+
+    def _delete_objects_with_errors(**kwargs: object) -> dict:
+        return {
+            "Errors": [
+                {
+                    "Key": f"{PREFIX}job1/manifest.json",
+                    "Code": "AccessDenied",
+                    "Message": "Access Denied",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        s3_remote._client, "delete_objects", _delete_objects_with_errors
+    )
+    with pytest.raises(RemoteError):
+        s3_remote.delete_job("job1")
+
+
+def test_publish_manifest_staging_mismatch_cleans_up(
+    s3_remote: S3Remote, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the staging read-back to disagree with the bytes we PUT.
+    monkeypatch.setattr(s3_remote, "_get_bytes", lambda key: b"corrupted")
+    with pytest.raises(RemoteError):
+        s3_remote.publish_manifest("job1", b'{"ok": true}')
+    # Staging is cleaned up and the final manifest key was never created.
+    assert _keys_under(f"{PREFIX}job1/") == set()
+
+
+def test_publish_manifest_incomplete_copy_result_is_failure(
+    s3_remote: S3Remote, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A spec-divergent S3 can return 200 with no CopyObjectResult while the final
+    # key was not materialized. That must be a RemoteError, not silent success,
+    # or move() would delete the only local copy (data loss).
+    monkeypatch.setattr(s3_remote._client, "copy_object", lambda **kwargs: {})
+    with pytest.raises(RemoteError):
+        s3_remote.publish_manifest("job1", b'{"ok": true}')
+    # Staging is cleaned up and the final manifest key is absent.
+    assert _keys_under(f"{PREFIX}job1/") == set()
+
+
+def test_publish_manifest_final_verify_mismatch_cleans_up_staging(
+    s3_remote: S3Remote, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Staging verify PASSES but the copied final key reads back wrong bytes. This
+    # exercises the final re-GET byte-compare (the H1 linchpin): a copy that
+    # "succeeded" but did not materialize the right bytes must be a RemoteError.
+    manifest_bytes = b'{"ok": true}'
+
+    def _get_bytes_final_differs(key: str) -> bytes:
+        return manifest_bytes if key.endswith(".staging") else b"wrong-bytes"
+
+    monkeypatch.setattr(s3_remote, "_get_bytes", _get_bytes_final_differs)
+    with pytest.raises(RemoteError):
+        s3_remote.publish_manifest("job1", manifest_bytes)
+    # Staging is cleaned up. (The final key is intentionally left in place; move()
+    # keeps the local copy and clears it via delete_manifest-first on retry.)
+    assert f"{PREFIX}job1/manifest.json.staging" not in _keys_under(f"{PREFIX}job1/")
+
+
+def test_list_job_ids_paginates_beyond_one_page(s3_remote: S3Remote) -> None:
+    # moto caps a list page at 1000 keys; 1001 manifests forces the paginator
+    # across multiple pages. Manifest keys are written directly (not via
+    # publish_manifest) to keep this fast.
+    expected = {f"job-{i:04d}" for i in range(1001)}
+    for job_id in expected:
+        s3_remote._client.put_object(
+            Bucket=BUCKET, Key=f"{PREFIX}{job_id}/manifest.json", Body=b"{}"
+        )
+    assert set(s3_remote.list_job_ids()) == expected

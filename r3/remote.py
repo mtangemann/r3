@@ -300,33 +300,77 @@ class S3Remote(Remote):
     def publish_manifest(self, job_id: str, manifest_bytes: bytes) -> None:
         """Publishes the manifest via a verified staging-copy.
 
-        PUT to a staging key, GET it back and byte-compare, then server-side copy the
-        verified staging object to the final manifest key (bound to its ETag), then
-        delete staging. The final manifest key therefore only ever appears once its
-        bytes have been verified, closing the visible-but-unverified window.
+        PUT to a staging key, GET it back and byte-compare, then server-side copy
+        the verified staging object to the final manifest key (bound to its ETag).
+        The atomic server-side copy is what makes the final key appear only with
+        already-verified bytes, closing the visible-but-unverified window.
+
+        As belt-and-suspenders against spec-divergent backends, the CopyObject
+        result is checked for a completed copy and the final key is re-read and
+        byte-compared before staging is deleted — the final manifest is the job's
+        completion marker, so it must be correct before this returns. On any
+        failure the staging object is cleaned up best-effort and RemoteError is
+        raised.
         """
         staging_key = self._staging_manifest_key(job_id)
         final_key = self._manifest_key(job_id)
 
-        put_response = self._client.put_object(
-            Bucket=self.bucket, Key=staging_key, Body=manifest_bytes
-        )
-        staging_etag = put_response["ETag"]
-
-        if self._get_bytes(staging_key) != manifest_bytes:
-            self._delete([staging_key])
-            raise RemoteError(
-                f"Staging manifest verification failed for job {job_id}."
+        try:
+            put_response = self._client.put_object(
+                Bucket=self.bucket, Key=staging_key, Body=manifest_bytes
             )
+            staging_etag = put_response["ETag"]
 
-        # Server-side copy from the GET-verified staging object, bound to its ETag.
-        self._client.copy_object(
-            Bucket=self.bucket,
-            Key=final_key,
-            CopySource={"Bucket": self.bucket, "Key": staging_key},
-            CopySourceIfMatch=staging_etag,
-        )
-        self._delete([staging_key])
+            if self._get_bytes(staging_key) != manifest_bytes:
+                raise RemoteError(
+                    f"Staging manifest verification failed for job {job_id}."
+                )
+
+            # Server-side copy from the GET-verified staging object, bound to its
+            # ETag. This atomic copy is what closes the visible-but-unverified
+            # window on the final key.
+            copy_response = self._client.copy_object(
+                Bucket=self.bucket,
+                Key=final_key,
+                CopySource={"Bucket": self.bucket, "Key": staging_key},
+                CopySourceIfMatch=staging_etag,
+            )
+            # A spec-divergent S3 can return 200 with an empty/partial result while
+            # the final key was not materialized; treat a missing result as failure.
+            if not copy_response.get("CopyObjectResult", {}).get("ETag"):
+                raise RemoteError(
+                    f"CopyObject did not report a completed copy for job {job_id}."
+                )
+            # On a final-verify failure the (bad) final key may remain visible to
+            # exists(); we deliberately do NOT delete it here, since in a
+            # retry-over-existing scenario that could remove a previously-good
+            # manifest. move() keeps the local copy and its delete_manifest-first
+            # step clears the bad final key on the next attempt.
+            if self._get_bytes(final_key) != manifest_bytes:
+                raise RemoteError(
+                    f"Final manifest verification failed for job {job_id}."
+                )
+        except Exception as error:
+            # Best-effort staging cleanup on any failure; swallow a secondary
+            # delete error so it cannot mask the original failure.
+            try:
+                self._delete([staging_key])
+            except Exception:
+                pass
+            if isinstance(error, RemoteError):
+                raise
+            raise RemoteError(
+                f"Failed to publish manifest for job {job_id}: {error}"
+            ) from error
+
+        # Best-effort: the publish has already succeeded (final key verified), so a
+        # trailing delete hiccup must not turn a good publish into a move() failure.
+        # A leftover staging object is harmless (overwritten on retry, swept by
+        # delete_job, never visible to exists()/list_job_ids()).
+        try:
+            self._delete([staging_key])
+        except Exception:
+            pass
 
     def delete_manifest(self, job_id: str) -> None:
         self._delete([self._manifest_key(job_id)])
