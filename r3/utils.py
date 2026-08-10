@@ -53,6 +53,10 @@ def hash_str(string: str) -> str:
     return hashlib.sha256(string.encode()).hexdigest()
 
 
+def hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def git_commit_exists(repository: Path, commit: str) -> bool:
     try:
         object_type = execute(

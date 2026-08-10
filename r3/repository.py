@@ -5,13 +5,19 @@ The `Repository` class should be imported not from this module but from the top-
 """
 
 import os
+import shutil
+import stat
+import tempfile
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import yaml
 from executor import execute
 
 import r3
+import r3.archive
+import r3.manifest
 import r3.utils
 from r3.index import Index
 from r3.job import (
@@ -24,7 +30,8 @@ from r3.job import (
     QueryAllDependency,
     QueryDependency,
 )
-from r3.remote import Remote
+from r3.manifest import SIDECAR_PATHS, FileEntry
+from r3.remote import Remote, RemoteError
 from r3.storage import Storage
 
 R3_FORMAT_VERSION = "1.0.0-beta.9"
@@ -287,67 +294,246 @@ class Repository:
         return self._index.find_dependents(job, recursive)
 
     def move(self, job_id: str, remote_name: str) -> Set[Job]:
-        """Moves a job to a remote storage backend.
+        """Moves a job to a remote, deleting the local copy (design §5).
 
-        The job files are uploaded to the remote, verified, and then removed
-        locally. The job remains in the index with its location updated.
-
-        Parameters:
-            job_id: The ID of the job to move.
-            remote_name: The name of the remote to move the job to.
+        The job is archived (files-only) and its sidecars/archive are uploaded and
+        **content-verified**; only then is the manifest published (verified
+        staging-copy) as the completion marker, the index flipped to the remote, and
+        the local files deleted via an atomic rename. A stale manifest is invalidated
+        before any payload is overwritten, and the job is re-checked for quiescence
+        before local deletion.
 
         Returns:
-            The set of jobs that depend on the moved job.
+            The jobs that depend on the moved job (informational).
 
         Raises:
-            ValueError: If the remote name is not configured.
+            ValueError: If the remote is unknown or the job is not local.
             KeyError: If the job does not exist.
-            RuntimeError: If the upload verification fails.
+            RemoteError: If an uploaded object fails content verification.
+            RuntimeError: If the job changed during the move (not quiescent).
         """
         if remote_name not in self._remotes:
             raise ValueError(f"Unknown remote: {remote_name}")
-
         remote = self._remotes[remote_name]
-        job = self.get_job_by_id(job_id)
 
-        file_list: Optional[List[Path]] = None
-        if remote.cache_file_list:
-            file_list = list(job.files.keys())
+        if self._index.get_location(job_id) != "local":
+            raise ValueError(f"Job {job_id} is not local; cannot move it.")
 
-        remote.upload(job_id, job.path)
+        job = self._storage.get(job_id)
+        job_dir = job.path
 
-        if not remote.exists(job_id):
-            raise RuntimeError(f"Upload verification failed for job {job_id}")
+        # 1. Capture: snapshot the job dir, build the archive (files-only, hashing
+        #    members) and sidecar hashes, and assemble the manifest.
+        snapshot = _dir_snapshot(job_dir)
+        member_paths = [
+            path for path in snapshot if path.as_posix() not in SIDECAR_PATHS
+        ]
+        temp_dir = Path(tempfile.mkdtemp(prefix="r3-move-"))
+        try:
+            archive_path = temp_dir / "data.tar.zst"
+            result = r3.archive.create_archive(job_dir, member_paths, archive_path)
+            entries = list(result.entries)
+            sidecar_bytes: Dict[str, bytes] = {}
+            for name in SIDECAR_PATHS:
+                data = (job_dir / name).read_bytes()
+                sidecar_bytes[name] = data
+                entries.append(FileEntry(name, len(data), r3.utils.hash_bytes(data)))
+            manifest = r3.manifest.build_manifest(
+                job_id, entries, result.sha256, result.size
+            )
+            manifest_bytes = r3.manifest.dumps(manifest)
+
+            # 2. Invalidate any stale publication before overwriting payload keys.
+            remote.delete_manifest(job_id)
+
+            # 3. Upload the payload objects.
+            remote.put_archive(job_id, archive_path)
+            for name, data in sidecar_bytes.items():
+                remote.put_sidecar(job_id, name, data)
+
+            # 4. Content-verify every uploaded object before publishing.
+            self._verify_upload(remote, job_id, result.sha256, sidecar_bytes, temp_dir)
+
+            # 5. Publish the manifest (verified staging-copy) — the completion marker.
+            remote.publish_manifest(job_id, manifest_bytes)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        # 6. Quiescence re-check: abort if the job changed since the capture.
+        if _dir_snapshot(job_dir) != snapshot:
+            try:
+                remote.delete_manifest(job_id)
+            except RemoteError as error:
+                raise RemoteError(
+                    f"Job {job_id} changed during move and the stale published "
+                    f"manifest could not be removed ({error}); manual cleanup needed."
+                ) from error
+            raise RuntimeError(
+                f"Job {job_id} changed during move (still running?). Aborted before "
+                "deleting local files; move a quiescent job (see LIMITATIONS.md)."
+            )
 
         dependents = self._index.find_dependents(job)
-        self._storage.remove(job)
+
+        # 7. Commit the index transition, then 8. delete local atomically.
         self._index.set_location(job_id, remote_name)
-
-        if file_list is not None:
-            self._index.set_file_list(job_id, file_list)
-
+        if remote.cache_file_list:
+            self._index.set_file_list(job_id, r3.manifest.file_paths(manifest))
+        self._atomic_remove_local(job_id)
         return dependents
 
     def fetch(self, job_id: str) -> None:
-        """Fetches a job from a remote storage backend.
+        """Fetches a remote job back to local storage, deleting the remote copy.
 
-        Downloads the job files from the remote and restores them locally.
-
-        Parameters:
-            job_id: The ID of the job to fetch.
+        The inverse of move (design §6): download and content-verify the archive,
+        extract into a staging directory, place the sidecars, verify the whole
+        directory against the manifest, atomically publish it locally, then delete
+        the remote copy and flip the index to local last. A local manifest receipt
+        makes the operation retryable even after the remote manifest is deleted.
 
         Raises:
             ValueError: If the job is already local.
-            KeyError: If the remote is not configured.
+            KeyError: If the job's remote is not configured.
+            FileNotFoundError: If the remote has no manifest for the job.
         """
         location = self._index.get_location(job_id)
-
         if location == "local":
             raise ValueError(f"Job {job_id} is already local.")
-
+        if location not in self._remotes:
+            raise KeyError(
+                f"Job {job_id} is on remote '{location}', which is not configured."
+            )
         remote = self._remotes[location]
-        remote.download(job_id, self._storage.root / "jobs" / job_id)
+
+        job_dir = self._storage.root / "jobs" / job_id
+        fetch_dir = self.path / ".fetch"
+        fetch_dir.mkdir(exist_ok=True)
+        receipt_path = fetch_dir / f"{job_id}.receipt.json"
+
+        # 0. Idempotent finalize: a prior fetch/move may have left a complete jobs/<id>.
+        if job_dir.exists():
+            manifest = self._finalize_manifest(remote, job_id, receipt_path)
+            try:
+                r3.manifest.verify_directory(job_dir, manifest)
+            except r3.manifest.ManifestError as error:
+                raise RuntimeError(
+                    f"jobs/{job_id} exists but does not match its manifest "
+                    f"(corruption): {error}. Manual intervention required."
+                ) from error
+            self._finalize_fetch(remote, job_id, receipt_path)
+            return
+
+        # 1. Read the manifest; persist a local recovery receipt.
+        manifest_bytes = remote.get_manifest(job_id)
+        manifest = r3.manifest.loads(manifest_bytes)
+        _atomic_write_bytes(receipt_path, manifest_bytes)
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="r3-fetch-"))
+        staging_dir = fetch_dir / f"{job_id}-{uuid.uuid4().hex}"
+        try:
+            # 2. Download + verify the archive.
+            archive_path = temp_dir / "data.tar.zst"
+            remote.download_archive(job_id, archive_path)
+            if r3.utils.hash_file(archive_path) != manifest["archive_sha256"]:
+                raise RemoteError(f"Archive checksum mismatch fetching job {job_id}.")
+
+            # 3-4. Extract into staging, then place the sidecars.
+            expected = {
+                entry["path"]: entry["size"]
+                for entry in manifest["files"]
+                if entry["path"] not in SIDECAR_PATHS
+            }
+            r3.archive.safe_extract(archive_path, staging_dir, expected)
+            for name in SIDECAR_PATHS:
+                (staging_dir / name).write_bytes(remote.get_sidecar(job_id, name))
+
+            # 5. Verify the reconstructed directory against the manifest.
+            r3.manifest.verify_directory(staging_dir, manifest)
+
+            # 6. Atomically publish locally.
+            os.replace(staging_dir, job_dir)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        # 7-8. Delete the remote copy, flip the index to local, drop the receipt.
+        self._finalize_fetch(remote, job_id, receipt_path)
+
+    def _verify_upload(
+        self,
+        remote: Remote,
+        job_id: str,
+        archive_sha256: str,
+        sidecar_bytes: Dict[str, bytes],
+        temp_dir: Path,
+    ) -> None:
+        """Downloads every uploaded object back and content-verifies it (design §5
+        step 4). Raises RemoteError on any mismatch."""
+        verify_path = temp_dir / "verify.tar.zst"
+        remote.download_archive(job_id, verify_path)
+        if r3.utils.hash_file(verify_path) != archive_sha256:
+            raise RemoteError(f"Archive content verification failed for job {job_id}.")
+        verify_path.unlink()
+        for name, data in sidecar_bytes.items():
+            if remote.get_sidecar(job_id, name) != data:
+                raise RemoteError(
+                    f"Sidecar {name!r} content verification failed for job {job_id}."
+                )
+
+    def _finalize_manifest(
+        self, remote: Remote, job_id: str, receipt_path: Path
+    ) -> Dict[str, Any]:
+        """Returns the manifest for the step-0 finalize, from the remote or the local
+        receipt (requiring agreement if both exist)."""
+        try:
+            remote_bytes: Optional[bytes] = remote.get_manifest(job_id)
+        except FileNotFoundError:
+            remote_bytes = None
+        receipt_bytes = receipt_path.read_bytes() if receipt_path.exists() else None
+
+        if remote_bytes is not None and receipt_bytes is not None:
+            if remote_bytes != receipt_bytes:
+                raise RuntimeError(
+                    f"Remote manifest and local receipt for job {job_id} disagree. "
+                    "Manual intervention required."
+                )
+            chosen = remote_bytes
+        elif remote_bytes is not None:
+            chosen = remote_bytes
+        elif receipt_bytes is not None:
+            chosen = receipt_bytes
+        else:
+            raise RuntimeError(
+                f"jobs/{job_id} exists and is indexed remote, but neither the remote "
+                "manifest nor a local receipt is available to verify it. Manual "
+                "intervention required."
+            )
+        return r3.manifest.loads(chosen)
+
+    def _finalize_fetch(self, remote: Remote, job_id: str, receipt_path: Path) -> None:
+        """Deletes the remote copy, flips the index to local, drops the receipt."""
+        remote.delete_job(job_id)
         self._index.set_location(job_id, "local")
+        try:
+            receipt_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # receipt is cleanup debris; the local transition already committed
+
+    def _atomic_remove_local(self, job_id: str) -> None:
+        """Removes jobs/<id> via an atomic rename into .trash, then rmtree (design §5
+        step 8). The rename is instantaneous, so a complete jobs/<id> never lingers
+        after the index says remote."""
+        job_dir = self._storage.root / "jobs" / job_id
+        if not job_dir.exists():
+            return
+        trash_dir = self.path / ".trash"
+        trash_dir.mkdir(exist_ok=True)
+        target = trash_dir / f"{job_id}-{uuid.uuid4().hex}"
+        # A committed job dir is write-protected; renaming it to a different parent
+        # updates its ".." entry and so needs write permission on the dir itself.
+        os.chmod(job_dir, stat.S_IRWXU)
+        os.replace(job_dir, target)
+        _force_rmtree(target)
 
     def rebuild_index(self) -> None:
         """Rebuilds the job index.
@@ -518,3 +704,35 @@ class Repository:
             commit,
             source=dependency.source,
         )
+
+
+def _dir_snapshot(job_dir: Path) -> Dict[Path, Tuple[int, int]]:
+    """Returns {relative path: (size, mtime_ns)} for every file under job_dir.
+
+    Used both to enumerate the job's files and to detect mutation between the move
+    capture and the local deletion (the quiescence re-check, design §5 step 6).
+    """
+    snapshot: Dict[Path, Tuple[int, int]] = {}
+    for child in job_dir.rglob("*"):
+        if child.is_file():
+            stat_result = child.stat()
+            snapshot[child.relative_to(job_dir)] = (
+                stat_result.st_size,
+                stat_result.st_mtime_ns,
+            )
+    return snapshot
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Writes bytes to path via a temp file + os.replace (crash-safe)."""
+    tmp_path = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
+    tmp_path.write_bytes(data)
+    os.replace(tmp_path, path)
+
+
+def _force_rmtree(path: Path) -> None:
+    """Removes a directory tree, first making directories writable so entries in a
+    write-protected committed job can be unlinked."""
+    for root, _dirs, _files in os.walk(path):
+        os.chmod(root, stat.S_IRWXU)
+    shutil.rmtree(path)

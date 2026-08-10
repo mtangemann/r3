@@ -14,6 +14,7 @@ from executor import execute
 from moto import mock_aws
 from pytest_mock.plugin import MockerFixture
 
+import r3.repository
 from r3.job import (
     FilesUnavailableError,
     FindAllDependency,
@@ -24,6 +25,7 @@ from r3.job import (
     QueryAllDependency,
     QueryDependency,
 )
+from r3.remote import RemoteError
 from r3.repository import Repository
 
 DATA_PATH = Path(__file__).parent / "data"
@@ -1306,3 +1308,115 @@ def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
     assert row[0] == "test-id"
     assert row[1] is None
     conn.close()
+
+
+# --- move/fetch crash-safety ---
+
+
+def test_move_aborts_and_keeps_local_on_verify_failure(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If an uploaded object fails content verification, move aborts before
+    publishing the manifest and leaves the local job intact (design §5, F-05)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+
+    def corrupt_download(job_id: str, destination: Path) -> None:
+        destination.write_bytes(b"corrupted")
+
+    monkeypatch.setattr(remote, "download_archive", corrupt_download)
+
+    with pytest.raises(RemoteError):
+        repo.move(job.id, "archive")
+
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "local"
+    assert not remote.exists(job.id)  # manifest never published
+
+
+def test_fetch_aborts_and_leaves_no_local_on_corrupt_archive(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt archive on fetch raises and leaves no jobs/<id>; the index still
+    points at the remote (design §6, F-04)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = repo.remotes["archive"]
+
+    def corrupt_download(job_id: str, destination: Path) -> None:
+        destination.write_bytes(b"corrupted")
+
+    monkeypatch.setattr(remote, "download_archive", corrupt_download)
+
+    with pytest.raises(RemoteError):
+        repo.fetch(job.id)
+
+    assert not (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "archive"
+
+
+def test_fetch_is_idempotent_after_interruption(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interrupting fetch after the staging rename + remote delete but before the
+    index flip is recoverable: a re-run finalizes via the local receipt (design §6)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    real_set_location = repo._index.set_location
+    state = {"tripped": False}
+
+    def flaky_set_location(job_id: str, location: str) -> None:
+        if location == "local" and not state["tripped"]:
+            state["tripped"] = True
+            raise RuntimeError("simulated interruption before index flip")
+        real_set_location(job_id, location)
+
+    monkeypatch.setattr(repo._index, "set_location", flaky_set_location)
+
+    with pytest.raises(RuntimeError):
+        repo.fetch(job.id)
+
+    # Local restored, remote deleted, but the index flip did not land.
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "archive"
+
+    # Re-run finalizes from the receipt (remote manifest is already gone).
+    repo.fetch(job.id)
+    assert repo._index.get_location(job.id) == "local"
+    assert (repo.path / "jobs" / job.id).exists()
+
+
+def test_move_aborts_on_quiescence_violation(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the job directory changes between capture and the pre-delete re-check, move
+    aborts (keeping local) and removes the stale published manifest (design §5)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    real_snapshot = r3.repository._dir_snapshot
+    calls = {"n": 0}
+
+    def changing_snapshot(job_dir: Path) -> dict:
+        calls["n"] += 1
+        snapshot = dict(real_snapshot(job_dir))
+        if calls["n"] >= 2:  # the pre-delete re-check sees a change
+            snapshot[Path("__mutated__")] = (1, 1)
+        return snapshot
+
+    monkeypatch.setattr(r3.repository, "_dir_snapshot", changing_snapshot)
+
+    with pytest.raises(RuntimeError, match="changed during move"):
+        repo.move(job.id, "archive")
+
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "local"
+    assert not repo.remotes["archive"].exists(job.id)  # stale manifest removed

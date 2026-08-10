@@ -1,87 +1,106 @@
-"""Remote storage backends for R3 repositories."""
+"""Remote storage backends for R3 repositories.
 
-import os
-import tarfile
-import tempfile
+A remote stores each job as four objects under ``{prefix}{job_id}/`` (design §4):
+``data.tar.zst`` (the payload archive), ``r3.yaml`` and ``metadata.yaml`` (sidecars),
+and ``manifest.json`` (the integrity/listing record and completion marker). The
+``Remote`` interface is object-transport for those logical objects; the archive and
+manifest *content* logic lives in ``r3.archive`` / ``r3.manifest`` (the generic half
+of the seam). ``Repository`` orchestrates the crash-safe ``move``/``fetch`` state
+machines on top.
+"""
+
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
+
+from r3.manifest import SIDECAR_PATHS
+
+# Explicit multipart transfer configuration rather than evolving SDK defaults
+# (conservative concurrency for CEPH RGW; see the design's live-test guidance).
+MULTIPART_THRESHOLD = 8 * 1024 * 1024
+MULTIPART_CHUNKSIZE = 16 * 1024 * 1024
+MAX_CONCURRENCY = 4
+
+_MANIFEST_NAME = "manifest.json"
+_STAGING_MANIFEST_NAME = "manifest.json.staging"
+_ARCHIVE_NAME = "data.tar.zst"
+
+
+class RemoteError(Exception):
+    """Raised when a remote transport operation fails or cannot be verified."""
 
 
 class Remote(ABC):
-    """Abstract base class for remote storage backends."""
+    """Object transport for a job's remote representation (design §4)."""
 
     cache_file_list: bool = False
-    """Whether the remote's storage is immutable enough to cache the file list
-    in the index. Subclasses that store immutable copies (S3) override this
-    to True; subclasses pointing at potentially-mutable storage (live shared
-    filesystems) leave it False."""
+    """Whether the remote's storage is immutable enough to cache the job's file list
+    in the index. Immutable backends (S3) set this True; a live shared filesystem
+    would leave it False."""
 
     @abstractmethod
-    def upload(self, job_id: str, job_path: Path) -> None:
-        """Uploads a job directory to the remote.
-
-        Parameters:
-            job_id: The ID of the job to upload.
-            job_path: The local path of the job directory.
-        """
+    def put_archive(self, job_id: str, archive_path: Path) -> None:
+        """Uploads the payload archive for a job."""
 
     @abstractmethod
-    def download(self, job_id: str, destination: Path) -> None:
-        """Downloads a job from the remote.
+    def put_sidecar(self, job_id: str, name: str, data: bytes) -> None:
+        """Uploads a sidecar object (``r3.yaml`` or ``metadata.yaml``)."""
 
-        Parameters:
-            job_id: The ID of the job to download.
-            destination: The local directory to download the job to.
+    @abstractmethod
+    def publish_manifest(self, job_id: str, manifest_bytes: bytes) -> None:
+        """Publishes the manifest as the completion marker, verified-atomically."""
+
+    @abstractmethod
+    def delete_manifest(self, job_id: str) -> None:
+        """Deletes the manifest (invalidates the publication); idempotent."""
+
+    @abstractmethod
+    def get_manifest(self, job_id: str) -> bytes:
+        """Returns the raw manifest bytes.
 
         Raises:
-            FileNotFoundError: If the job does not exist on the remote.
+            FileNotFoundError: If the manifest does not exist.
         """
 
     @abstractmethod
-    def remove(self, job_id: str) -> None:
-        """Removes a job from the remote.
+    def download_archive(self, job_id: str, destination: Path) -> None:
+        """Downloads the payload archive to a local path."""
 
-        Parameters:
-            job_id: The ID of the job to remove.
-        """
+    @abstractmethod
+    def get_sidecar(self, job_id: str, name: str) -> bytes:
+        """Returns a sidecar object's bytes."""
+
+    @abstractmethod
+    def archive_size(self, job_id: str) -> Optional[int]:
+        """Returns the archive's byte size (HEAD), or None if it is missing."""
 
     @abstractmethod
     def exists(self, job_id: str) -> bool:
-        """Checks whether a job exists on the remote.
+        """Returns True iff the job is completely published (its manifest exists)."""
 
-        Parameters:
-            job_id: The ID of the job to check.
+    @abstractmethod
+    def delete_job(self, job_id: str) -> None:
+        """Deletes all of a job's objects (manifest first); idempotent."""
 
-        Returns:
-            True if the job exists, False otherwise.
-        """
+    @abstractmethod
+    def list_job_ids(self) -> Iterator[str]:
+        """Yields the job IDs that have a manifest under the remote's prefix."""
 
     @staticmethod
     def from_config(config: Dict[str, Any]) -> "Remote":
         """Creates a remote from a configuration dictionary.
 
-        Parameters:
-            config: The configuration dictionary. Must contain a "type" key that
-                specifies the remote type.
-
-        Returns:
-            The remote instance.
-
         Raises:
-            ValueError: If the remote type is unknown.
+            ValueError: If the remote type is unknown or the config is invalid.
         """
         remote_type = config.get("type")
-
-
         if remote_type == "s3":
             return S3Remote.from_config(config)
-
-        raise ValueError(f"Unknown remote type: {remote_type}")
+        raise ValueError(f"Unknown remote type: {remote_type!r}")
 
 
 class S3Remote(Remote):
-    """Remote storage backend using Amazon S3."""
+    """Remote storage backend using an S3-compatible object store (incl. CEPH RGW)."""
 
     cache_file_list: bool = True
 
@@ -91,50 +110,102 @@ class S3Remote(Remote):
         prefix: str = "",
         profile: Optional[str] = None,
         endpoint_url: Optional[str] = None,
-        archive_format: Optional[str] = None,
         archive_frame_size: int = 16 * 1024 * 1024,
         addressing_style: Optional[str] = None,
         request_checksum_calculation: Optional[str] = None,
+        response_checksum_validation: Optional[str] = None,
     ) -> None:
         """Initializes an S3 remote.
 
         Parameters:
             bucket: The S3 bucket name.
-            prefix: The prefix for all S3 keys. Defaults to "".
-            profile: The AWS profile name. Defaults to None.
-            endpoint_url: The S3 endpoint URL. Defaults to None.
-            archive_format: Optional archive format. If "tar.zst", jobs are
-                stored as a single seekable .tar.zst object instead of
-                individual files. Defaults to None (no archiving).
-            archive_frame_size: Uncompressed frame size in bytes for the
-                seekable zstd archive. Smaller frames give finer-grained
-                random access at a small compression cost. Defaults to
-                16 MiB.
-            addressing_style: S3 addressing style. One of "auto" (boto3's
-                default), "path", or "virtual". CEPH RGW typically requires
+            prefix: Key prefix for all objects. Defaults to "".
+            profile: AWS credential profile. Defaults to None.
+            endpoint_url: S3 endpoint URL (e.g. a CEPH RGW). Defaults to None.
+            archive_frame_size: Uncompressed seekable-zstd frame size. Defaults 16MiB.
+            addressing_style: "auto", "path", or "virtual". CEPH RGW usually needs
                 "path". Defaults to None (boto3 default).
-            request_checksum_calculation: One of "when_supported" (boto3's
-                default since 1.36) or "when_required" (pre-1.36 behavior).
-                Some non-AWS S3 implementations (older CEPH RGW builds)
-                reject PutObject requests carrying the integrity headers
-                that "when_supported" adds, returning a misleading
-                InvalidAccessKeyId. Set to "when_required" to suppress
-                those headers. Defaults to None (boto3 default).
+            request_checksum_calculation: "when_supported" or "when_required". CEPH
+                RGW builds that reject the integrity headers "when_supported" adds
+                (misleading InvalidAccessKeyId) need "when_required". Default None.
+            response_checksum_validation: "when_supported" or "when_required".
+                Exposed because GET is on the critical path (move/fetch verify by
+                re-download). Default None.
         """
         self.bucket = bucket
         self.prefix = prefix.rstrip("/") + "/" if prefix else ""
         self.profile = profile
         self.endpoint_url = endpoint_url
-        self.archive_format = archive_format
         self.archive_frame_size = archive_frame_size
         self.addressing_style = addressing_style
         self.request_checksum_calculation = request_checksum_calculation
+        self.response_checksum_validation = response_checksum_validation
 
         self._client_instance: Any = None
+        self._transfer_config_instance: Any = None
+
+    @staticmethod
+    def from_config(config: Dict[str, Any]) -> "S3Remote":
+        """Creates an S3 remote from a configuration dictionary.
+
+        Raises:
+            ValueError: If required fields are missing or a field is invalid.
+        """
+        if "bucket" not in config or not config["bucket"]:
+            raise ValueError("S3 remote config requires a non-empty 'bucket'.")
+
+        frame_size = config.get("archive_frame_size", 16 * 1024 * 1024)
+        if not isinstance(frame_size, int) or frame_size <= 0:
+            raise ValueError(
+                f"archive_frame_size must be a positive integer; got {frame_size!r}"
+            )
+
+        for field in ("addressing_style",):
+            value = config.get(field)
+            if value is not None and value not in ("auto", "path", "virtual"):
+                raise ValueError(
+                    f"{field} must be one of 'auto', 'path', 'virtual'; got {value!r}"
+                )
+        for field in ("request_checksum_calculation", "response_checksum_validation"):
+            value = config.get(field)
+            if value is not None and value not in ("when_supported", "when_required"):
+                raise ValueError(
+                    f"{field} must be 'when_supported' or 'when_required'; "
+                    f"got {value!r}"
+                )
+
+        return S3Remote(
+            bucket=config["bucket"],
+            prefix=config.get("prefix", ""),
+            profile=config.get("profile"),
+            endpoint_url=config.get("endpoint_url"),
+            archive_frame_size=frame_size,
+            addressing_style=config.get("addressing_style"),
+            request_checksum_calculation=config.get("request_checksum_calculation"),
+            response_checksum_validation=config.get("response_checksum_validation"),
+        )
+
+    # -- key scheme (design §4) --------------------------------------------------
+
+    def _job_prefix(self, job_id: str) -> str:
+        return f"{self.prefix}{job_id}/"
+
+    def _archive_key(self, job_id: str) -> str:
+        return f"{self.prefix}{job_id}/{_ARCHIVE_NAME}"
+
+    def _sidecar_key(self, job_id: str, name: str) -> str:
+        return f"{self.prefix}{job_id}/{name}"
+
+    def _manifest_key(self, job_id: str) -> str:
+        return f"{self.prefix}{job_id}/{_MANIFEST_NAME}"
+
+    def _staging_manifest_key(self, job_id: str) -> str:
+        return f"{self.prefix}{job_id}/{_STAGING_MANIFEST_NAME}"
+
+    # -- client ------------------------------------------------------------------
 
     @property
     def _client(self) -> Any:
-        """Returns the S3 client, creating it lazily on first access."""
         if self._client_instance is None:
             import boto3
             from botocore.config import Config
@@ -147,215 +218,148 @@ class S3Remote(Remote):
                 config_kwargs["request_checksum_calculation"] = (
                     self.request_checksum_calculation
                 )
+            if self.response_checksum_validation is not None:
+                config_kwargs["response_checksum_validation"] = (
+                    self.response_checksum_validation
+                )
             client_config = Config(**config_kwargs) if config_kwargs else None
             self._client_instance = session.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                config=client_config,
+                "s3", endpoint_url=self.endpoint_url, config=client_config
             )
         return self._client_instance
 
-    @staticmethod
-    def from_config(config: Dict[str, Any]) -> "S3Remote":
-        """Creates an S3 remote from a configuration dictionary.
+    @property
+    def _transfer_config(self) -> Any:
+        if self._transfer_config_instance is None:
+            from boto3.s3.transfer import TransferConfig
 
-        Parameters:
-            config: The configuration dictionary with keys: bucket, prefix, and
-                optionally profile, endpoint_url, archive_format, and
-                archive_frame_size.
+            self._transfer_config_instance = TransferConfig(
+                multipart_threshold=MULTIPART_THRESHOLD,
+                multipart_chunksize=MULTIPART_CHUNKSIZE,
+                max_concurrency=MAX_CONCURRENCY,
+            )
+        return self._transfer_config_instance
 
-        Returns:
-            The S3 remote instance.
+    # -- low-level object primitives ---------------------------------------------
+
+    def _head(self, key: str) -> Optional[int]:
+        try:
+            response = self._client.head_object(Bucket=self.bucket, Key=key)
+        except self._client.exceptions.ClientError as error:
+            if error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+        return response["ContentLength"]
+
+    def _get_bytes(self, key: str) -> bytes:
+        try:
+            response = self._client.get_object(Bucket=self.bucket, Key=key)
+        except self._client.exceptions.NoSuchKey as error:
+            raise FileNotFoundError(f"Object not found: {key}") from error
+        except self._client.exceptions.ClientError as error:
+            if error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+                raise FileNotFoundError(f"Object not found: {key}") from error
+            raise
+        data: bytes = response["Body"].read()
+        return data
+
+    def _delete(self, keys: list) -> None:
+        """Batch-deletes keys, inspecting the per-object Errors array.
+
+        Missing keys are not errors. Raises RemoteError on any reported failure.
         """
-        archive_format = config.get("archive_format")
-        if archive_format is not None and archive_format != "tar.zst":
-            raise ValueError(
-                f"Unsupported archive_format: {archive_format!r}. "
-                f"Only 'tar.zst' is supported."
-            )
+        if not keys:
+            return
+        response = self._client.delete_objects(
+            Bucket=self.bucket,
+            Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+        )
+        errors = response.get("Errors", [])
+        if errors:
+            raise RemoteError(f"Failed to delete objects: {errors}")
 
-        archive_frame_size = config.get("archive_frame_size", 16 * 1024 * 1024)
-        if not isinstance(archive_frame_size, int) or archive_frame_size <= 0:
-            raise ValueError(
-                f"archive_frame_size must be a positive integer; "
-                f"got {archive_frame_size!r}"
-            )
+    # -- Remote interface --------------------------------------------------------
 
-        addressing_style = config.get("addressing_style")
-        if addressing_style is not None and addressing_style not in (
-            "auto", "path", "virtual",
-        ):
-            raise ValueError(
-                f"addressing_style must be one of 'auto', 'path', 'virtual'; "
-                f"got {addressing_style!r}"
-            )
-
-        request_checksum_calculation = config.get("request_checksum_calculation")
-        if request_checksum_calculation is not None and (
-            request_checksum_calculation not in ("when_supported", "when_required")
-        ):
-            raise ValueError(
-                f"request_checksum_calculation must be one of 'when_supported', "
-                f"'when_required'; got {request_checksum_calculation!r}"
-            )
-
-        return S3Remote(
-            bucket=config["bucket"],
-            prefix=config.get("prefix", ""),
-            profile=config.get("profile"),
-            endpoint_url=config.get("endpoint_url"),
-            archive_format=archive_format,
-            archive_frame_size=archive_frame_size,
-            addressing_style=addressing_style,
-            request_checksum_calculation=request_checksum_calculation,
+    def put_archive(self, job_id: str, archive_path: Path) -> None:
+        self._client.upload_file(
+            str(archive_path),
+            self.bucket,
+            self._archive_key(job_id),
+            Config=self._transfer_config,
         )
 
-    def _job_prefix(self, job_id: str) -> str:
-        """Returns the S3 key prefix for a job."""
-        return f"{self.prefix}{job_id}/"
+    def put_sidecar(self, job_id: str, name: str, data: bytes) -> None:
+        self._client.put_object(
+            Bucket=self.bucket, Key=self._sidecar_key(job_id, name), Body=data
+        )
 
-    def _import_pyzstd(self) -> Any:
-        """Lazily imports pyzstd with a friendly error message."""
-        try:
-            import pyzstd
-        except ImportError as e:
-            raise ImportError(
-                "archive_format='tar.zst' requires pyzstd. "
-                "Install it with: pip install pyzstd"
-            ) from e
-        return pyzstd
+    def publish_manifest(self, job_id: str, manifest_bytes: bytes) -> None:
+        """Publishes the manifest via a verified staging-copy (design §5 step 5).
 
-    def _archive_key(self, job_id: str) -> str:
-        """Returns the S3 key for a job's archive."""
-        return f"{self.prefix}{job_id}.tar.zst"
-
-    def upload(self, job_id: str, job_path: Path) -> None:
-        """Uploads a job directory to S3.
-
-        With archive_format='tar.zst', creates a single seekable .tar.zst
-        object. Without archive_format, uploads individual files.
-
-        Parameters:
-            job_id: The ID of the job to upload.
-            job_path: The local path of the job directory.
+        PUT to a staging key, GET it back and byte-compare, then server-side copy the
+        verified staging object to the final manifest key (bound to its ETag), then
+        delete staging. The final key therefore only ever appears post-verification.
         """
-        if self.archive_format == "tar.zst":
-            pyzstd = self._import_pyzstd()
-            tmp = tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False)
-            tmp_path = Path(tmp.name)
-            tmp.close()
-            try:
-                with pyzstd.SeekableZstdFile(
-                    str(tmp_path),
-                    "w",
-                    max_frame_content_size=self.archive_frame_size,
-                ) as zfh:
-                    with tarfile.open(fileobj=zfh, mode="w|") as tar:
-                        tar.add(str(job_path), arcname=".")
-                self._client.upload_file(
-                    str(tmp_path), self.bucket, self._archive_key(job_id)
-                )
-            finally:
-                tmp_path.unlink(missing_ok=True)
-        else:
-            for root, _dirs, files in os.walk(job_path):
-                for filename in files:
-                    local_path = Path(root) / filename
-                    relative_path = local_path.relative_to(job_path)
-                    s3_key = f"{self._job_prefix(job_id)}{relative_path}"
-                    self._client.upload_file(str(local_path), self.bucket, s3_key)
+        staging_key = self._staging_manifest_key(job_id)
+        final_key = self._manifest_key(job_id)
 
-    def download(self, job_id: str, destination: Path) -> None:
-        """Downloads a job from S3.
+        put_response = self._client.put_object(
+            Bucket=self.bucket, Key=staging_key, Body=manifest_bytes
+        )
+        staging_etag = put_response["ETag"]
 
-        Parameters:
-            job_id: The ID of the job to download.
-            destination: The local directory to download the job to.
-
-        Raises:
-            FileNotFoundError: If the job does not exist on the remote.
-        """
-        if not self.exists(job_id):
-            raise FileNotFoundError(
-                f"Job not found on remote: {job_id}"
+        if self._get_bytes(staging_key) != manifest_bytes:
+            self._delete([staging_key])
+            raise RemoteError(
+                f"Staging manifest verification failed for job {job_id}."
             )
 
-        if self.archive_format == "tar.zst":
-            pyzstd = self._import_pyzstd()
-            tmp = tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False)
-            tmp_path = Path(tmp.name)
-            tmp.close()
-            try:
-                self._client.download_file(
-                    self.bucket, self._archive_key(job_id), str(tmp_path)
-                )
-                destination.mkdir(parents=True, exist_ok=True)
-                with pyzstd.SeekableZstdFile(str(tmp_path), "r") as zfh:
-                    with tarfile.open(fileobj=zfh, mode="r|") as tar:
-                        # tarfile resolves leading "./" in member names to
-                        # destination itself, so files land in destination/<rel>
-                        # not destination/./<rel>. No post-processing needed.
-                        tar.extractall(path=str(destination))
-            finally:
-                tmp_path.unlink(missing_ok=True)
-        else:
-            prefix = self._job_prefix(job_id)
-            paginator = self._client.get_paginator("list_objects_v2")
+        # Server-side copy from the GET-verified staging object, bound to its ETag.
+        self._client.copy_object(
+            Bucket=self.bucket,
+            Key=final_key,
+            CopySource={"Bucket": self.bucket, "Key": staging_key},
+            CopySourceIfMatch=staging_etag,
+        )
+        self._delete([staging_key])
 
-            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-                for obj in page.get("Contents", []):
-                    s3_key = obj["Key"]
-                    relative_path = s3_key[len(prefix):]
-                    local_path = destination / relative_path
+    def delete_manifest(self, job_id: str) -> None:
+        self._delete([self._manifest_key(job_id)])
 
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    self._client.download_file(self.bucket, s3_key, str(local_path))
+    def get_manifest(self, job_id: str) -> bytes:
+        return self._get_bytes(self._manifest_key(job_id))
 
-    def remove(self, job_id: str) -> None:
-        """Removes a job from S3.
+    def download_archive(self, job_id: str, destination: Path) -> None:
+        self._client.download_file(
+            self.bucket,
+            self._archive_key(job_id),
+            str(destination),
+            Config=self._transfer_config,
+        )
 
-        Parameters:
-            job_id: The ID of the job to remove.
-        """
-        if self.archive_format == "tar.zst":
-            self._client.delete_object(
-                Bucket=self.bucket, Key=self._archive_key(job_id)
-            )
-            return
+    def get_sidecar(self, job_id: str, name: str) -> bytes:
+        return self._get_bytes(self._sidecar_key(job_id, name))
 
-        prefix = self._job_prefix(job_id)
-        paginator = self._client.get_paginator("list_objects_v2")
-
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
-            contents = page.get("Contents", [])
-            if contents:
-                delete_objects = [{"Key": obj["Key"]} for obj in contents]
-                self._client.delete_objects(
-                    Bucket=self.bucket,
-                    Delete={"Objects": delete_objects},
-                )
+    def archive_size(self, job_id: str) -> Optional[int]:
+        return self._head(self._archive_key(job_id))
 
     def exists(self, job_id: str) -> bool:
-        """Checks whether a job exists on S3.
+        return self._head(self._manifest_key(job_id)) is not None
 
-        Parameters:
-            job_id: The ID of the job to check.
-
-        Returns:
-            True if the job exists, False otherwise.
-        """
-        if self.archive_format == "tar.zst":
-            try:
-                self._client.head_object(
-                    Bucket=self.bucket, Key=self._archive_key(job_id)
-                )
-                return True
-            except self._client.exceptions.ClientError as e:
-                if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                    return False
-                raise
-        prefix = self._job_prefix(job_id)
-        response = self._client.list_objects_v2(
-            Bucket=self.bucket, Prefix=prefix, MaxKeys=1
+    def delete_job(self, job_id: str) -> None:
+        # Manifest first (its own call) so an interrupted cleanup leaves the job
+        # "incomplete" (invisible to exists/rebuild), never manifest-without-payload.
+        self._delete([self._manifest_key(job_id)])
+        self._delete(
+            [self._archive_key(job_id), self._staging_manifest_key(job_id)]
+            + [self._sidecar_key(job_id, name) for name in SIDECAR_PATHS]
         )
-        return response.get("KeyCount", 0) > 0
+
+    def list_job_ids(self) -> Iterator[str]:
+        paginator = self._client.get_paginator("list_objects_v2")
+        suffix = f"/{_MANIFEST_NAME}"
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith(suffix):
+                    yield key[len(self.prefix) : -len(suffix)]
