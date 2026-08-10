@@ -1,114 +1,74 @@
 """Job index for efficient searching."""
 
 import json
+import os
 import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Set, Tuple
 
+import r3.manifest
+import r3.utils
 from r3.job import Job, JobDependency
 from r3.query import mongo_to_sql
 from r3.storage import Storage
+
+if TYPE_CHECKING:
+    from r3.remote import Remote
 
 
 class Index:
     """Job index for efficient searching."""
 
-    def __init__(self, storage: Storage) -> None:
+    def __init__(
+        self,
+        storage: Storage,
+        remotes: Optional[Mapping[str, "Remote"]] = None,
+    ) -> None:
         """Initializes the index.
 
         Parameters:
             storage: The storage with the jobs to index.
+            remotes: The configured remotes, keyed by name. Needed by `rebuild` to
+                reconstruct remote job rows from the bucket. Defaults to no remotes,
+                in which case `rebuild` reconstructs from local storage alone.
         """
         self.storage = storage
+        self.remotes: Mapping[str, "Remote"] = remotes if remotes is not None else {}
         self._path = storage.root / "index.sqlite"
 
         if not self._path.exists():
             self.rebuild()
 
     def rebuild(self) -> None:
-        """Rebuilds the index from the storage."""
-        # Preserve remote job rows before dropping the index, since remote jobs
-        # have no local files and cannot be reconstructed from storage alone.
-        remote_jobs: list[tuple[str, str, str, str, Optional[str]]] = []
-        remote_job_dependencies: list[tuple[str, str]] = []
+        """Rebuilds the index from the durable sources: local storage and remotes.
 
-        if self._path.exists():
-            with Transaction(self._path) as transaction:
-                transaction.execute(
-                    "SELECT id, timestamp, metadata, location, files FROM jobs"
-                    " WHERE location != 'local'"
+        Local jobs come from `Storage`; remote jobs are reconstructed from each
+        configured remote's bucket (the manifest, `r3.yaml`/`metadata.yaml` sidecars,
+        parsed exactly as a local job). The rebuild is atomic and fail-closed: it
+        builds a fresh `index.sqlite.new`, and only `os.replace`s it over the live
+        index once every job reconstructs and validates. Any failure — local
+        corruption, a missing/corrupt remote artifact, a manifest/key mismatch, a
+        duplicate job id across remotes, or a transient read error — aborts the whole
+        rebuild, leaving the previous index untouched and no partial file behind.
+        """
+        new_path = self.storage.root / "index.sqlite.new"
+        # A stale `.new` from an interrupted prior attempt is discarded, never
+        # appended to.
+        new_path.unlink(missing_ok=True)
+
+        try:
+            local_jobs, local_dependencies, local_ids = self._collect_local_jobs()
+            remote_jobs, remote_dependencies = self._collect_remote_jobs(local_ids)
+
+            with Transaction(new_path) as transaction:
+                _create_schema(transaction)
+                transaction.executemany(
+                    "INSERT INTO jobs (id, timestamp, metadata, location)"
+                    " VALUES (?, ?, ?, 'local')",
+                    local_jobs,
                 )
-                remote_jobs = transaction.fetchall()
-
-                if remote_jobs:
-                    remote_ids = [row[0] for row in remote_jobs]
-                    placeholders = ",".join("?" * len(remote_ids))
-                    # Only preserve edges where the child is remote — edges
-                    # with a local child get re-inserted by the local jobs
-                    # loop below (which reads dependencies from each local
-                    # job's r3.yaml). Including those here would duplicate
-                    # them.
-                    transaction.execute(
-                        f"SELECT child_id, parent_id FROM job_dependencies"
-                        f" WHERE child_id IN ({placeholders})",
-                        remote_ids,
-                    )
-                    remote_job_dependencies = transaction.fetchall()
-
-            self._path.unlink()
-
-        with Transaction(self._path) as transaction:
-            transaction.execute(
-                """
-                CREATE TABLE jobs (
-                    id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    metadata JSON NOT NULL,
-                    location TEXT NOT NULL DEFAULT 'local',
-                    files JSON
-                )
-                """
-            )
-            transaction.execute(
-                """
-                CREATE TABLE job_dependencies (
-                    child_id TEXT NOT NULL,
-                    parent_id TEXT NOT NULL,
-                    FOREIGN KEY (child_id) REFERENCES jobs (id),
-                    FOREIGN KEY (parent_id) REFERENCES jobs (id)
-                )
-                """
-            )
-
-            job_data = []
-            job_dependency_data: list[tuple[str, str]] = []
-
-            for job in self.storage.jobs():
-                assert job.id is not None
-                assert job.timestamp is not None
-
-                job_data.append(
-                    (job.id, job.timestamp.isoformat(), json.dumps(job.metadata))
-                )
-
-                job_dependency_data.extend(
-                    (job.id, dependency.job)
-                    for dependency in job.dependencies
-                    if isinstance(dependency, JobDependency)
-                )
-
-            transaction.executemany(
-                "INSERT INTO jobs (id, timestamp, metadata, location) VALUES (?, ?, ?, 'local')",  # noqa: E501
-                job_data,
-            )
-            transaction.executemany(
-                "INSERT INTO job_dependencies (child_id, parent_id) VALUES (?, ?)",
-                job_dependency_data,
-            )
-
-            # Re-insert remote jobs that were preserved before the rebuild.
-            if remote_jobs:
                 transaction.executemany(
                     "INSERT INTO jobs (id, timestamp, metadata, location, files)"
                     " VALUES (?, ?, ?, ?, ?)",
@@ -117,8 +77,187 @@ class Index:
                 transaction.executemany(
                     "INSERT INTO job_dependencies (child_id, parent_id)"
                     " VALUES (?, ?)",
-                    remote_job_dependencies,
+                    local_dependencies + remote_dependencies,
                 )
+            # The new database is committed and closed (the Transaction exited)
+            # before it is installed over the live index.
+            os.replace(new_path, self._path)
+        except BaseException:
+            # Keep the previous index authoritative and leave no partial file behind.
+            # Swallow a secondary unlink error so it cannot mask the original failure.
+            try:
+                new_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _collect_local_jobs(
+        self,
+    ) -> Tuple[List[Tuple[str, str, str]], List[Tuple[str, str]], Set[str]]:
+        """Collects local job rows and dependency edges from storage.
+
+        A `jobs/<id>` directory missing its `r3.yaml` is corruption (R3's own write
+        paths never produce one) and aborts the rebuild rather than being adopted as a
+        valid local job.
+        """
+        jobs: List[Tuple[str, str, str]] = []
+        dependencies: List[Tuple[str, str]] = []
+        ids: Set[str] = set()
+
+        for job in self.storage.jobs():
+            assert job.id is not None
+            if not (job.path / "r3.yaml").is_file():
+                raise RuntimeError(
+                    f"Corrupt local job {job.id}: jobs/{job.id} has no r3.yaml. "
+                    "Aborting rebuild without modifying the existing index."
+                )
+            assert job.timestamp is not None
+
+            jobs.append(
+                (job.id, job.timestamp.isoformat(), json.dumps(job.metadata))
+            )
+            dependencies.extend(
+                (job.id, dependency.job)
+                for dependency in job.dependencies
+                if isinstance(dependency, JobDependency)
+            )
+            ids.add(job.id)
+
+        return jobs, dependencies, ids
+
+    def _collect_remote_jobs(
+        self, local_ids: Set[str]
+    ) -> Tuple[List[Tuple[str, str, str, str, Optional[str]]], List[Tuple[str, str]]]:
+        """Collects remote job rows and dependency edges from every remote's bucket.
+
+        Local wins: a job id present locally is skipped and never enters the remote
+        candidate set, so a locally-present job's remote leftovers (e.g. after crashed
+        move attempts) are treated as ignorable — not as a conflict. Among the
+        remaining, non-local jobs, a duplicate id across two remotes has no meaning
+        under the one-location model and aborts with a diagnostic naming both remotes.
+        """
+        # job_id -> (remote_name, remote), collected across all remotes.
+        candidates: Dict[str, Tuple[str, "Remote"]] = {}
+        for remote_name, remote in self.remotes.items():
+            try:
+                job_ids = list(remote.list_job_ids())
+            except Exception as error:
+                raise RuntimeError(
+                    f"Failed to list jobs on remote '{remote_name}' during rebuild: "
+                    f"{error}. Aborting without modifying the existing index."
+                ) from error
+            for job_id in job_ids:
+                if job_id in local_ids:
+                    continue  # Local wins; the remote copy is an ignorable leftover.
+                if job_id in candidates:
+                    other_name = candidates[job_id][0]
+                    raise RuntimeError(
+                        f"Job {job_id} has a complete manifest on both remote "
+                        f"'{other_name}' and remote '{remote_name}'. A job can live "
+                        "on only one remote; resolve the conflict before rebuilding."
+                    )
+                candidates[job_id] = (remote_name, remote)
+
+        jobs: List[Tuple[str, str, str, str, Optional[str]]] = []
+        dependencies: List[Tuple[str, str]] = []
+        for job_id, (remote_name, remote) in candidates.items():
+            row, edges = self._reconstruct_remote_job(remote_name, remote, job_id)
+            jobs.append(row)
+            dependencies.extend(edges)
+
+        return jobs, dependencies
+
+    def _reconstruct_remote_job(
+        self, remote_name: str, remote: "Remote", job_id: str
+    ) -> Tuple[Tuple[str, str, str, str, Optional[str]], List[Tuple[str, str]]]:
+        """Reconstructs and validates a single remote job row from the bucket.
+
+        Structurally validates (without re-downloading the archive) that the manifest
+        is well-formed, its `job_id` matches the object key, the fetched sidecars match
+        the manifest's recorded sizes/hashes, and the archive exists with the recorded
+        size. The `r3.yaml`/`metadata.yaml` sidecars are parsed through the `Job` class
+        exactly as a local job, so timestamp/dependencies/metadata come from one code
+        path. Any failure raises `RuntimeError` naming the remote and job.
+        """
+        try:
+            manifest = r3.manifest.loads(remote.get_manifest(job_id))
+
+            if manifest["job_id"] != job_id:
+                raise RuntimeError(
+                    f"manifest job_id {manifest['job_id']!r} does not match the "
+                    f"object key job_id {job_id!r}."
+                )
+
+            entries = {entry["path"]: entry for entry in manifest["files"]}
+            sidecar_bytes: Dict[str, bytes] = {}
+            for name in r3.manifest.SIDECAR_PATHS:
+                if name not in entries:
+                    raise RuntimeError(f"manifest has no entry for sidecar {name!r}.")
+                entry = entries[name]
+                data = remote.get_sidecar(job_id, name)
+                sidecar_bytes[name] = data
+                if len(data) != entry["size"]:
+                    raise RuntimeError(
+                        f"sidecar {name!r} size {len(data)} != manifest "
+                        f"{entry['size']}."
+                    )
+                if r3.utils.hash_bytes(data) != entry["sha256"]:
+                    raise RuntimeError(
+                        f"sidecar {name!r} hash does not match manifest."
+                    )
+
+            archive_size = remote.archive_size(job_id)
+            if archive_size is None:
+                raise RuntimeError("archive data.tar.zst is missing.")
+            if archive_size != manifest["archive_size"]:
+                raise RuntimeError(
+                    f"archive size {archive_size} != manifest "
+                    f"{manifest['archive_size']}."
+                )
+
+            timestamp, metadata, edges = self._parse_remote_sidecars(
+                job_id, sidecar_bytes
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"Failed to rebuild job {job_id} from remote '{remote_name}': "
+                f"{error}. Aborting without modifying the existing index."
+            ) from error
+
+        files_json: Optional[str] = None
+        if remote.cache_file_list:
+            files_json = json.dumps(
+                [path.as_posix() for path in r3.manifest.file_paths(manifest)]
+            )
+
+        row = (job_id, timestamp, json.dumps(metadata), remote_name, files_json)
+        return row, edges
+
+    def _parse_remote_sidecars(
+        self, job_id: str, sidecar_bytes: Mapping[str, bytes]
+    ) -> Tuple[str, Dict[str, Any], List[Tuple[str, str]]]:
+        """Parses the sidecars through the `Job` class, the same path a local job uses.
+
+        Writes the fetched sidecars into a temporary directory and reads
+        timestamp/metadata/dependencies from a plain `Job` (no `remote_location`, so it
+        parses rather than projects), yielding a local-identical parse.
+        """
+        with tempfile.TemporaryDirectory(prefix="r3-rebuild-") as temp_dir:
+            temp_path = Path(temp_dir)
+            for name in r3.manifest.SIDECAR_PATHS:
+                (temp_path / name).write_bytes(sidecar_bytes[name])
+
+            job = Job(temp_path, job_id)
+            timestamp = job.timestamp
+            assert timestamp is not None
+            metadata = job.metadata
+            edges = [
+                (job_id, dependency.job)
+                for dependency in job.dependencies
+                if isinstance(dependency, JobDependency)
+            ]
+
+        return timestamp.isoformat(), metadata, edges
 
     def __len__(self) -> int:
         """Returns the number of jobs in the index."""
@@ -399,6 +538,31 @@ class Index:
                 })
 
         return set(dependents.values())
+
+
+def _create_schema(transaction: sqlite3.Cursor) -> None:
+    """Creates the `jobs` and `job_dependencies` tables in a fresh index database."""
+    transaction.execute(
+        """
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            metadata JSON NOT NULL,
+            location TEXT NOT NULL DEFAULT 'local',
+            files JSON
+        )
+        """
+    )
+    transaction.execute(
+        """
+        CREATE TABLE job_dependencies (
+            child_id TEXT NOT NULL,
+            parent_id TEXT NOT NULL,
+            FOREIGN KEY (child_id) REFERENCES jobs (id),
+            FOREIGN KEY (parent_id) REFERENCES jobs (id)
+        )
+        """
+    )
 
 
 class Transaction:

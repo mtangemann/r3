@@ -4,6 +4,7 @@ import filecmp
 import os
 import shutil
 import stat
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, Sequence, Union
@@ -15,8 +16,10 @@ from executor import execute
 from moto import mock_aws
 from pytest_mock.plugin import MockerFixture
 
+import r3.archive
 import r3.manifest
 import r3.repository
+import r3.utils
 from r3.job import (
     FilesUnavailableError,
     FindAllDependency,
@@ -1544,3 +1547,318 @@ def test_fetch_write_protects_restored_job(
     assert not is_writable(job_dir / "r3.yaml")
     assert not is_writable(job_dir / "run.py")
     assert is_writable(job_dir / "metadata.yaml")
+
+
+# --- atomic, bucket-backed, fail-closed rebuild (§7.2) ---
+
+
+def _publish_job_to_remote(remote, job_dir: Path, job_id: str) -> None:
+    """Uploads a complete remote representation (archive + sidecars + manifest) of the
+    committed job at ``job_dir`` under ``job_id`` WITHOUT deleting the local copy.
+
+    Mirrors ``move``'s capture/upload steps but skips the local deletion, so a test can
+    set up a job that exists both locally and on a remote (local-wins) or the same job
+    on two remotes (duplicate detection).
+    """
+    files = [
+        child.relative_to(job_dir)
+        for child in job_dir.rglob("*")
+        if child.is_file()
+    ]
+    member_paths = [p for p in files if p.as_posix() not in r3.manifest.SIDECAR_PATHS]
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="r3-test-publish-"))
+    try:
+        archive_path = temp_dir / "data.tar.zst"
+        result = r3.archive.create_archive(job_dir, member_paths, archive_path)
+        entries = list(result.entries)
+        sidecar_bytes = {}
+        for name in r3.manifest.SIDECAR_PATHS:
+            data = (job_dir / name).read_bytes()
+            sidecar_bytes[name] = data
+            entries.append(
+                r3.manifest.FileEntry(name, len(data), r3.utils.hash_bytes(data))
+            )
+        manifest = r3.manifest.build_manifest(
+            job_id, entries, result.sha256, result.size
+        )
+        remote.put_archive(job_id, archive_path)
+        for name, data in sidecar_bytes.items():
+            remote.put_sidecar(job_id, name, data)
+        remote.publish_manifest(job_id, r3.manifest.dumps(manifest))
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _assert_index_unchanged(repo: Repository, before: bytes) -> None:
+    """Asserts the fail-closed guarantee: old index bytes intact, no stale ``.new``."""
+    assert (repo.path / "index.sqlite").read_bytes() == before
+    assert not (repo.path / "index.sqlite.new").exists()
+
+
+@pytest.fixture
+def repository_with_two_remotes(tmp_path: Path) -> Generator[Repository, None, None]:
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket=BUCKET)
+
+        repo = Repository.init(tmp_path / "repository")
+        config_path = repo.path / "r3.yaml"
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        config["remotes"] = {
+            "archive": {"type": "s3", "bucket": BUCKET, "prefix": "r3/a/"},
+            "archive2": {"type": "s3", "bucket": BUCKET, "prefix": "r3/b/"},
+        }
+
+        with open(config_path, "w") as f:
+            yaml.dump(config, f)
+
+        repo = Repository(repo.path)
+        yield repo
+
+
+def test_rebuild_restores_remote_job_from_bucket(
+    repository_with_remote: Repository,
+) -> None:
+    """After deleting the index, rebuild reconstructs a remote row from the bucket
+    alone: metadata, timestamp, dependencies, file list, and location."""
+    import sqlite3
+
+    repo = repository_with_remote
+
+    base = repo.commit(get_dummy_job("base"))
+    assert base.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    dependency = JobDependency("base_out", base.id)
+    child._dependencies = [dependency]
+    child._config["dependencies"] = [dependency.to_config()]
+    child = repo.commit(child)
+    assert child.id is not None
+
+    expected_timestamp = repo.get_job_by_id(child.id).timestamp
+    expected_files = sorted(repo.get_job_by_id(child.id).files.keys())
+
+    repo.move(child.id, "archive")
+
+    # Drop the index entirely: the remote row can only come back from the bucket.
+    (repo.path / "index.sqlite").unlink()
+    repo.rebuild_index()
+
+    results = repo.find({"tags": "child"})
+    assert len(results) == 1
+    assert results[0].id == child.id
+
+    assert repo._index.get_location(child.id) == "archive"
+    assert repo._index.get_location(base.id) == "local"
+
+    assert repo.get_job_by_id(child.id).timestamp == expected_timestamp
+    assert "child" in repo.get_job_by_id(child.id).metadata["tags"]
+
+    cached_files = repo._index.get_file_list(child.id)
+    assert cached_files is not None
+    assert sorted(cached_files) == expected_files
+
+    conn = sqlite3.connect(str(repo.path / "index.sqlite"))
+    try:
+        edges = conn.execute(
+            "SELECT child_id, parent_id FROM job_dependencies"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert (child.id, base.id) in edges
+
+
+def test_rebuild_local_wins_over_complete_remote(
+    repository_with_remote: Repository,
+) -> None:
+    """A job present both as jobs/<id> and as a complete remote manifest is indexed
+    once, as local, with no duplicate/IntegrityError."""
+    repo = repository_with_remote
+
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    _publish_job_to_remote(
+        repo.remotes["archive"], repo.path / "jobs" / job.id, job.id
+    )
+
+    (repo.path / "index.sqlite").unlink()
+    repo.rebuild_index()
+
+    assert len(repo._index) == 1
+    assert repo._index.get_location(job.id) == "local"
+
+
+def test_rebuild_fails_closed_on_corrupt_sidecar(
+    repository_with_remote: Repository,
+) -> None:
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    repo.remotes["archive"].put_sidecar(job.id, "r3.yaml", b"corrupted!")
+
+    with pytest.raises(RuntimeError):
+        repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_missing_sidecar(
+    repository_with_remote: Repository,
+) -> None:
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    client = boto3.client("s3", region_name="us-east-1")
+    client.delete_object(Bucket=BUCKET, Key=f"{PREFIX}{job.id}/metadata.yaml")
+
+    with pytest.raises(RuntimeError):
+        repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_manifest_schema_violation(
+    repository_with_remote: Repository,
+) -> None:
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET, Key=f"{PREFIX}{job.id}/manifest.json", Body=b"not-json"
+    )
+
+    with pytest.raises(RuntimeError):
+        repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_job_id_key_mismatch(
+    repository_with_remote: Repository,
+) -> None:
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    manifest = r3.manifest.loads(repo.remotes["archive"].get_manifest(job.id))
+    manifest["job_id"] = "a-different-job-id"
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET,
+        Key=f"{PREFIX}{job.id}/manifest.json",
+        Body=r3.manifest.dumps(manifest),
+    )
+
+    with pytest.raises(RuntimeError):
+        repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_missing_archive(
+    repository_with_remote: Repository,
+) -> None:
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    client = boto3.client("s3", region_name="us-east-1")
+    client.delete_object(Bucket=BUCKET, Key=f"{PREFIX}{job.id}/data.tar.zst")
+
+    with pytest.raises(RuntimeError):
+        repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_local_job_missing_r3yaml(
+    repository: Repository,
+) -> None:
+    repo = repository
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    corrupt = repo.path / "jobs" / "corrupt-job"
+    corrupt.mkdir()
+    (corrupt / "metadata.yaml").write_text("tags: [corrupt]\n")
+
+    with pytest.raises(RuntimeError):
+        repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_local_wins_over_duplicate_remote_leftovers(
+    repository_with_two_remotes: Repository,
+) -> None:
+    """Local-wins preempts the cross-remote duplicate check.
+
+    A job present locally with leftover complete manifests on two remotes (two move
+    attempts each crashing in the publish -> index-flip window) is the exact mess
+    rebuild is meant to recover from: the local copy is authoritative and the remote
+    leftovers are ignorable, so rebuild must succeed rather than abort on a spurious
+    duplicate.
+    """
+    repo = repository_with_two_remotes
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+
+    _publish_job_to_remote(repo.remotes["archive"], job_dir, job.id)
+    _publish_job_to_remote(repo.remotes["archive2"], job_dir, job.id)
+
+    (repo.path / "index.sqlite").unlink()
+    repo.rebuild_index()
+
+    assert len(repo._index) == 1
+    assert repo._index.get_location(job.id) == "local"
+
+
+def test_rebuild_rejects_duplicate_job_id_across_remotes(
+    repository_with_two_remotes: Repository,
+) -> None:
+    repo = repository_with_two_remotes
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+
+    _publish_job_to_remote(repo.remotes["archive"], job_dir, job.id)
+    _publish_job_to_remote(repo.remotes["archive2"], job_dir, job.id)
+    # Remove the local copy so this is purely a cross-remote duplicate.
+    repo.remove(job)
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    message = str(excinfo.value)
+    assert "archive" in message and "archive2" in message
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_discards_stale_index_new(repository: Repository) -> None:
+    repo = repository
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    stale = repo.path / "index.sqlite.new"
+    stale.write_bytes(b"garbage-not-a-database")
+
+    repo.rebuild_index()
+
+    assert not stale.exists()
+    assert len(repo._index) == 1
+    assert repo._index.get_location(job.id) == "local"

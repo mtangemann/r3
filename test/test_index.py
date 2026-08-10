@@ -431,6 +431,41 @@ def test_index_find_remote_job_without_file_list(
         _ = found_job.files
 
 
+def test_index_rebuild_local_only_without_remotes(storage_with_jobs: Storage):
+    """With no configured remotes, rebuild reconstructs from local storage alone and
+    leaves no stale ``index.sqlite.new`` behind."""
+    index = Index(storage_with_jobs)
+    index.rebuild()
+    assert len(index) == 3
+    assert not (storage_with_jobs.root / "index.sqlite.new").exists()
+
+
+def test_index_rebuild_does_not_read_remotes_for_local_jobs(storage: Storage):
+    """A remote is only consulted for its listing; local jobs never trigger a read.
+
+    With one job that is local, rebuild must enumerate the remote's job ids (to find
+    remote-only jobs) but must not fetch any per-job artifact from it.
+    """
+    import unittest.mock as mock
+
+    remote = mock.MagicMock()
+    remote.list_job_ids.return_value = iter([])
+
+    # Construction auto-rebuilds against empty storage; reset before the real check.
+    index = Index(storage, {"archive": remote})
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    remote.reset_mock()
+    remote.list_job_ids.return_value = iter([])
+    index.rebuild()
+
+    assert len(index) == 1
+    remote.list_job_ids.assert_called_once()
+    remote.get_manifest.assert_not_called()
+    remote.get_sidecar.assert_not_called()
+    remote.archive_size.assert_not_called()
+
+
 def test_transaction_rolls_back_on_exception(storage: Storage):
     """A Transaction that raises mid-block must not persist its writes (F-08)."""
     index = Index(storage)

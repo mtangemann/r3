@@ -70,11 +70,15 @@ class Repository:
                 )
 
         self._storage = Storage(self.path)
-        self._index = Index(self._storage)
 
+        # Remotes must be built before the index: Index.rebuild reconstructs remote
+        # rows from the bucket, and Index.__init__ auto-rebuilds when the index file
+        # is missing — so the remotes have to be available at construction time.
         self._remotes: Dict[str, Remote] = {}
         for name, remote_config in config.get("remotes", {}).items():
             self._remotes[name] = Remote.from_config(remote_config)
+
+        self._index = Index(self._storage, self._remotes)
 
     @property
     def remotes(self) -> Dict[str, "Remote"]:
