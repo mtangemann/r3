@@ -44,43 +44,81 @@ def write_version(repository_path: Path, new_version: str) -> None:
     os.replace(tmp_path, config_path)
 
 
-def backup_index(repository_path: Path) -> Optional[Path]:
+def _is_valid_sqlite_database(path: Path) -> bool:
+    """Returns whether ``path`` is a readable, well-formed SQLite database.
+
+    Used before advising an operator to restore a leftover backup: a truncated or
+    partial ``.bak`` (e.g. from a crash mid-copy) must never be recommended as a
+    replacement for a good index.
+    """
+    try:
+        connection = sqlite3.connect(str(path))
+        try:
+            result = connection.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError:
+        return False
+    return result is not None and result[0] == "ok"
+
+
+def backup_index(repository_path: Path, from_version: str) -> Optional[Path]:
     """Copies ``index.sqlite`` aside before a destructive step.
 
-    Refuses to overwrite an existing ``index.sqlite.bak``: a prior interrupted
-    migration's *good* backup must not be clobbered by a now-partial index. Returns
-    the backup path, or ``None`` if there is no index to back up.
+    The backup name is stamped with ``from_version`` (the version being migrated
+    *from*) so backups from different migrations never collide and a restore always
+    targets the right era. The copy is written to a temp sibling and then atomically
+    moved into place, so a crash mid-copy can never leave a usable-looking, truncated
+    backup. Returns the backup path, or ``None`` if there is no index to back up.
+
+    Refuses to overwrite an existing backup for this same version: it belongs to an
+    interrupted run of *this* migration and its *good* copy must not be clobbered by a
+    now-partial index. If that backup is a valid database the refusal offers to
+    restore it (a same-era, safe move); if it is not, the refusal instead advises
+    inspecting/removing it and never recommends restoring it over the index.
 
     Raises:
-        MigrationError: If a backup already exists (manual recovery required).
+        MigrationError: If a backup for this version already exists (manual recovery
+            required).
     """
     index_path = repository_path / "index.sqlite"
     if not index_path.exists():
         return None
 
-    backup_path = repository_path / "index.sqlite.bak"
+    backup_path = repository_path / f"index.sqlite.{from_version}.bak"
     if backup_path.exists():
+        if _is_valid_sqlite_database(backup_path):
+            raise MigrationError(
+                f"A backup from an interrupted run of this migration already exists "
+                f"at {backup_path}. Confirm index.sqlite is intact and remove the "
+                f"backup, or restore it (mv {backup_path.name} index.sqlite), then "
+                f"re-run."
+            )
         raise MigrationError(
-            f"A backup already exists at {backup_path}. A previous migration may have "
-            f"been interrupted. Confirm index.sqlite is intact and remove the backup, "
-            f"or restore it (mv index.sqlite.bak index.sqlite), then re-run."
+            f"A backup at {backup_path} exists but is not a valid SQLite database; a "
+            f"previous migration may have crashed while copying it. Do NOT copy it "
+            f"over index.sqlite. Inspect index.sqlite, and once you have confirmed it "
+            f"is intact, remove {backup_path.name} and re-run."
         )
 
-    shutil.copy2(index_path, backup_path)
+    tmp_path = backup_path.with_name(backup_path.name + ".tmp")
+    shutil.copy2(index_path, tmp_path)
+    os.replace(tmp_path, backup_path)
     return backup_path
 
 
-def restore_index(repository_path: Path) -> None:
-    """Restores ``index.sqlite`` from its ``.bak`` (used to roll back on failure)."""
-    backup_path = repository_path / "index.sqlite.bak"
-    if backup_path.exists():
+def restore_index(repository_path: Path, backup_path: Optional[Path]) -> None:
+    """Restores ``index.sqlite`` from ``backup_path`` (used to roll back on failure).
+
+    A ``None`` backup path (there was no index to back up) is a no-op.
+    """
+    if backup_path is not None and backup_path.exists():
         os.replace(backup_path, repository_path / "index.sqlite")
 
 
-def discard_backup(repository_path: Path) -> None:
-    """Removes the ``.bak`` after a successful migration."""
-    backup_path = repository_path / "index.sqlite.bak"
-    if backup_path.exists():
+def discard_backup(backup_path: Optional[Path]) -> None:
+    """Removes ``backup_path`` after a successful migration (``None`` is a no-op)."""
+    if backup_path is not None and backup_path.exists():
         backup_path.unlink()
 
 
@@ -114,12 +152,17 @@ def apply_column_migration(
     Backs up the index, applies ``alter_sql``, then writes ``new_version`` last. On
     any failure the index is restored from the backup and the error re-raised, so the
     repository is left at its old version with a usable index.
+
+    The from-version is read up front so the backup is stamped with it and the same
+    path can be handed to restore/discard — by discard time ``write_version`` has
+    already advanced the version, so it can no longer be re-derived.
     """
-    backup_index(repository_path)
+    from_version = read_version(repository_path)
+    backup_path = backup_index(repository_path, from_version)
     try:
         add_index_column(repository_path, alter_sql)
         write_version(repository_path, new_version)
     except BaseException:
-        restore_index(repository_path)
+        restore_index(repository_path, backup_path)
         raise
-    discard_backup(repository_path)
+    discard_backup(backup_path)
