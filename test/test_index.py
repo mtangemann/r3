@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import pytest
 import yaml
 
-from r3.index import Index
+from r3.index import Index, Transaction
 from r3.job import FilesUnavailableError, Job, JobDependency
 from r3.storage import Storage
 
@@ -429,3 +429,30 @@ def test_index_find_remote_job_without_file_list(
     assert index.get_file_list(job.id) is None
     with pytest.raises(FilesUnavailableError):
         _ = found_job.files
+
+
+def test_transaction_rolls_back_on_exception(storage: Storage):
+    """A Transaction that raises mid-block must not persist its writes (F-08)."""
+    index = Index(storage)
+    path = storage.root / "index.sqlite"
+    del index
+
+    class _BoomError(Exception):
+        pass
+
+    # A write followed by a raise inside the block: the exception must
+    # propagate and the write must not be committed.
+    with pytest.raises(_BoomError):
+        with Transaction(path) as cursor:
+            cursor.execute(
+                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                ("rollback-sentinel", "2021-01-01T00:00:00", "{}"),
+            )
+            raise _BoomError
+
+    # A fresh connection must not see the rolled-back row.
+    with Transaction(path) as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?", ("rollback-sentinel",)
+        )
+        assert cursor.fetchone()[0] == 0
