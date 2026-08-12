@@ -541,7 +541,7 @@ class Index:
 
         with Transaction(self._path) as transaction:
             transaction.execute(
-                """SELECT child_id, timestamp, metadata
+                """SELECT child_id, timestamp, metadata, location
                 FROM job_dependencies JOIN jobs ON child_id = id
                 WHERE parent_id = ?""",
                 (job.id,)
@@ -554,8 +554,23 @@ class Index:
             job_id = result[0]
             cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
+            row_location = result[3]
 
-            dependent_job = self.storage.get(job_id, cached_timestamp, cached_metadata)
+            # Use the same location-aware projection as get()/find(): a remote
+            # dependent has no local directory, so build a metadata-only projection
+            # instead of calling storage.get (which would raise FileNotFoundError).
+            if row_location == "local":
+                dependent_job = self._local_job(
+                    job_id, cached_timestamp, cached_metadata
+                )
+            else:
+                dependent_job = Job(
+                    self.storage.root / "jobs" / job_id,
+                    job_id,
+                    cached_timestamp=cached_timestamp,
+                    cached_metadata=cached_metadata,
+                    remote_location=row_location,
+                )
             dependents[dependent_job.id] = dependent_job
 
             if recursive:

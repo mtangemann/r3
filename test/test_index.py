@@ -265,6 +265,59 @@ def test_index_find_dependents_uses_cached_metadata(storage_with_jobs: Storage):
     assert all(dependent.uses_cached_metadata() for dependent in dependents)
 
 
+def test_index_find_dependents_returns_remote_child_as_projection(storage: Storage):
+    """A remote dependent is returned as a metadata-only projection, not a
+    FileNotFoundError from ``storage.get`` on the missing local directory (F-06)."""
+    index = Index(storage)
+
+    parent = get_dummy_job("base")
+    parent.metadata["tags"] = ["parent"]
+    parent = storage.add(parent)
+    index.add(parent)
+    assert parent.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    child._config["dependencies"] = [JobDependency("parent", parent.id).to_config()]
+    child = storage.add(child)
+    index.add(child)
+    assert child.id is not None
+
+    # Simulate a move of the child: flip it to remote and drop its local files.
+    index.set_location(child.id, "archive")
+    storage.remove(child)
+
+    dependents = index.find_dependents(parent)
+    assert {dependent.id for dependent in dependents} == {child.id}
+    dependent = next(iter(dependents))
+    # The remote child is a projection: its files raise until it is fetched.
+    with pytest.raises(FilesUnavailableError):
+        _ = dependent.files
+
+
+def test_index_find_dependents_still_returns_local_child(storage: Storage):
+    """A local dependent must still resolve to a real local Job with files (F-06)."""
+    index = Index(storage)
+
+    parent = get_dummy_job("base")
+    parent.metadata["tags"] = ["parent"]
+    parent = storage.add(parent)
+    index.add(parent)
+    assert parent.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    child._config["dependencies"] = [JobDependency("parent", parent.id).to_config()]
+    child = storage.add(child)
+    index.add(child)
+    assert child.id is not None
+
+    dependents = index.find_dependents(parent)
+    assert {dependent.id for dependent in dependents} == {child.id}
+    # A local dependent exposes its files without raising.
+    assert Path("run.py") in next(iter(dependents)).files
+
+
 def test_index_add_defaults_location_to_local(storage: Storage):
     index = Index(storage)
     job = get_dummy_job("base")

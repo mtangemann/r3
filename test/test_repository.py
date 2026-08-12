@@ -1223,6 +1223,112 @@ def test_contains_dependency_on_unknown_job_returns_false(
     assert dep not in repository_with_remote
 
 
+def _commit_job_with_subdir(repository: Repository, tmp_path: Path) -> Job:
+    """Commits a job whose files include ``results/model.pt`` beneath a directory."""
+    src = tmp_path / "job-with-subdir"
+    src.mkdir()
+    (src / "r3.yaml").write_text("dependencies: []\n")
+    (src / "metadata.yaml").write_text("tags: [subdir]\n")
+    (src / "results").mkdir()
+    (src / "results" / "model.pt").write_text("weights")
+    return repository.commit(Job(src))
+
+
+def test_contains_remote_directory_dependency_matches_entry_beneath(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """A directory source on a remote job is contained when the cached file list has
+    any entry beneath it, not only on an exact match (F-06)."""
+    job = _commit_job_with_subdir(repository_with_remote, tmp_path)
+    assert job.id is not None
+    repository_with_remote.move(job.id, "archive")
+
+    # A directory with a file beneath it is present, even though no entry equals it.
+    assert JobDependency("dest", job.id, "results") in repository_with_remote
+    # The file itself is present on an exact match.
+    assert JobDependency("dest", job.id, "results/model.pt") in repository_with_remote
+    # A sibling directory that has no entry beneath it is absent.
+    assert JobDependency("dest", job.id, "other") not in repository_with_remote
+
+
+def test_contains_remote_output_dependency_present_for_empty_output(
+    repository_with_remote: Repository,
+) -> None:
+    """A source='output' dependency stays satisfied after a move even when the job's
+    output/ is empty and leaves no manifest entry (the output/ convention) (F-06)."""
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+    repository_with_remote.move(job.id, "archive")
+
+    # Local files are gone; resolution goes through the cached file list, which has
+    # no entry beneath output/ (the committed output/ is empty).
+    assert not (repository_with_remote.path / "jobs" / job.id).exists()
+    cached = repository_with_remote._index.get_file_list(job.id)
+    assert cached is not None
+    assert not any(Path("output") in entry.parents for entry in cached)
+
+    assert JobDependency("dest", job.id, "output") in repository_with_remote
+    # The default source is present for a non-empty file list.
+    assert JobDependency("dest", job.id, ".") in repository_with_remote
+
+
+def test_move_parent_with_remote_child_succeeds(
+    repository_with_remote: Repository,
+) -> None:
+    """Moving a parent whose child was already moved to a remote succeeds: the remote
+    child is projected by find_dependents rather than raising FileNotFoundError (F-06).
+    """
+    repo = repository_with_remote
+
+    parent = get_dummy_job("base")
+    parent.metadata["tags"] = ["parent"]
+    parent = repo.commit(parent)
+    assert parent.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    dependency = JobDependency("parent", parent.id)
+    child._dependencies = [dependency]
+    child._config["dependencies"] = [dependency.to_config()]
+    child = repo.commit(child)
+    assert child.id is not None
+
+    repo.move(child.id, "archive")
+    dependents = repo.move(parent.id, "archive")
+
+    assert child.id in {dependent.id for dependent in dependents}
+    assert repo._index.get_location(parent.id) == "archive"
+
+
+def test_remove_parent_with_remote_child_reports_dependents(
+    repository_with_remote: Repository,
+) -> None:
+    """Removing a parent whose child is remote reaches the proper dependents-exist
+    refusal (ValueError listing the child) instead of raising FileNotFoundError from
+    find_dependents (F-06)."""
+    repo = repository_with_remote
+
+    parent = get_dummy_job("base")
+    parent.metadata["tags"] = ["parent"]
+    parent = repo.commit(parent)
+    assert parent.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    dependency = JobDependency("parent", parent.id)
+    child._dependencies = [dependency]
+    child._config["dependencies"] = [dependency.to_config()]
+    child = repo.commit(child)
+    assert child.id is not None
+
+    repo.move(child.id, "archive")
+
+    with pytest.raises(ValueError, match="depend on it") as exc_info:
+        repo.remove(parent)
+    assert child.id in str(exc_info.value)
+
+
 def test_repository_re_move_after_fetch_preserves_file_list(
     repository_with_remote: Repository,
 ) -> None:

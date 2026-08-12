@@ -140,9 +140,19 @@ class Repository:
                 return True
             file_list = self._index.get_file_list(resolved_item.job)
             if file_list is not None:
-                if resolved_item.source == Path("."):
+                source = resolved_item.source
+                if source == Path("."):
                     return len(file_list) > 0
-                return resolved_item.source in file_list
+                # Empty directories leave no manifest entry, but every complete job
+                # conceptually has an output/. Treat an output/ source as present so
+                # it cannot spuriously flip a job's dependency-satisfied state.
+                if source == Path("output"):
+                    return True
+                # A directory source is present if any entry lies beneath it; a file
+                # source is present on an exact match.
+                return any(
+                    entry == source or source in entry.parents for entry in file_list
+                )
             return False
 
         if isinstance(resolved_item, GitDependency):
