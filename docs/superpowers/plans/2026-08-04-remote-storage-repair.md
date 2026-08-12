@@ -77,6 +77,32 @@ review), each with regression tests:
 All green (320 tests, 3 live-S3 skipped, ruff, mypy). Commits `8df8b07..5e1eb83`
 (not pushed). Next: Phase E.
 
+**Execution status (2026-08-11) — Phase E done (index durability, F-08/F-09/F-10).**
+Executed subagent-driven (per task: failing test → fix → independent spec review →
+independent code-quality review, plus a final holistic review over the phase). E1:
+`Transaction.__exit__` now rolls back on exception, commits only on clean exit, always
+closes. E2: `Index.rebuild` rewritten to be atomic (build `index.sqlite.new` +
+`os.replace` after validation; stale `.new` discarded; secondary cleanup can't mask
+the primary error), bucket-backed (remote rows reconstructed from each remote's
+manifests/sidecars via the same `Job` parse path a local job uses; file list from the
+manifest, gated on `cache_file_list` to match `move`), and fail-closed (structural
+validation incl. `job_id==key`, sidecar size+sha256, and a HEAD `archive_size` check;
+any read/validation error or local `r3.yaml`-corruption aborts the whole rebuild and
+leaves the old index intact); all remotes are collected before dedup; local-wins
+preempts the cross-remote-duplicate abort (a locally-present job's remote leftovers are
+ignored), while a genuine non-local duplicate across two remotes still aborts with a
+diagnostic. `Index.__init__` gained `remotes` (default `{}`) and `Repository.__init__`
+was reordered to build remotes before `Index` (which auto-rebuilds on a missing index).
+E3: `get`/`find` raise a clear corruption error for a `local` row whose directory or
+`r3.yaml` is missing (shared `_local_job` helper), instead of a bare `FileNotFoundError`.
+E4: `find` was already lazy about the `files` column (and F-11's bound `location`
+param landed in the A–D remediation), so E4 is a regression test pinning the laziness.
+All green (339 tests, 3 live-S3 skipped, ruff, mypy). Commits `e8083d1..1db022e`
+(not pushed). Deferred-to-F note surfaced by review: `find_dependents` still routes a
+corrupt/remote dependent through `storage.get` (F2/§10). Next: Phase F (dependencies &
+checkout), G (CLI + remove protocol + remote check), H (failure tests, docs, live-S3,
+final gate).
+
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
 (sidecar), `manifest.json` (integrity/listing; published last via verified
