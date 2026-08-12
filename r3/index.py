@@ -311,6 +311,33 @@ class Index:
                 ]
             )
 
+    def _local_job(
+        self,
+        job_id: str,
+        cached_timestamp: datetime,
+        cached_metadata: Dict[str, Any],
+    ) -> Job:
+        """Builds a `Job` for a row indexed as local, verifying it is not corrupt.
+
+        A local row must be backed by a well-formed `jobs/<id>` directory. Two
+        corruption cases are caught here, at the index boundary, and reported clearly
+        rather than surfacing as a bare `FileNotFoundError` or a confusing later
+        failure: the directory is missing entirely, or it exists but has no `r3.yaml`
+        (R3's own write paths never produce the latter).
+        """
+        job_dir = self.storage.root / "jobs" / job_id
+        if not job_dir.is_dir():
+            raise RuntimeError(
+                f"Job {job_id} is indexed as local but its directory jobs/{job_id} "
+                "is missing (corruption). Manual intervention required."
+            )
+        if not (job_dir / "r3.yaml").is_file():
+            raise RuntimeError(
+                f"Job {job_id} is indexed as local but jobs/{job_id} has no r3.yaml "
+                "(corruption). Manual intervention required."
+            )
+        return self.storage.get(job_id, cached_timestamp, cached_metadata)
+
     def get(self, job_id: str) -> Job:
         """Gets a job by ID.
 
@@ -335,7 +362,7 @@ class Index:
         location = result[2]
 
         if location == "local":
-            return self.storage.get(job_id, cached_timestamp, cached_metadata)
+            return self._local_job(job_id, cached_timestamp, cached_metadata)
 
         # Remote job: return a metadata-only projection. Its files/hash/dependencies
         # raise FilesUnavailableError until the job is fetched.
@@ -484,7 +511,7 @@ class Index:
             row_location = result[3]
             if row_location == "local":
                 jobs.append(
-                    self.storage.get(job_id, cached_timestamp, cached_metadata)
+                    self._local_job(job_id, cached_timestamp, cached_metadata)
                 )
             else:
                 # Remote job: metadata-only projection.

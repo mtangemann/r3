@@ -1,6 +1,7 @@
 """Unit tests for `r3.index`."""
 
 import datetime
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -464,6 +465,112 @@ def test_index_rebuild_does_not_read_remotes_for_local_jobs(storage: Storage):
     remote.get_manifest.assert_not_called()
     remote.get_sidecar.assert_not_called()
     remote.archive_size.assert_not_called()
+
+
+def test_index_get_local_missing_directory_raises_corruption(storage: Storage):
+    """A local row whose jobs/<id> directory is gone surfaces as a clear corruption
+    error rather than a bare FileNotFoundError (F-09)."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    # Drop the local directory while the index still records the row as local.
+    storage.remove(job)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.get(job_id)
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "director" in message.lower()
+
+
+def test_index_get_local_missing_r3yaml_raises_corruption(storage: Storage):
+    """A local row whose directory exists but lacks r3.yaml surfaces as a clear
+    corruption error instead of a confusing later failure (F-09)."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    job_dir = storage.root / "jobs" / job_id
+    os.chmod(job_dir, 0o755)  # committed jobs are read-only; allow the unlink
+    (job_dir / "r3.yaml").unlink()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.get(job_id)
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "r3.yaml" in message
+
+
+def test_index_find_local_missing_directory_raises_corruption(storage: Storage):
+    """find() raises the clear corruption error for a local row with no directory,
+    rather than silently skipping or failing confusingly later (F-09)."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    storage.remove(job)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.find({})
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "director" in message.lower()
+
+
+def test_index_find_local_missing_r3yaml_raises_corruption(storage: Storage):
+    """find() raises the clear corruption error for a local row whose directory lacks
+    r3.yaml (F-09)."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    job_dir = storage.root / "jobs" / job_id
+    os.chmod(job_dir, 0o755)
+    (job_dir / "r3.yaml").unlink()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.find({})
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "r3.yaml" in message
+
+
+def test_index_find_does_not_deserialize_files_column(storage: Storage):
+    """find() selects only id/timestamp/metadata/location and loads the file list
+    lazily, so non-JSON garbage in the files column must not make find raise (F-10)."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    # Write non-deserializable JSON directly into the files column.
+    with Transaction(storage.root / "index.sqlite") as cursor:
+        cursor.execute(
+            "UPDATE jobs SET files = ? WHERE id = ?",
+            ("not valid json {[", job.id),
+        )
+
+    results = index.find({})
+    assert len(results) == 1
+    assert results[0].id == job.id
 
 
 def test_transaction_rolls_back_on_exception(storage: Storage):
