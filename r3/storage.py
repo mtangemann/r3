@@ -252,6 +252,8 @@ class Storage:
         """
         destination = destination / dependency.destination
 
+        # Repository._preflight_check_dependency mirrors this descend rule to check
+        # locality ahead of checkout; update it in lockstep if this condition changes.
         if str(dependency.source) == "." and dependency.recursive_checkout:
             job = self.get(dependency.job)
             self.checkout_job(job, destination)

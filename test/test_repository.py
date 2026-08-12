@@ -1039,6 +1039,134 @@ def test_checkout_raises_for_archived_dependency(
         repository_with_remote.checkout(main_job, tmp_path / "checkout")
 
 
+def test_checkout_remote_projection_raises_clean_error(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """A remote top-level job must be refused with the clean 'fetch first' ValueError,
+    not the raw FilesUnavailableError that resolve() would raise if it touched the
+    projection's dependencies first. The projection is obtained from the index (as a
+    real user would after the local files are gone), not from a stale local handle.
+    """
+    job = get_dummy_job("base")
+    job = repository_with_remote.commit(job)
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    projection = repository_with_remote.get_job_by_id(job.id)
+
+    dest = tmp_path / "checkout"
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch") as exc_info:
+        repository_with_remote.checkout(projection, dest)
+    assert job.id in str(exc_info.value)
+    assert not dest.exists()
+
+
+def test_checkout_refuses_transitive_archived_dependency(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """A grand-dependency reachable through a recursive edge must be checked. With
+    J --recursive--> A --> B and B archived, checkout(J) is refused naming B, and no
+    partial checkout is left behind (the destination is never created).
+    """
+    repo = repository_with_remote
+
+    grand = get_dummy_job("base")
+    grand.metadata["tags"] = ["grand"]
+    grand = repo.commit(grand)
+    assert grand.id is not None
+
+    middle = get_dummy_job("base")
+    edge_mg = JobDependency("grand", grand.id)  # recursive (source=".") by default
+    middle._dependencies = [edge_mg]
+    middle._config["dependencies"] = [edge_mg.to_config()]
+    middle = repo.commit(middle)
+    assert middle.id is not None
+
+    top = get_dummy_job("base")
+    edge_tm = JobDependency("middle", middle.id)  # recursive: descend into middle
+    top._dependencies = [edge_tm]
+    top._config["dependencies"] = [edge_tm.to_config()]
+    top = repo.commit(top)
+    assert top.id is not None
+
+    repo.move(grand.id, "archive")
+
+    dest = tmp_path / "checkout"
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch") as exc_info:
+        repo.checkout(top, dest)
+    assert grand.id in str(exc_info.value)
+    assert not dest.exists()
+
+
+def test_checkout_allows_remote_grand_dependency_behind_nonrecursive_edge(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """A remote grand-dependency behind a non-recursive edge must NOT block checkout:
+    Storage only symlinks jobs/<middle> and never dereferences middle's own deps, so a
+    remote B behind J --non-recursive--> A --> B is irrelevant. The checkout succeeds.
+    """
+    repo = repository_with_remote
+
+    grand = get_dummy_job("base")
+    grand.metadata["tags"] = ["grand"]
+    grand = repo.commit(grand)
+    assert grand.id is not None
+
+    middle = get_dummy_job("base")
+    edge_mg = JobDependency("grand", grand.id)  # recursive middle --> grand
+    middle._dependencies = [edge_mg]
+    middle._config["dependencies"] = [edge_mg.to_config()]
+    middle = repo.commit(middle)
+    assert middle.id is not None
+
+    top = get_dummy_job("base")
+    # Non-recursive edge: Storage symlinks jobs/middle and never touches middle's deps.
+    edge_tm = JobDependency("middle", middle.id, recursive_checkout=False)
+    top._dependencies = [edge_tm]
+    top._config["dependencies"] = [edge_tm.to_config()]
+    top = repo.commit(top)
+    assert top.id is not None
+
+    repo.move(grand.id, "archive")
+
+    dest = tmp_path / "checkout"
+    repo.checkout(top, dest)
+
+    assert dest.exists()
+    assert (dest / "middle").is_symlink()
+
+
+def test_checkout_refuses_nonrecursive_edge_to_remote_dependency(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """A non-recursive edge whose own target job is remote must be refused: Storage
+    would otherwise create a dangling symlink into jobs/<archived>. checkout(J) is
+    refused naming A, and nothing is written.
+    """
+    repo = repository_with_remote
+
+    dep_job = get_dummy_job("base")
+    dep_job.metadata["tags"] = ["nrdep"]
+    dep_job = repo.commit(dep_job)
+    assert dep_job.id is not None
+
+    top = get_dummy_job("base")
+    edge = JobDependency("data", dep_job.id, "run.py", recursive_checkout=False)
+    top._dependencies = [edge]
+    top._config["dependencies"] = [edge.to_config()]
+    top = repo.commit(top)
+    assert top.id is not None
+
+    repo.move(dep_job.id, "archive")
+
+    dest = tmp_path / "checkout"
+    with pytest.raises(ValueError, match="archived.*archive.*r3 fetch") as exc_info:
+        repo.checkout(top, dest)
+    assert dep_job.id in str(exc_info.value)
+    assert not dest.exists()
+
+
 def test_rebuild_index_preserves_remote_jobs(
     repository_with_remote: Repository,
 ) -> None:

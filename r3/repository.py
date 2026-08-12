@@ -210,24 +210,73 @@ class Repository:
         Raises:
             ValueError: If the job or any of its dependencies is archived.
         """
+        # A remote top-level job is a metadata-only projection whose `.dependencies`
+        # raises FilesUnavailableError. resolve() would touch it and surface that raw
+        # error, so refuse an archived top-level job first, before resolve() runs.
+        if isinstance(item, Job) and item.id is not None:
+            self._check_job_is_local(item.id)
+
         resolved_item = self.resolve(item)
+
+        # Confirm every job the checkout will dereference or symlink is local BEFORE
+        # any side effect, so a refusal never leaves a partial checkout behind.
+        self._preflight_checkout_locality(resolved_item)
 
         if isinstance(resolved_item, list):
             for dependency in resolved_item:
-                if isinstance(dependency, JobDependency):
-                    self._check_job_is_local(dependency.job)
                 self._storage.checkout(dependency, path)
-        elif isinstance(resolved_item, Job):
-            assert resolved_item.id is not None
-            self._check_job_is_local(resolved_item.id)
-            for dep in resolved_item.dependencies:
-                if isinstance(dep, JobDependency):
-                    self._check_job_is_local(dep.job)
-            self._storage.checkout(resolved_item, path)
         else:
-            if isinstance(resolved_item, JobDependency):
-                self._check_job_is_local(resolved_item.job)
             self._storage.checkout(resolved_item, path)
+
+    def _preflight_checkout_locality(
+        self, resolved_item: Union[Job, Dependency, List[JobDependency]]
+    ) -> None:
+        """Confirms every job the checkout will reference is stored locally.
+
+        This mirrors the traversal of ``Storage.checkout_job`` /
+        ``checkout_job_dependency`` and must be kept in sync with them: a job must be
+        local exactly when the checkout touches ``jobs/<id>/…`` — the top-level job,
+        and the target job of every ``JobDependency`` edge (a recursive edge
+        dereferences it via ``Storage.get``; a non-recursive edge symlinks
+        ``jobs/<job>/<source>`` into it — either way an archived target breaks). Only a
+        recursive edge (``source == "."`` and ``recursive_checkout``) descends into the
+        target's own dependencies, because only then does ``checkout_job`` recurse. A
+        job's ``.dependencies`` is read only after that job is confirmed local, so a
+        remote projection never trips ``FilesUnavailableError`` here.
+        """
+        visited: Set[str] = set()
+        if isinstance(resolved_item, list):
+            for dependency in resolved_item:
+                self._preflight_check_dependency(dependency, visited)
+        elif isinstance(resolved_item, Job):
+            # The top-level job was already confirmed local in `checkout`.
+            self._preflight_check_job(resolved_item, visited)
+        else:
+            self._preflight_check_dependency(resolved_item, visited)
+
+    def _preflight_check_job(self, job: Job, visited: Set[str]) -> None:
+        """Walks the dependencies of a job being checked out. `job` must already be
+        confirmed local; its `.dependencies` is only read here. `visited` guards
+        against dependency cycles."""
+        assert job.id is not None
+        if job.id in visited:
+            return
+        visited.add(job.id)
+        for dependency in job.dependencies:
+            self._preflight_check_dependency(dependency, visited)
+
+    def _preflight_check_dependency(
+        self, dependency: Dependency, visited: Set[str]
+    ) -> None:
+        """Checks a single dependency edge for the checkout preflight."""
+        if not isinstance(dependency, JobDependency):
+            return  # Git dependencies reference the git store, not jobs/<id>.
+
+        self._check_job_is_local(dependency.job)
+
+        if str(dependency.source) == "." and dependency.recursive_checkout:
+            child = self._index.get(dependency.job)
+            self._preflight_check_job(child, visited)
 
     def _check_job_is_local(self, job_id: str) -> None:
         """Raises ValueError if a job is not stored locally."""
