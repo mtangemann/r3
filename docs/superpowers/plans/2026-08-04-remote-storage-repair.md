@@ -103,6 +103,29 @@ corrupt/remote dependent through `storage.get` (F2/§10). Next: Phase F (depende
 checkout), G (CLI + remove protocol + remote check), H (failure tests, docs, live-S3,
 final gate).
 
+**Execution status (2026-08-14) — Phase F done (dependencies & checkout, F-06).**
+Subagent-driven (per task: failing test → fix → spec review → code-quality review;
+final holistic review over the phase). F1: `Repository.__contains__` directory-dependency
+semantics — a directory `source` is present if the cached file list has any entry
+beneath it (not exact match), `source="."` iff the list is non-empty, and the
+conventional `output/` is treated present for any complete remote job (so an empty moved
+`output/` never flips the dependency to unsatisfied). F2: `Index.find_dependents` builds
+each dependent via the location-aware projection (`_local_job` for local rows, a remote
+projection otherwise) instead of `storage.get`, so it no longer raises for a remote
+child and `move`/`remove` of a parent with a remote child work (remove reaches the clean
+dependents-exist refusal instead of crashing). F3: `Repository.checkout` gained a
+locality preflight that mirrors `Storage.checkout_job`'s actual traversal — the
+top-level job is checked before `resolve()` (a remote projection gets the clean
+"archived; fetch first" error, not a raw `FilesUnavailableError`); every `JobDependency`
+edge requires `dep.job` local; it descends into a target's own deps only for a recursive
+`source="." && recursive_checkout` edge (so it neither over-refuses a remote grand-dep
+behind a non-recursive edge nor misses a non-recursive edge to a remote job); it is
+cycle-guarded and runs fully before any checkout side effect (no partial checkout on
+refusal). A reciprocal drift comment was added at `Storage.checkout_job_dependency`.
+All green (349 tests, 3 live-S3 skipped, ruff, mypy). Commits `7fe0a9a..43abd47`
+(not pushed). Next: Phase G (CLI + `remove` protocol + `remote check` + config
+validation + `edit` refuses remote), then H (failure tests, docs, live-S3, final gate).
+
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
 (sidecar), `manifest.json` (integrity/listing; published last via verified
