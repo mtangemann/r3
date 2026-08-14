@@ -401,15 +401,23 @@ class Index:
         """
         if job.id is None:
             raise ValueError("Job ID is not set")
+        self.remove_by_id(job.id)
 
+    def remove_by_id(self, job_id: str) -> None:
+        """Removes a job's row and its dependency edges by id.
+
+        Deleting by id lets ``Repository.remove`` finish a crash-interrupted removal
+        from the raw index row alone, without materializing a `Job` (which would raise
+        when the row says local but the directory is already gone).
+        """
         with Transaction(self._path) as transaction:
             transaction.execute(
                 "DELETE FROM jobs WHERE id = ?",
-                (job.id,)
+                (job_id,)
             )
             transaction.execute(
                 "DELETE FROM job_dependencies WHERE child_id = ? OR parent_id = ?",
-                (job.id, job.id)
+                (job_id, job_id)
             )
 
     def set_location(self, job_id: str, location: str) -> None:

@@ -287,22 +287,55 @@ class Repository:
                 f"Run `r3 fetch {job_id}` to retrieve it first."
             )
 
-    def remove(self, job: Job) -> None:
-        """Removes a job from the repository.
+    def remove(self, job: Union[Job, str]) -> None:
+        """Removes a job from the repository, everywhere it is stored.
+
+        This runs an ordered, idempotent, retryable protocol so the job ends up gone
+        from every configured remote, from local storage, from the local recovery
+        artifacts, and from the index — and re-running after a crash completes whatever
+        a partial run left behind. It operates from the job id and direct probes rather
+        than from a materialized `Job`, so it works even in the retry state where the
+        index row still says local but `jobs/<id>` is already gone.
 
         Parameters:
-            job: The job to remove.
+            job: The job, or its id, to remove.
 
         Raises:
-            ValueError: If the job is not contained in this repository or if other jobs
-                depend on it.
+            ValueError: If the job exists nowhere, or if other jobs depend on it.
+            RemoteError: If a remote reports a per-object deletion failure. The index
+                row is left intact so the removal can be retried.
         """
-        if job not in self:
-            raise ValueError("Job is not contained in this repository.")
+        job_id = job.id if isinstance(job, Job) else job
+        if job_id is None:
+            raise ValueError("Cannot remove a job without an id.")
 
-        assert job.id is not None
+        try:
+            self._index.get_location(job_id)
+            indexed = True
+        except KeyError:
+            indexed = False
 
-        dependents = self._index.find_dependents(job)
+        job_dir = self._storage.root / "jobs" / job_id
+
+        # Preconditions. The job must exist somewhere: an index row, a local
+        # directory, or ANY object under its prefix on some remote. Probing for any
+        # object (not just the manifest) is what keeps a retry recoverable after a
+        # delete_job that removed the manifest but crashed before the rest: the
+        # leftover archive/sidecars still count as "exists", so the retry completes the
+        # sweep instead of refusing. A row short-circuits the remote probes, so the
+        # common (indexed) path makes no network calls.
+        if (
+            not indexed
+            and not job_dir.exists()
+            and not any(
+                remote.has_objects(job_id) for remote in self._remotes.values()
+            )
+        ):
+            raise ValueError(f"Job {job_id} is not contained in this repository.")
+
+        # Referenced-by guard, ahead of any deletion. The reference only carries the
+        # id; find_dependents never touches the (possibly absent) directory.
+        dependents = self._index.find_dependents(Job(job_dir, job_id))
         if len(dependents) > 0:
             dependent_ids = sorted(str(dependent.id) for dependent in dependents)
             raise ValueError(
@@ -310,8 +343,43 @@ class Repository:
                 + "\n".join(f"  - {dependent_id}" for dependent_id in dependent_ids)
             )
 
-        self._storage.remove(job)
-        self._index.remove(job)
+        # 1. Remote sweep across EVERY configured remote, unconditionally. A single
+        #    remote can hold leftovers the index does not point at (e.g. after a
+        #    fetch-interruption -> rebuild -> move-to-another-remote sequence); a
+        #    single-owner remote model makes sweeping all of them safe. delete_job
+        #    inspects its per-object Errors, so a reported failure aborts here, before
+        #    the index row is touched, leaving the removal retryable.
+        for remote in self._remotes.values():
+            remote.delete_job(job_id)
+
+        # 2. Local deletion, then the job's local recovery artifacts.
+        self._atomic_remove_local(job_id)
+        self._remove_recovery_artifacts(job_id)
+
+        # 3. Drop the index row and its dependency edges.
+        self._index.remove_by_id(job_id)
+
+    def _remove_recovery_artifacts(self, job_id: str) -> None:
+        """Removes the job's fetch/move recovery artifacts so "gone everywhere" holds.
+
+        Covers the fetch receipt, any leftover fetch staging directories, and any
+        trash entries (including one an interrupted `_force_rmtree` of this very
+        removal may have left, so a retry that finds no live `jobs/<id>` still finishes
+        the cleanup). Every target is tolerated absent."""
+        fetch_dir = self.path / ".fetch"
+        trash_dir = self.path / ".trash"
+        # In .fetch this job owns `<id>.receipt.json`, its `.tmp-<uuid>` write sibling
+        # (a crash before the atomic os.replace leaves it), and `<id>-<uuid>` staging
+        # dirs — so match `<id>*`. In .trash it owns only `<id>-<uuid>` entries. Job
+        # ids are fixed-length, so no id is a prefix of another and `<id>*` cannot
+        # bleed into a different job's artifacts.
+        for entry in list(fetch_dir.glob(f"{job_id}*")) + list(
+            trash_dir.glob(f"{job_id}-*")
+        ):
+            if entry.is_dir():
+                _force_rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
 
     def __getitem__(self, key: str) -> Job:
         """Get jobs by their ID with the repository[job_id] syntax."""

@@ -83,6 +83,15 @@ class Remote(ABC):
         """Returns True iff the job is completely published (its manifest exists)."""
 
     @abstractmethod
+    def has_objects(self, job_id: str) -> bool:
+        """Returns True iff ANY object exists under the job's prefix.
+
+        Unlike `exists` (manifest-only), this also detects a partially-deleted job
+        whose manifest is already gone but whose archive/sidecars/staging remain, so a
+        crash-interrupted removal is still recognized and can be retried to completion.
+        """
+
+    @abstractmethod
     def delete_job(self, job_id: str) -> None:
         """Deletes all of a job's objects (manifest first); idempotent."""
 
@@ -394,6 +403,12 @@ class S3Remote(Remote):
 
     def exists(self, job_id: str) -> bool:
         return self._head(self._manifest_key(job_id)) is not None
+
+    def has_objects(self, job_id: str) -> bool:
+        response = self._client.list_objects_v2(
+            Bucket=self.bucket, Prefix=self._job_prefix(job_id), MaxKeys=1
+        )
+        return bool(response.get("Contents"))
 
     def delete_job(self, job_id: str) -> None:
         # Manifest first (its own call) so an interrupted cleanup leaves the job

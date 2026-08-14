@@ -30,7 +30,7 @@ from r3.job import (
     QueryAllDependency,
     QueryDependency,
 )
-from r3.remote import RemoteError
+from r3.remote import RemoteError, S3Remote
 from r3.repository import Repository
 
 DATA_PATH = Path(__file__).parent / "data"
@@ -2072,8 +2072,9 @@ def test_rebuild_rejects_duplicate_job_id_across_remotes(
 
     _publish_job_to_remote(repo.remotes["archive"], job_dir, job.id)
     _publish_job_to_remote(repo.remotes["archive2"], job_dir, job.id)
-    # Remove the local copy so this is purely a cross-remote duplicate.
-    repo.remove(job)
+    # Delete only the local copy so this is purely a cross-remote duplicate. `remove`
+    # would now sweep both remotes too (F-03), which would defeat the setup.
+    repo._atomic_remove_local(job.id)
 
     before = (repo.path / "index.sqlite").read_bytes()
     with pytest.raises(RuntimeError) as excinfo:
@@ -2096,3 +2097,212 @@ def test_rebuild_discards_stale_index_new(repository: Repository) -> None:
     assert not stale.exists()
     assert len(repo._index) == 1
     assert repo._index.get_location(job.id) == "local"
+
+
+# --- remove: gone-everywhere protocol (F-03) ---
+
+
+def _job_object_keys(job_id: str, prefix: str) -> list:
+    """Returns the keys under a job's prefix on the shared moto bucket."""
+    client = boto3.client("s3", region_name="us-east-1")
+    response = client.list_objects_v2(Bucket=BUCKET, Prefix=f"{prefix}{job_id}/")
+    return [obj["Key"] for obj in response.get("Contents", [])]
+
+
+def test_remove_deletes_remote_job(repository_with_remote: Repository) -> None:
+    """Removing a job archived on a remote deletes its manifest, archive, both
+    sidecars, and any staging object; previously remove refused a remote job."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = repo.remotes["archive"]
+    assert remote.exists(job.id)
+
+    # Passing the (now stale) Job handle exercises the Union[Job, str] Job branch.
+    repo.remove(job)
+
+    assert not remote.exists(job.id)
+    assert _job_object_keys(job.id, PREFIX) == []
+    with pytest.raises(KeyError):
+        repo._index.get_location(job.id)
+
+
+def test_remove_local_job_sweeps_all_remotes_and_artifacts(
+    repository_with_two_remotes: Repository,
+) -> None:
+    """Removing a local job sweeps EVERY configured remote (not just the indexed one)
+    and every local recovery artifact for the job: the receipt, staging dirs, and
+    trash dirs."""
+    repo = repository_with_two_remotes
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+
+    # A leftover, complete remote copy on a *second* remote (e.g. after a
+    # fetch-interruption -> rebuild -> move-to-another-remote sequence).
+    _publish_job_to_remote(repo.remotes["archive2"], job_dir, job.id)
+    assert repo.remotes["archive2"].exists(job.id)
+
+    # Plant the three recovery-artifact kinds for this job.
+    fetch_dir = repo.path / ".fetch"
+    trash_dir = repo.path / ".trash"
+    fetch_dir.mkdir(exist_ok=True)
+    trash_dir.mkdir(exist_ok=True)
+    receipt = fetch_dir / f"{job.id}.receipt.json"
+    receipt.write_bytes(b"{}")
+    # A crash between the atomic receipt write and its os.replace leaves this temp
+    # sibling behind; the sweep must catch it too.
+    receipt_tmp = fetch_dir / f"{job.id}.receipt.json.tmp-deadbeef"
+    receipt_tmp.write_bytes(b"{}")
+    staging = fetch_dir / f"{job.id}-deadbeef"
+    staging.mkdir()
+    (staging / "payload").write_text("stale")
+    trashed = trash_dir / f"{job.id}-cafebabe"
+    trashed.mkdir()
+    (trashed / "payload").write_text("stale")
+
+    repo.remove(job.id)
+
+    assert not job_dir.exists()
+    assert not repo.remotes["archive"].exists(job.id)
+    assert not repo.remotes["archive2"].exists(job.id)
+    assert not receipt.exists()
+    assert not receipt_tmp.exists()
+    assert not staging.exists()
+    assert not trashed.exists()
+    with pytest.raises(KeyError):
+        repo._index.get_location(job.id)
+
+
+def test_remove_retry_from_raw_row_tolerates_missing_local_dir(
+    repository_with_remote: Repository,
+) -> None:
+    """A retry from the raw job id completes even when the index row still says
+    ``local`` but ``jobs/<id>`` is already gone (the post-step-2 crash state). It must
+    not route through Job materialization, which raises the I7 corruption error."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+
+    # Fabricate the post-step-2 state: local files gone, index still says local.
+    repo._atomic_remove_local(job.id)
+    assert not job_dir.exists()
+    assert repo._index.get_location(job.id) == "local"
+
+    # Also fabricate the trash entry an interrupted _force_rmtree of THIS remove would
+    # leave, so the retry finishes its cleanup too.
+    trash_dir = repo.path / ".trash"
+    trash_dir.mkdir(exist_ok=True)
+    leftover = trash_dir / f"{job.id}-interrupted"
+    leftover.mkdir()
+    (leftover / "payload").write_text("stale")
+
+    repo.remove(job.id)
+
+    with pytest.raises(KeyError):
+        repo._index.get_location(job.id)
+    assert not leftover.exists()
+
+
+def test_remove_refuses_with_dependent_and_deletes_nothing(
+    repository_with_remote: Repository,
+) -> None:
+    """A live dependent makes remove refuse with the dependents-list ValueError before
+    any deletion: the referenced-by guard runs ahead of the remote sweep."""
+    repo = repository_with_remote
+    base = repo.commit(get_dummy_job("base"))
+    assert base.id is not None
+    job_dir = repo.path / "jobs" / base.id
+
+    # A leftover remote copy that WOULD be swept if the guard did not run first.
+    _publish_job_to_remote(repo.remotes["archive"], job_dir, base.id)
+    assert repo.remotes["archive"].exists(base.id)
+
+    dependent = get_dummy_job("base")
+    dependency = JobDependency("destination", base.id)
+    dependent._dependencies = [dependency]
+    dependent._config["dependencies"] = [dependency.to_config()]
+    dependent = repo.commit(dependent)
+    assert dependent.id is not None
+
+    with pytest.raises(ValueError, match="depend on it") as exc_info:
+        repo.remove(base.id)
+    assert dependent.id in str(exc_info.value)
+
+    # Nothing deleted: local dir, index row, and remote copy all intact.
+    assert job_dir.exists()
+    assert repo._index.get_location(base.id) == "local"
+    assert repo.remotes["archive"].exists(base.id)
+
+
+def test_remove_aborts_on_remote_delete_error_and_keeps_index_row(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A per-object failure reported in delete_objects' Errors array raises RemoteError
+    and aborts remove before the index row is touched (step 3 is never reached)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+    assert isinstance(remote, S3Remote)
+
+    def failing_delete_objects(**kwargs: object) -> dict:
+        return {"Errors": [{"Key": "k", "Code": "AccessDenied", "Message": "no"}]}
+
+    monkeypatch.setattr(remote._client, "delete_objects", failing_delete_objects)
+
+    with pytest.raises(RemoteError):
+        repo.remove(job.id)
+
+    assert repo._index.get_location(job.id) == "local"
+    assert (repo.path / "jobs" / job.id).exists()
+
+
+def test_remove_retry_completes_remote_only_job_after_mid_sweep_failure(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote-only, un-indexed job whose first delete_job crashed after deleting the
+    manifest (archive/sidecars/staging still present) must still be removable on retry.
+    The existence probe must detect ANY object under the prefix, not just the manifest,
+    so the retry completes the sweep instead of refusing "not contained" — which would
+    orphan the leftover objects forever."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+    remote = repo.remotes["archive"]
+    assert isinstance(remote, S3Remote)
+
+    # Make the job remote-only and un-indexed: publish all objects, then drop both the
+    # local copy and the index row.
+    _publish_job_to_remote(remote, job_dir, job.id)
+    repo._atomic_remove_local(job.id)
+    repo._index.remove_by_id(job.id)
+    with pytest.raises(KeyError):
+        repo._index.get_location(job.id)
+
+    # Fail the SECOND _delete of the first delete_job — the manifest (first _delete) is
+    # already gone by then, leaving archive/sidecars/staging behind.
+    real_delete = remote._delete
+    calls = {"n": 0}
+
+    def flaky_delete(keys: list) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RemoteError("simulated per-object failure on the second batch")
+        real_delete(keys)
+
+    monkeypatch.setattr(remote, "_delete", flaky_delete)
+
+    with pytest.raises(RemoteError):
+        repo.remove(job.id)
+
+    # Manifest gone (exists() is False now), but objects remain under the prefix.
+    assert not remote.exists(job.id)
+    assert _job_object_keys(job.id, PREFIX) != []
+
+    # Retry must complete the sweep rather than refuse "not contained".
+    repo.remove(job.id)
+    assert _job_object_keys(job.id, PREFIX) == []

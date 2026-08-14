@@ -138,10 +138,13 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     If any other job in the R3 repository depends on the job, removing it will fail.
     """
     repository = _get_repository(repository_path)
-    job = _get_job(repository, job_id)
 
+    # Pass the raw id, not a materialized Job: `remove` must stay usable in the retry
+    # state where the index row still says local but jobs/<id> is already gone (which
+    # `_get_job` would reject as corruption). An unknown id is reported by `remove`
+    # itself, via a ValueError naming the job.
     try:
-        repository.remove(job)
+        repository.remove(job_id)
     except ValueError as error:
         raise click.ClickException(str(error)) from error
 
