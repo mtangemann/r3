@@ -281,3 +281,53 @@ def test_list_job_ids_paginates_beyond_one_page(s3_remote: S3Remote) -> None:
             Bucket=BUCKET, Key=f"{PREFIX}{job_id}/manifest.json", Body=b"{}"
         )
     assert set(s3_remote.list_job_ids()) == expected
+
+
+# ------------------------------------------------ enumeration / reconciliation
+
+
+def test_iter_object_keys_yields_every_key(s3_remote: S3Remote) -> None:
+    # Every object under the prefix — manifest, archive, sidecars, staging — is
+    # enumerated, regardless of its role (unlike list_job_ids, which is
+    # manifest-only). This is the raw feed the reconciliation classifies.
+    s3_remote._client.put_object(
+        Bucket=BUCKET, Key=f"{PREFIX}job1/manifest.json", Body=b"{}"
+    )
+    s3_remote._client.put_object(
+        Bucket=BUCKET, Key=f"{PREFIX}job1/data.tar.zst", Body=b"x"
+    )
+    s3_remote._client.put_object(
+        Bucket=BUCKET, Key=f"{PREFIX}job2/manifest.json.staging", Body=b"{}"
+    )
+    assert set(s3_remote.iter_object_keys()) == {
+        f"{PREFIX}job1/manifest.json",
+        f"{PREFIX}job1/data.tar.zst",
+        f"{PREFIX}job2/manifest.json.staging",
+    }
+
+
+def test_iter_object_keys_empty(s3_remote: S3Remote) -> None:
+    assert list(s3_remote.iter_object_keys()) == []
+
+
+def test_iter_object_keys_paginates_beyond_one_page(s3_remote: S3Remote) -> None:
+    # moto caps a list page at 1000 keys; 1001 objects forces the paginator across
+    # multiple pages, guarding a single-page enumeration bug.
+    expected = {f"{PREFIX}job-{i:04d}/data.tar.zst" for i in range(1001)}
+    for key in expected:
+        s3_remote._client.put_object(Bucket=BUCKET, Key=key, Body=b"x")
+    assert set(s3_remote.iter_object_keys()) == expected
+
+
+def test_list_incomplete_multipart_uploads(s3_remote: S3Remote) -> None:
+    response = s3_remote._client.create_multipart_upload(
+        Bucket=BUCKET, Key=f"{PREFIX}job1/data.tar.zst"
+    )
+    upload_id = response["UploadId"]
+    assert (f"{PREFIX}job1/data.tar.zst", upload_id) in set(
+        s3_remote.list_incomplete_multipart_uploads()
+    )
+
+
+def test_list_incomplete_multipart_uploads_empty(s3_remote: S3Remote) -> None:
+    assert list(s3_remote.list_incomplete_multipart_uploads()) == []

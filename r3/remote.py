@@ -10,7 +10,7 @@ archive and manifest *content* logic lives in ``r3.archive`` / ``r3.manifest``.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from r3.manifest import SIDECAR_PATHS
 
@@ -41,6 +41,11 @@ class Remote(ABC):
     """Whether the remote's storage is immutable enough to cache the job's file list
     in the index. Immutable backends (S3) set this True; a live shared filesystem
     would leave it False."""
+
+    prefix: str = ""
+    """The key prefix under which every object lives, as ``{prefix}{job_id}/...``.
+    Reconciliation (``Repository.remote_check``) strips this from an enumerated key to
+    recover the job id. Concrete backends set it in ``__init__``."""
 
     @abstractmethod
     def put_archive(self, job_id: str, archive_path: Path) -> None:
@@ -98,6 +103,23 @@ class Remote(ABC):
     @abstractmethod
     def list_job_ids(self) -> Iterator[str]:
         """Yields the job IDs that have a manifest under the remote's prefix."""
+
+    @abstractmethod
+    def iter_object_keys(self) -> Iterator[str]:
+        """Yields every object key under the remote's prefix (paginated).
+
+        Unlike `list_job_ids` (manifest-only), this enumerates the raw objects —
+        archives, sidecars, manifests, and leftover staging manifests alike — so a
+        reconciliation can classify each job prefix and detect leftovers. Read-only.
+        """
+
+    @abstractmethod
+    def list_incomplete_multipart_uploads(self) -> Iterator[Tuple[str, str]]:
+        """Yields ``(key, upload_id)`` for each in-progress multipart upload.
+
+        These are uploads under the remote's prefix that were never completed or
+        aborted (wasted quota). Read-only: this lists, it never aborts them.
+        """
 
     @staticmethod
     def from_config(config: Dict[str, Any]) -> "Remote":
@@ -427,3 +449,15 @@ class S3Remote(Remote):
                 key = obj["Key"]
                 if key.endswith(suffix):
                     yield key[len(self.prefix) : -len(suffix)]
+
+    def iter_object_keys(self) -> Iterator[str]:
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+            for obj in page.get("Contents", []):
+                yield obj["Key"]
+
+    def list_incomplete_multipart_uploads(self) -> Iterator[Tuple[str, str]]:
+        paginator = self._client.get_paginator("list_multipart_uploads")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+            for upload in page.get("Uploads", []):
+                yield upload["Key"], upload["UploadId"]

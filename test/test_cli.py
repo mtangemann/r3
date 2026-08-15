@@ -120,6 +120,40 @@ def test_cli_fetch(repository_with_remote: Repository) -> None:
     assert job_path.exists()
 
 
+def test_cli_remote_check_clean(repository_with_remote: Repository) -> None:
+    """A consistent repository reports no issues and exits 0."""
+    repo = repository_with_remote
+    job = get_dummy_job("base")
+    job = repo.commit(job)
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["remote", "check", "--repository", str(repo.path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "No issues" in result.output
+
+
+def test_cli_remote_check_reports_and_exits_nonzero(
+    repository_with_remote: Repository,
+) -> None:
+    """A drifted repository lists the finding and exits non-zero (script-friendly)."""
+    repo = repository_with_remote
+    # A complete manifest with no index row -> resurrection-risk orphan.
+    repo.remotes["archive"].publish_manifest("orphan-job", b"{}")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["remote", "check", "--repository", str(repo.path)],
+    )
+    assert result.exit_code != 0
+    assert "orphan-job" in result.output
+
+
 def test_cli_remote_add_and_list(tmp_path: Path) -> None:
     """Add a remote via CLI, list and verify output contains name+type."""
     repo = Repository.init(tmp_path / "repository")

@@ -412,5 +412,52 @@ def remote_remove(name: str, repository_path: Path) -> None:
     print(f"Removed remote '{name}'.")
 
 
+@remote.command("check")
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+    show_envvar=True,
+)
+def remote_check(repository_path: Optional[Path]) -> None:
+    """Reconcile each remote against the index and report drift (read-only).
+
+    This mutates nothing. It reports resurrection-risk manifests, manifestless job
+    prefixes, leftover staging manifests, broken remote rows, and incomplete
+    multipart uploads. Exits non-zero if any issue is found, so it is script-friendly.
+    """
+    repository = _get_repository(repository_path)
+    report = repository.remote_check()
+
+    if not report.has_findings:
+        print("No issues found.")
+        return
+
+    def _emit(title: str, findings: list) -> None:
+        if not findings:
+            return
+        print(f"{title}:")
+        for finding in findings:
+            print(f"  - {finding.job_id} [{finding.remote}]: {finding.detail}")
+
+    _emit(
+        "Resurrection-risk orphans / location disagreements",
+        report.resurrection_risks,
+    )
+    _emit("Manifestless job prefixes", report.manifestless_prefixes)
+    _emit("Leftover staging manifests", report.staging_manifests)
+    _emit("Broken remote rows", report.broken_rows)
+
+    if report.incomplete_multipart_uploads:
+        print("Incomplete multipart uploads:")
+        for upload in report.incomplete_multipart_uploads:
+            print(
+                f"  - {upload.key} [{upload.remote}] (upload {upload.upload_id})"
+            )
+
+    sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()
