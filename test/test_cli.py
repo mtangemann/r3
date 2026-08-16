@@ -182,37 +182,226 @@ def test_cli_remote_add_and_list(tmp_path: Path) -> None:
 
 
 def test_cli_remote_remove(tmp_path: Path) -> None:
-    """Add then remove a remote, verify it's gone from list."""
+    """Add then remove a remote whose bucket is empty; removal is clean.
+
+    ``remote remove`` now probes the bucket to refuse orphaning live jobs, so this
+    runs under moto with an empty bucket (nothing under the prefix => clean removal).
+    """
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket=BUCKET)
+
+        repo = Repository.init(tmp_path / "repository")
+
+        runner = CliRunner()
+        # Add
+        result = runner.invoke(
+            cli,
+            [
+                "remote", "add", "archive",
+                "--type", "s3",
+                "--bucket", BUCKET,
+                "--prefix", PREFIX,
+                "--repository", str(repo.path),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        # Remove
+        result = runner.invoke(
+            cli,
+            ["remote", "remove", "archive", "--repository", str(repo.path)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Removed remote 'archive'" in result.output
+
+        # List should be empty
+        result = runner.invoke(
+            cli,
+            ["remote", "list", "--repository", str(repo.path)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "archive" not in result.output
+
+
+def test_cli_remote_add_unknown_type_leaves_config_unchanged(tmp_path: Path) -> None:
+    """An unknown --type is rejected by validation and never lands in r3.yaml."""
     repo = Repository.init(tmp_path / "repository")
 
-    runner = CliRunner()
-    # Add
-    result = runner.invoke(
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "archive",
+            "--type", "bogus",
+            "--bucket", "my-bucket",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    with open(repo.path / "r3.yaml") as f:
+        config = yaml.safe_load(f)
+    assert "archive" not in config.get("remotes", {})
+
+
+def test_cli_remote_add_s3_without_bucket_leaves_config_unchanged(
+    tmp_path: Path,
+) -> None:
+    """An s3 remote without a bucket is rejected and never lands in r3.yaml."""
+    repo = Repository.init(tmp_path / "repository")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "archive",
+            "--type", "s3",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    with open(repo.path / "r3.yaml") as f:
+        config = yaml.safe_load(f)
+    assert "archive" not in config.get("remotes", {})
+
+
+def test_cli_remote_add_ceph_flags_round_trip(tmp_path: Path) -> None:
+    """The CEPH flags persist into r3.yaml and parse back via from_config."""
+    from r3.remote import Remote
+
+    repo = Repository.init(tmp_path / "repository")
+
+    result = CliRunner().invoke(
         cli,
         [
             "remote", "add", "archive",
             "--type", "s3",
             "--bucket", "my-bucket",
+            "--prefix", "my-prefix/",
+            "--addressing-style", "path",
+            "--request-checksum-calculation", "when_required",
+            "--response-checksum-validation", "when_required",
             "--repository", str(repo.path),
         ],
     )
     assert result.exit_code == 0, result.output
 
-    # Remove
-    result = runner.invoke(
+    with open(repo.path / "r3.yaml") as f:
+        config = yaml.safe_load(f)
+
+    remote_config = config["remotes"]["archive"]
+    assert remote_config["addressing_style"] == "path"
+    assert remote_config["request_checksum_calculation"] == "when_required"
+    assert remote_config["response_checksum_validation"] == "when_required"
+
+    # And the persisted config parses back into a usable remote.
+    remote = Remote.from_config(remote_config)
+    assert remote.addressing_style == "path"  # type: ignore[attr-defined]
+    assert remote.request_checksum_calculation == "when_required"  # type: ignore[attr-defined]
+    assert remote.response_checksum_validation == "when_required"  # type: ignore[attr-defined]
+
+
+def test_cli_remote_remove_refuses_with_complete_manifest(
+    repository_with_remote: Repository,
+) -> None:
+    """A complete manifest under the prefix blocks removal, naming the job."""
+    repo = repository_with_remote
+    repo.remotes["archive"].publish_manifest("orphan-job", b"{}")
+
+    config_before = (repo.path / "r3.yaml").read_text()
+
+    result = CliRunner().invoke(
         cli,
         ["remote", "remove", "archive", "--repository", str(repo.path)],
     )
-    assert result.exit_code == 0, result.output
-    assert "Removed remote 'archive'" in result.output
+    assert result.exit_code != 0
+    assert "orphan-job" in result.output
+    # The config must be untouched when removal is refused.
+    assert (repo.path / "r3.yaml").read_text() == config_before
 
-    # List should be empty
-    result = runner.invoke(
+
+def test_cli_remote_remove_refuses_debris_without_force(
+    repository_with_remote: Repository,
+) -> None:
+    """A manifestless (debris) object blocks removal unless --force is given."""
+    repo = repository_with_remote
+    repo.remotes["archive"].put_sidecar("debris-job", "metadata.yaml", b"data")
+
+    config_before = (repo.path / "r3.yaml").read_text()
+
+    result = CliRunner().invoke(
         cli,
-        ["remote", "list", "--repository", str(repo.path)],
+        ["remote", "remove", "archive", "--repository", str(repo.path)],
+    )
+    assert result.exit_code != 0
+    assert "debris-job" in result.output
+    assert (repo.path / "r3.yaml").read_text() == config_before
+
+
+def test_cli_remote_remove_force_removes_debris(
+    repository_with_remote: Repository,
+) -> None:
+    """With --force, debris is reported as unmanaged and the config entry drops."""
+    repo = repository_with_remote
+    repo.remotes["archive"].put_sidecar("debris-job", "metadata.yaml", b"data")
+
+    result = CliRunner().invoke(
+        cli,
+        ["remote", "remove", "archive", "--force", "--repository", str(repo.path)],
     )
     assert result.exit_code == 0, result.output
-    assert "archive" not in result.output
+    assert "debris-job" in result.output
+    assert "Removed remote 'archive'" in result.output
+
+    with open(repo.path / "r3.yaml") as f:
+        config = yaml.safe_load(f)
+    assert "archive" not in config.get("remotes", {})
+
+
+def test_cli_remote_remove_reports_corrupt_config(tmp_path: Path) -> None:
+    """A hand-corrupted stored remote config gives a clean error, not a traceback."""
+    repo = Repository.init(tmp_path / "repository")
+
+    config_path = repo.path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    # Manually broken remote: an s3 remote with no bucket (from_config -> ValueError).
+    config["remotes"] = {"archive": {"type": "s3"}}
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    result = CliRunner().invoke(
+        cli,
+        ["remote", "remove", "archive", "--repository", str(repo.path)],
+    )
+    assert result.exit_code != 0
+    # Reported as a ClickException, not raised as an unhandled traceback.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Error:" in result.output
+
+
+def test_cli_edit_refuses_remote_job(repository_with_remote: Repository) -> None:
+    """Editing a moved (remote) job is refused with no stray file created."""
+    repo = repository_with_remote
+    job = get_dummy_job("base")
+    job = repo.commit(job)
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    job_path = repo.path / "jobs" / job.id
+    assert not job_path.exists()
+
+    result = CliRunner().invoke(
+        cli,
+        ["edit", job.id, "--repository", str(repo.path)],
+    )
+    assert result.exit_code != 0
+    assert "fetch" in result.output
+    # No stray metadata file (or job directory) must be created at the deleted path.
+    assert not (job_path / "metadata.yaml").exists()
+    assert not job_path.exists()
 
 
 def test_cli_remote_add_duplicate(tmp_path: Path) -> None:

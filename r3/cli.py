@@ -1,14 +1,17 @@
 """R3 command line interface."""
 # ruff: noqa: T201
 
+import os
 import sys
+import tempfile
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import click
 import yaml
 
 import r3
+from r3.remote import Remote
 
 
 @click.group(
@@ -43,6 +46,34 @@ def _get_job(repository: r3.Repository, job_id: str) -> r3.Job:
     except KeyError as error:
         # `str` of a KeyError is the repr of its argument, which would add quotes.
         raise click.ClickException(str(error.args[0])) from error
+
+
+def _write_config_atomically(config_path: Path, config: Dict[str, Any]) -> None:
+    """Writes ``r3.yaml`` via a same-directory temp file + ``os.replace``.
+
+    A plain ``open(..., "w")`` truncates in place, so a crash mid-write can leave a
+    truncated ``r3.yaml`` that has lost the whole ``remotes`` map. Writing to a temp
+    file in the same directory and atomically renaming it over the target means a
+    reader only ever sees either the old file or the fully-written new one.
+    """
+    directory = config_path.parent
+    fd, temp_name = tempfile.mkstemp(dir=directory, prefix=".r3.yaml.", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w") as temp_file:
+            yaml.dump(config, temp_file)
+        # mkstemp creates the temp file 0600; preserve the existing file's mode so a
+        # shared (group-readable) repo config is not silently narrowed on rewrite.
+        if config_path.exists():
+            os.chmod(temp_path, config_path.stat().st_mode & 0o777)
+        os.replace(temp_path, config_path)
+    except BaseException:
+        # Swallow a secondary cleanup error so it cannot mask the original failure.
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 @cli.command()
@@ -233,6 +264,16 @@ def edit(job_id: str, repository_path: Optional[Path]) -> None:
     repository = _get_repository(repository_path)
     job = _get_job(repository, job_id)
 
+    # Refuse a remote job before opening the editor: its files are not local, so
+    # `click.edit` would otherwise create a stray metadata.yaml at the (absent) job
+    # path. The check runs before any file is touched.
+    location = repository._index.get_location(job_id)
+    if location != "local":
+        raise click.ClickException(
+            f'Job {job_id} is on remote "{location}"; '
+            f"run `r3 fetch {job_id}` first."
+        )
+
     # Let user edit the metadata file of the job
     metadata_file_path = job.path / "metadata.yaml"
     click.edit(filename=str(metadata_file_path))
@@ -319,6 +360,20 @@ def remote() -> None:
 @click.option("--profile", type=str, default=None, help="AWS profile name.")
 @click.option("--endpoint-url", type=str, default=None, help="S3 endpoint URL.")
 @click.option(
+    "--addressing-style", type=str, default=None,
+    help="S3 addressing style ('auto', 'path', or 'virtual'). CEPH RGW usually "
+    "needs 'path'.",
+)
+@click.option(
+    "--request-checksum-calculation", type=str, default=None,
+    help="'when_supported' or 'when_required'. CEPH RGW builds that reject the "
+    "integrity headers 'when_supported' adds need 'when_required'.",
+)
+@click.option(
+    "--response-checksum-validation", type=str, default=None,
+    help="'when_supported' or 'when_required'.",
+)
+@click.option(
     "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -331,6 +386,9 @@ def remote_add(
     prefix: Optional[str],
     profile: Optional[str],
     endpoint_url: Optional[str],
+    addressing_style: Optional[str],
+    request_checksum_calculation: Optional[str],
+    response_checksum_validation: Optional[str],
     repository_path: Path,
 ) -> None:
     """Add a remote storage backend."""
@@ -343,7 +401,7 @@ def remote_add(
         print(f"Error: Remote '{name}' already exists.")
         sys.exit(1)
 
-    remote_config: dict = {"type": remote_type}
+    remote_config: Dict[str, Any] = {"type": remote_type}
     if bucket is not None:
         remote_config["bucket"] = bucket
     if prefix is not None:
@@ -352,12 +410,23 @@ def remote_add(
         remote_config["profile"] = profile
     if endpoint_url is not None:
         remote_config["endpoint_url"] = endpoint_url
+    if addressing_style is not None:
+        remote_config["addressing_style"] = addressing_style
+    if request_checksum_calculation is not None:
+        remote_config["request_checksum_calculation"] = request_checksum_calculation
+    if response_checksum_validation is not None:
+        remote_config["response_checksum_validation"] = response_checksum_validation
+
+    # Validate the config before writing so a bad remote never lands in r3.yaml
+    # (a truncating write of an invalid entry could also drop the whole map).
+    try:
+        Remote.from_config(remote_config)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
     remotes[name] = remote_config
     config["remotes"] = remotes
-
-    with open(config_path, "w") as f:
-        yaml.dump(config, f)
+    _write_config_atomically(config_path, config)
 
     print(f"Added remote '{name}' (type: {remote_type}).")
 
@@ -387,13 +456,25 @@ def remote_list(repository_path: Path) -> None:
 @remote.command("remove")
 @click.argument("name", type=str)
 @click.option(
+    "--force", is_flag=True,
+    help="Drop the config entry even if residual (manifestless) debris remains "
+    "under the prefix; the leftover objects become unmanaged.",
+)
+@click.option(
     "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def remote_remove(name: str, repository_path: Path) -> None:
-    """Remove a remote storage backend."""
+def remote_remove(name: str, force: bool, repository_path: Path) -> None:
+    """Remove a remote storage backend.
+
+    Dropping the config entry does not delete any bucket objects; it only makes them
+    unreachable through R3. To avoid orphaning live jobs or silently abandoning
+    debris, the bucket is probed directly (never the index, which is a disposable
+    cache): complete jobs block removal outright, and residual debris blocks it
+    unless --force is given.
+    """
     config_path = repository_path / "r3.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -403,11 +484,43 @@ def remote_remove(name: str, repository_path: Path) -> None:
         print(f"Error: Remote '{name}' does not exist.")
         sys.exit(1)
 
+    # A hand-corrupted stored config must report cleanly (this is exactly the
+    # recovery scenario remove exists for), matching remote add's validation.
+    try:
+        remote = Remote.from_config(remotes[name])
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
+    # 1. Complete jobs (a manifest exists) must never be orphaned: refuse outright.
+    job_ids = list(remote.list_job_ids())
+    if job_ids:
+        raise click.ClickException(
+            f"Remote '{name}' still stores complete jobs: "
+            f"{', '.join(sorted(job_ids))}. Fetch or remove them first."
+        )
+
+    # 2. Residual debris: with no complete manifests, any remaining object or any
+    #    incomplete multipart upload under the prefix is leftover debris.
+    debris = [f"object {key}" for key in remote.iter_object_keys()]
+    debris += [
+        f"incomplete multipart upload {key} (upload {upload_id})"
+        for key, upload_id in remote.list_incomplete_multipart_uploads()
+    ]
+    if debris:
+        if not force:
+            listing = "\n".join(f"  - {item}" for item in debris)
+            raise click.ClickException(
+                f"Remote '{name}' has residual debris that would be orphaned:\n"
+                f"{listing}\nUse --force to remove the config entry anyway."
+            )
+        print(f"Warning: the following objects will become unmanaged for '{name}':")
+        for item in debris:
+            print(f"  - {item}")
+
+    # 3. Safe to drop the config entry.
     del remotes[name]
     config["remotes"] = remotes
-
-    with open(config_path, "w") as f:
-        yaml.dump(config, f)
+    _write_config_atomically(config_path, config)
 
     print(f"Removed remote '{name}'.")
 
