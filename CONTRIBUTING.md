@@ -14,6 +14,7 @@ export R3_TEST_S3_BUCKET=your-existing-bucket
 export R3_TEST_S3_PREFIX=r3-smoke-tests/        # optional sub-prefix
 export R3_TEST_S3_ADDRESSING_STYLE=path         # required for CEPH RGW
 export R3_TEST_S3_REQUEST_CHECKSUM_CALCULATION=when_required  # for older CEPH
+export R3_TEST_S3_RESPONSE_CHECKSUM_VALIDATION=when_required  # optional, if needed
 # AWS credentials: either direct env vars
 export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
@@ -39,6 +40,25 @@ those headers under SigV4 and return the same misleading
 unaffected. Same field is exposed in `r3.yaml` remote config as
 `request_checksum_calculation`.
 
+`R3_TEST_S3_RESPONSE_CHECKSUM_VALIDATION` (`when_supported` or
+`when_required`) is the analogous knob for response-side checksum
+validation and is exposed in `r3.yaml` remote config as
+`response_checksum_validation`. Leave it unset unless a backend needs it.
+
 Each test run uses a UUID-scoped sub-prefix and cleans up its own keys at
 teardown. If teardown fails, the test surfaces a clear error so you can
 manually delete the affected sub-prefix.
+
+## Running the moto-backed tests
+
+The rest of the S3 tests run against `moto` and need no live endpoint, but
+two environment gotchas can bite:
+
+- **`AWS_CONFIG_FILE=/dev/null`.** If a global `~/.aws/config` sets an
+  `endpoint_url`, boto3 will pick it up and the moto-backed tests will try
+  to reach that real endpoint. Run them with `AWS_CONFIG_FILE=/dev/null` to
+  isolate them from your local AWS config.
+- **Use `python -m pytest`, not plain `pytest`.** `python -m pytest` puts
+  the current directory on `sys.path`, so the tests import the working-tree
+  `r3`; a plain `pytest` may not, and can fail to import or pick up an
+  installed copy instead.

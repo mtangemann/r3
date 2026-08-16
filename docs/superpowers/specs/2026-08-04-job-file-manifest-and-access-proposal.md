@@ -1,5 +1,10 @@
 # Proposal: Separate Job Manifest from File Access
 
+> **Superseded** — this predates the current durable design
+> ([`2026-08-04-remote-storage-durable-design.md`](2026-08-04-remote-storage-durable-design.md)),
+> which is now the authoritative remote-storage design and places this API redesign
+> out of scope as separate, still-exploratory later work; kept for historical context.
+
 **Status:** Exploratory suggestion; not final or approved for implementation.
 
 **Timing:** Revisit only after the current remote-storage correctness, security,

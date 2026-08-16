@@ -19,5 +19,6 @@ nav:
 - Home: index.md
 - tutorial.md
 - cli.md
+- remote-storage.md
 - python_api.md
 - repository_format.md

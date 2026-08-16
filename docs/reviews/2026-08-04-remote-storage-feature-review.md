@@ -1,5 +1,9 @@
 # Independent Review: Remote Storage Feature Branch
 
+> **Superseded** — this predates and is superseded by the current durable design
+> ([`../superpowers/specs/2026-08-04-remote-storage-durable-design.md`](../superpowers/specs/2026-08-04-remote-storage-durable-design.md)),
+> which was written to address this review; kept for historical context.
+
 **Review date:** 2026-08-04
 
 **Feature branch:** `feature/remote-storage` at `6b5b81a`
