@@ -267,7 +267,7 @@ def test_index_find_dependents_uses_cached_metadata(storage_with_jobs: Storage):
 
 def test_index_find_dependents_returns_remote_child_as_projection(storage: Storage):
     """A remote dependent is returned as a metadata-only projection, not a
-    FileNotFoundError from ``storage.get`` on the missing local directory (F-06)."""
+    FileNotFoundError from ``storage.get`` on the missing local directory."""
     index = Index(storage)
 
     parent = get_dummy_job("base")
@@ -296,7 +296,7 @@ def test_index_find_dependents_returns_remote_child_as_projection(storage: Stora
 
 
 def test_index_find_dependents_still_returns_local_child(storage: Storage):
-    """A local dependent must still resolve to a real local Job with files (F-06)."""
+    """A local dependent must still resolve to a real local Job with files."""
     index = Index(storage)
 
     parent = get_dummy_job("base")
@@ -415,7 +415,7 @@ def test_index_get_file_list_returns_none_when_unset(storage: Storage):
 
 
 def test_index_find_returns_remote_projection(storage: Storage):
-    """find() returns a remote job as a metadata-only projection (design §8)."""
+    """find() returns a remote job as a metadata-only projection."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -522,7 +522,7 @@ def test_index_rebuild_does_not_read_remotes_for_local_jobs(storage: Storage):
 
 def test_index_get_local_missing_directory_raises_corruption(storage: Storage):
     """A local row whose jobs/<id> directory is gone surfaces as a clear corruption
-    error rather than a bare FileNotFoundError (F-09)."""
+    error rather than a bare FileNotFoundError."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -543,7 +543,7 @@ def test_index_get_local_missing_directory_raises_corruption(storage: Storage):
 
 def test_index_get_local_missing_r3yaml_raises_corruption(storage: Storage):
     """A local row whose directory exists but lacks r3.yaml surfaces as a clear
-    corruption error instead of a confusing later failure (F-09)."""
+    corruption error instead of a confusing later failure."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -565,7 +565,7 @@ def test_index_get_local_missing_r3yaml_raises_corruption(storage: Storage):
 
 def test_index_find_local_missing_directory_raises_corruption(storage: Storage):
     """find() raises the clear corruption error for a local row with no directory,
-    rather than silently skipping or failing confusingly later (F-09)."""
+    rather than silently skipping or failing confusingly later."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -585,7 +585,7 @@ def test_index_find_local_missing_directory_raises_corruption(storage: Storage):
 
 def test_index_find_local_missing_r3yaml_raises_corruption(storage: Storage):
     """find() raises the clear corruption error for a local row whose directory lacks
-    r3.yaml (F-09)."""
+    r3.yaml."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -607,7 +607,7 @@ def test_index_find_local_missing_r3yaml_raises_corruption(storage: Storage):
 
 def test_index_find_does_not_deserialize_files_column(storage: Storage):
     """find() selects only id/timestamp/metadata/location and loads the file list
-    lazily, so non-JSON garbage in the files column must not make find raise (F-10)."""
+    lazily, so non-JSON garbage in the files column must not make find raise."""
     index = Index(storage)
     job = get_dummy_job("base")
     job = storage.add(job)
@@ -627,7 +627,7 @@ def test_index_find_does_not_deserialize_files_column(storage: Storage):
 
 
 def test_transaction_rolls_back_on_exception(storage: Storage):
-    """A Transaction that raises mid-block must not persist its writes (F-08)."""
+    """A Transaction that raises mid-block must not persist its writes."""
     index = Index(storage)
     path = storage.root / "index.sqlite"
     del index

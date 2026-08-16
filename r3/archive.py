@@ -8,8 +8,8 @@ payload archive and to reconstruct a job directory on fetch.
 The archive contains **file members only** — no directory entries and no ``r3.yaml``
 / ``metadata.yaml`` sidecars (those are stored as separate objects). Each member is
 hashed as it is written, so the returned entries describe exactly the archive's
-contents. Extraction validates every member before writing it,
-which closes the F-01 path-traversal blocker.
+contents. Extraction validates every member before writing it, so a crafted
+archive cannot write outside the destination directory (path traversal).
 """
 
 import hashlib

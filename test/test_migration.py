@@ -1,4 +1,4 @@
-"""Tests for the beta.7 -> beta.8 -> beta.9 migration path (design §12, F-02).
+"""Tests for the beta.7 -> beta.8 -> beta.9 migration path.
 
 The migration scripts have digit-leading filenames, so they are loaded by path.
 """

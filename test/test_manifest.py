@@ -1,4 +1,4 @@
-"""Unit tests for r3.manifest (the integrity + listing record; design §4.1)."""
+"""Unit tests for r3.manifest (the integrity + listing record)."""
 
 from pathlib import Path
 

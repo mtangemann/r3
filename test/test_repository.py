@@ -1366,7 +1366,7 @@ def test_contains_remote_directory_dependency_matches_entry_beneath(
     repository_with_remote: Repository, tmp_path: Path
 ) -> None:
     """A directory source on a remote job is contained when the cached file list has
-    any entry beneath it, not only on an exact match (F-06)."""
+    any entry beneath it, not only on an exact match."""
     job = _commit_job_with_subdir(repository_with_remote, tmp_path)
     assert job.id is not None
     repository_with_remote.move(job.id, "archive")
@@ -1383,7 +1383,7 @@ def test_contains_remote_output_dependency_present_for_empty_output(
     repository_with_remote: Repository,
 ) -> None:
     """A source='output' dependency stays satisfied after a move even when the job's
-    output/ is empty and leaves no manifest entry (the output/ convention) (F-06)."""
+    output/ is empty and leaves no manifest entry (the output/ convention)."""
     job = get_dummy_job("base")
     job = repository_with_remote.commit(job)
     assert job.id is not None
@@ -1405,7 +1405,7 @@ def test_move_parent_with_remote_child_succeeds(
     repository_with_remote: Repository,
 ) -> None:
     """Moving a parent whose child was already moved to a remote succeeds: the remote
-    child is projected by find_dependents rather than raising FileNotFoundError (F-06).
+    child is projected by find_dependents rather than raising FileNotFoundError.
     """
     repo = repository_with_remote
 
@@ -1434,7 +1434,7 @@ def test_remove_parent_with_remote_child_reports_dependents(
 ) -> None:
     """Removing a parent whose child is remote reaches the proper dependents-exist
     refusal (ValueError listing the child) instead of raising FileNotFoundError from
-    find_dependents (F-06)."""
+    find_dependents."""
     repo = repository_with_remote
 
     parent = get_dummy_job("base")
@@ -1556,7 +1556,7 @@ def test_move_aborts_and_keeps_local_on_verify_failure(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If an uploaded object fails content verification, move aborts before
-    publishing the manifest and leaves the local job intact (design §5, F-05)."""
+    publishing the manifest and leaves the local job intact."""
     repo = repository_with_remote
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
@@ -1579,7 +1579,7 @@ def test_fetch_aborts_and_leaves_no_local_on_corrupt_archive(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A corrupt archive on fetch raises and leaves no jobs/<id>; the index still
-    points at the remote (design §6, F-04)."""
+    points at the remote."""
     repo = repository_with_remote
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
@@ -1602,7 +1602,7 @@ def test_fetch_is_idempotent_after_interruption(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Interrupting fetch after the staging rename + remote delete but before the
-    index flip is recoverable: a re-run finalizes via the local receipt (design §6)."""
+    index flip is recoverable: a re-run finalizes via the local receipt."""
     repo = repository_with_remote
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
@@ -1636,7 +1636,7 @@ def test_move_aborts_on_quiescence_violation(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the job directory changes between capture and the pre-delete re-check, move
-    aborts (keeping local) and removes the stale published manifest (design §5)."""
+    aborts (keeping local) and removes the stale published manifest."""
     repo = repository_with_remote
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
@@ -1783,7 +1783,7 @@ def test_fetch_write_protects_restored_job(
     assert is_writable(job_dir / "metadata.yaml")
 
 
-# --- atomic, bucket-backed, fail-closed rebuild (§7.2) ---
+# --- atomic, bucket-backed, fail-closed rebuild ---
 
 
 def _publish_job_to_remote(remote, job_dir: Path, job_id: str) -> None:
@@ -2073,7 +2073,7 @@ def test_rebuild_rejects_duplicate_job_id_across_remotes(
     _publish_job_to_remote(repo.remotes["archive"], job_dir, job.id)
     _publish_job_to_remote(repo.remotes["archive2"], job_dir, job.id)
     # Delete only the local copy so this is purely a cross-remote duplicate. `remove`
-    # would now sweep both remotes too (F-03), which would defeat the setup.
+    # would now sweep both remotes too, which would defeat the setup.
     repo._atomic_remove_local(job.id)
 
     before = (repo.path / "index.sqlite").read_bytes()
@@ -2099,7 +2099,7 @@ def test_rebuild_discards_stale_index_new(repository: Repository) -> None:
     assert repo._index.get_location(job.id) == "local"
 
 
-# --- remove: gone-everywhere protocol (F-03) ---
+# --- remove: gone-everywhere protocol ---
 
 
 def _job_object_keys(job_id: str, prefix: str) -> list:

@@ -1,6 +1,7 @@
 """Unit tests for r3.archive — the files-only tar.zst builder and safe extraction.
 
-The extraction tests are adversarial: they cover the F-01 path-traversal blocker.
+The extraction tests are adversarial: they cover path-traversal attacks, where a
+crafted archive member tries to write outside the destination directory.
 """
 
 import io
