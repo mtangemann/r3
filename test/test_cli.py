@@ -224,6 +224,47 @@ def test_cli_remote_remove(tmp_path: Path) -> None:
         assert "archive" not in result.output
 
 
+def test_cli_remote_add_warns_when_config_has_comments(tmp_path: Path) -> None:
+    """`remote add` warns (but still succeeds) when r3.yaml contains comments."""
+    repo = Repository.init(tmp_path / "repository")
+
+    config_path = repo.path / "r3.yaml"
+    with open(config_path) as f:
+        config_text = f.read()
+    with open(config_path, "w") as f:
+        f.write("# hand-written note about this repository\n" + config_text)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "archive",
+            "--type", "s3",
+            "--bucket", "my-bucket",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "not preserved" in result.output
+    assert "Added remote 'archive'" in result.output
+
+
+def test_cli_remote_add_does_not_warn_without_comments(tmp_path: Path) -> None:
+    """`remote add` does not warn when r3.yaml has no comments."""
+    repo = Repository.init(tmp_path / "repository")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "archive",
+            "--type", "s3",
+            "--bucket", "my-bucket",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "not preserved" not in result.output
+
+
 def test_cli_remote_add_unknown_type_leaves_config_unchanged(tmp_path: Path) -> None:
     """An unknown --type is rejected by validation and never lands in r3.yaml."""
     repo = Repository.init(tmp_path / "repository")

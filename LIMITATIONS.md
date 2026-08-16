@@ -136,3 +136,19 @@ is **not**: lose it and you lose the pointer to where your archived jobs are sto
 drop a remote while complete jobs still exist under its prefix.
 
 **Details:** [durable-design §9](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+
+---
+
+## `r3.yaml` is managed by R3 — don't hand-format it
+
+**Impact.** `r3.yaml` is an R3-managed file. `r3 remote add`/`r3 remote remove` and
+format migrations rewrite it by re-serializing the parsed config, which does **not**
+preserve comments, blank lines, or key order. Any hand-formatting you add there is
+lost on the next such rewrite (`remote add`/`remove` now warn when they detect
+comments, but they still overwrite).
+
+**Workaround.** Don't rely on comments or a particular layout in `r3.yaml`. Keep any
+notes about your setup elsewhere.
+
+**Status.** Round-trip preservation via a comment-aware YAML library is a possible
+future improvement — see [ROADMAP.md](ROADMAP.md).

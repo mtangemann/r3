@@ -48,6 +48,36 @@ def _get_job(repository: r3.Repository, job_id: str) -> r3.Job:
         raise click.ClickException(str(error.args[0])) from error
 
 
+def _config_has_comments(config_text: str) -> bool:
+    """Best-effort detection of YAML comments in the raw ``r3.yaml`` text.
+
+    ``remote add``/``remote remove`` rewrite ``r3.yaml`` via ``yaml.dump``, which
+    drops any comments, blank lines, and key ordering. This flags the common comment
+    shapes so the user can be warned before that happens. It is a heuristic, not a
+    YAML parser: it does not try to exclude a ``#`` inside a quoted scalar.
+    """
+    for line in config_text.splitlines():
+        if line.strip().startswith("#"):
+            return True
+        # An inline comment: a `#` after some content, preceded by whitespace.
+        if " #" in line or "\t#" in line:
+            return True
+    return False
+
+
+def _warn_if_config_has_comments(config_path: Path) -> None:
+    """Warn that rewriting ``r3.yaml`` will not preserve comments/formatting."""
+    try:
+        config_text = config_path.read_text()
+    except OSError:
+        return
+    if _config_has_comments(config_text):
+        print(
+            "Warning: comments and formatting in r3.yaml are not preserved by "
+            "'r3 remote add/remove'."
+        )
+
+
 def _write_config_atomically(config_path: Path, config: Dict[str, Any]) -> None:
     """Writes ``r3.yaml`` via a same-directory temp file + ``os.replace``.
 
@@ -426,6 +456,7 @@ def remote_add(
 
     remotes[name] = remote_config
     config["remotes"] = remotes
+    _warn_if_config_has_comments(config_path)
     _write_config_atomically(config_path, config)
 
     print(f"Added remote '{name}' (type: {remote_type}).")
@@ -520,6 +551,7 @@ def remote_remove(name: str, force: bool, repository_path: Path) -> None:
     # 3. Safe to drop the config entry.
     del remotes[name]
     config["remotes"] = remotes
+    _warn_if_config_has_comments(config_path)
     _write_config_atomically(config_path, config)
 
     print(f"Removed remote '{name}'.")
