@@ -1632,6 +1632,113 @@ def test_fetch_is_idempotent_after_interruption(
     assert (repo.path / "jobs" / job.id).exists()
 
 
+def test_fetch_aborts_and_cleans_staging_on_extraction_failure(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An extraction failure mid-fetch (safe_extract raises after some members were
+    written) leaves no jobs/<id>, the index still pointing at the remote, and no
+    leftover staging directory; a re-run then fetches cleanly."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = repo.remotes["archive"]
+    fetch_dir = repo.path / ".fetch"
+
+    real_safe_extract = r3.archive.safe_extract
+    state = {"failed": False}
+
+    def flaky_safe_extract(
+        archive_path: Path, staging_dir: Path, expected: dict
+    ) -> None:
+        if not state["failed"]:
+            state["failed"] = True
+            # Fail mid-way: create the staging dir and a partial member, then raise, so
+            # the test proves the finally-clause cleans a non-empty staging directory.
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            (staging_dir / "partial").write_text("x")
+            raise r3.archive.ArchiveError("simulated extraction failure mid-way")
+        real_safe_extract(archive_path, staging_dir, expected)
+
+    monkeypatch.setattr(r3.archive, "safe_extract", flaky_safe_extract)
+
+    with pytest.raises(r3.archive.ArchiveError):
+        repo.fetch(job.id)
+
+    assert not (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "archive"
+    assert list(fetch_dir.glob(f"{job.id}-*")) == []  # staging cleaned up
+
+    # A retry starts clean (no leftover staging trips it) and finalizes the fetch.
+    repo.fetch(job.id)
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "local"
+    assert not remote.exists(job.id)
+
+
+def test_move_retry_succeeds_after_verify_failure(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a move aborts on upload verification (no manifest published, local kept),
+    a re-run starts clean and completes: the payload is re-uploaded and the manifest
+    published, with the local copy then deleted."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+    job_dir = repo.path / "jobs" / job.id
+
+    real_download = remote.download_archive
+    state = {"failed": False}
+
+    def flaky_download(job_id: str, destination: Path) -> None:
+        if not state["failed"]:
+            state["failed"] = True
+            destination.write_bytes(b"corrupted")  # first verify read-back mismatches
+            return
+        real_download(job_id, destination)
+
+    monkeypatch.setattr(remote, "download_archive", flaky_download)
+
+    with pytest.raises(RemoteError):
+        repo.move(job.id, "archive")
+    assert job_dir.exists()
+    assert repo._index.get_location(job.id) == "local"
+    assert not remote.exists(job.id)  # no manifest published
+
+    # A retry starts clean and completes the move.
+    repo.move(job.id, "archive")
+    assert not job_dir.exists()
+    assert repo._index.get_location(job.id) == "archive"
+    assert remote.exists(job.id)
+
+
+def test_fetch_surfaces_remote_delete_errors_and_stays_retryable(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A per-object failure reported in delete_objects' Errors array during fetch's
+    remote cleanup (delete_job) surfaces as RemoteError; the restored local job stays
+    in place and the index is not yet flipped, so the fetch remains retryable."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = repo.remotes["archive"]
+    assert isinstance(remote, S3Remote)
+
+    def failing_delete_objects(**kwargs: object) -> dict:
+        return {"Errors": [{"Key": "k", "Code": "AccessDenied", "Message": "no"}]}
+
+    monkeypatch.setattr(remote._client, "delete_objects", failing_delete_objects)
+
+    with pytest.raises(RemoteError):
+        repo.fetch(job.id)
+
+    # Local job restored + still indexed remote (delete_job failed before the flip).
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "archive"
+
+
 def test_move_aborts_on_quiescence_violation(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
