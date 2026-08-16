@@ -126,6 +126,34 @@ All green (349 tests, 3 live-S3 skipped, ruff, mypy). Commits `7fe0a9a..43abd47`
 (not pushed). Next: Phase G (CLI + `remove` protocol + `remote check` + config
 validation + `edit` refuses remote), then H (failure tests, docs, live-S3, final gate).
 
+**Execution status (2026-08-16) — Phase G done (CLI + lifecycle, F-03/F-13).**
+Subagent-driven (per task: failing test → fix → spec review → code-quality review;
+final holistic review over the phase). G1: `Repository.remove` reworked into the "gone
+everywhere" ordered/idempotent/retryable protocol — operates from the raw index row +
+direct probes (never `Index.get`/`Storage.get`, so the retry state "row=local, dir
+gone" completes instead of raising I7 corruption); referenced-by guard; sweeps
+`delete_job` (manifest-first, `Errors`-inspected) across EVERY configured remote; then
+deletes the local dir + all `.fetch`/`.trash` recovery artifacts (glob `<id>*`); then
+the index row. Added `Remote.has_objects` (existence probe covering a partially-swept
+job), `Index.remove_by_id`, a `Union[Job, str]` signature, and the CLI passes the raw
+id. G2: a new read-only `r3 remote check` reconciliation (`RemoteCheckReport` +
+`Repository.remote_check()`) reporting five drift categories — orphan/location-
+disagreeing complete manifests, manifestless prefixes, leftover staging manifests,
+broken/unfetchable remote rows (missing manifest or HEAD `archive_size` mismatch), and
+incomplete multipart uploads — mutating nothing (enforced by a no-mutation test). Rules
+2 and 4 are disjoint (`_indexed_on` gate). Added read-only primitives
+`iter_object_keys` and `list_incomplete_multipart_uploads`. G3: `remote add` validates
+via `Remote.from_config()` before an atomic (`_write_config_atomically`, temp+os.replace,
+mode-preserving) `r3.yaml` write and exposes the CEPH flags; `remote remove` probes the
+bucket (not the index) — refuses while complete manifests exist (naming jobs), refuses
+residual debris unless `--force` (which reports what becomes unmanaged). G4: `r3 edit`
+refuses a remote job before `click.edit` (no stray file). All green (385 tests, 3
+live-S3 skipped, ruff, mypy). Commits `82cf2e5..ab2e06c` (not pushed). Deferred, noted:
+`remote check` doesn't probe index rows pointing at a no-longer-configured remote
+(distinct drift class; future work). Next: Phase H (F-12 failure-mode assertions, F-14
+docs, live-S3/multipart rewrite — opt-in, not run here, final gate + F-01..F-14
+disposition).
+
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`
 (sidecar), `manifest.json` (integrity/listing; published last via verified
