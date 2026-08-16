@@ -1,4 +1,8 @@
-"""Remote storage backends for R3 repositories.
+"""Remote storage backends for R3 repositories (ALPHA).
+
+The S3/remote backend as a whole is provisional and may change without notice; it is
+not part of R3's stable public API and is not exported from the top-level ``r3``
+package.
 
 A remote stores each job as four objects under ``{prefix}{job_id}/``:
 ``data.tar.zst`` (the payload archive), ``r3.yaml`` and ``metadata.yaml`` (sidecars),

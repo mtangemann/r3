@@ -534,7 +534,11 @@ def remote_remove(name: str, force: bool, repository_path: Path) -> None:
     show_envvar=True,
 )
 def remote_check(repository_path: Optional[Path]) -> None:
-    """Reconcile each remote against the index and report drift (read-only).
+    """Reconcile the index against the configured REMOTE bucket(s) (read-only).
+
+    This checks only the configured remote storage backend(s): it reconciles the
+    index against each remote's bucket and reports drift. It does NOT verify local
+    job integrity, so it is not a full-repository check.
 
     This mutates nothing. It reports resurrection-risk manifests, manifestless job
     prefixes, leftover staging manifests, broken remote rows, and incomplete
@@ -542,6 +546,11 @@ def remote_check(repository_path: Optional[Path]) -> None:
     """
     repository = _get_repository(repository_path)
     report = repository.remote_check()
+
+    print(
+        "Reconciling the index against the configured remote bucket(s) "
+        "(read-only; local job integrity is not verified)."
+    )
 
     if not report.has_findings:
         print("No issues found.")
