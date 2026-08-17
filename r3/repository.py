@@ -602,6 +602,8 @@ class Repository:
             KeyError: If the job's remote is not configured.
             RemoteError: If the remote has no manifest for the job (the index says
                 remote but the bucket has none — genuine drift).
+            ManifestError: If the remote manifest is malformed or its job_id does not
+                match the requested job.
         """
         # Validate the id first: `fetch` derives a job dir, receipt path, and staging
         # dir from it below, so a traversal-shaped id must be refused up front —
@@ -628,7 +630,7 @@ class Repository:
         # 0. Idempotent finalize: a prior fetch/move may have left a complete jobs/<id>.
         if job_dir.exists():
             manifest_bytes = self._finalize_manifest(remote, job_id, receipt_path)
-            manifest = r3.manifest.loads(manifest_bytes)
+            manifest = r3.manifest.loads(manifest_bytes, expected_job_id=job_id)
             try:
                 r3.manifest.verify_directory(job_dir, manifest)
             except r3.manifest.ManifestError as error:
@@ -660,7 +662,7 @@ class Repository:
                 f"No remote manifest for job {job_id} on remote '{location}'; the "
                 "index and the bucket disagree. Run `r3 remote check` to diagnose."
             ) from error
-        manifest = r3.manifest.loads(manifest_bytes)
+        manifest = r3.manifest.loads(manifest_bytes, expected_job_id=job_id)
         _atomic_write_bytes(receipt_path, manifest_bytes)
 
         temp_dir = Path(tempfile.mkdtemp(prefix="r3-fetch-"))

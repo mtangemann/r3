@@ -15,7 +15,7 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import r3.utils
 
@@ -161,17 +161,29 @@ def dumps(manifest: Dict[str, Any]) -> bytes:
     return json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
 
 
-def loads(data: bytes) -> Dict[str, Any]:
+def loads(data: bytes, *, expected_job_id: Optional[str] = None) -> Dict[str, Any]:
     """Parses and structurally validates manifest bytes.
 
+    ``expected_job_id`` is the single identity-binding hook for consumers that already
+    know which job the bytes should describe (fetch and rebuild derive the key from a
+    requested/enumerated id): when given, the parsed ``job_id`` must equal it, else the
+    bytes describe a different job and are rejected. This keeps the identity check in
+    one place rather than each consumer re-deriving it.
+
     Raises:
-        ManifestError: If the bytes are not valid JSON or violate the schema.
+        ManifestError: If the bytes are not valid JSON, violate the schema, or (when
+            ``expected_job_id`` is given) name a different job.
     """
     try:
         manifest = json.loads(data)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise ManifestError(f"Manifest is not valid JSON: {error}") from error
     validate(manifest)
+    if expected_job_id is not None and manifest["job_id"] != expected_job_id:
+        raise ManifestError(
+            f"Manifest 'job_id' {manifest['job_id']!r} does not match expected "
+            f"{expected_job_id!r}"
+        )
     return manifest
 
 
@@ -208,6 +220,11 @@ def validate(manifest: Any) -> None:
     unknown = set(manifest) - allowed
     if unknown:
         raise ManifestError(f"Manifest has unknown keys: {sorted(unknown)}")
+
+    if not r3.utils.is_valid_job_id(manifest["job_id"]):
+        raise ManifestError(
+            f"Manifest 'job_id' must be a canonical UUID: {manifest['job_id']!r}"
+        )
 
     if manifest["representation"] != REPRESENTATION_TAR_ZST:
         raise ManifestError(f"Unknown representation: {manifest['representation']!r}")

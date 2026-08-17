@@ -2269,6 +2269,81 @@ def test_fetch_step0_rejects_special_entry_without_deleting_remote(
     assert repo._index.get_location(job.id) == "archive"
 
 
+def test_fetch_rejects_canonical_but_different_manifest_job_id(
+    repository_with_remote: Repository,
+) -> None:
+    """Fetch must reject a remote manifest whose ``job_id`` is a *different canonical
+    UUID* than the requested job, before downloading any payload or deleting anything:
+    the identity binding is checked at the parse boundary, right after ``get_manifest``
+    and before ``download_archive``."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = repo.remotes["archive"]
+
+    # Overwrite ONLY the remote manifest's job_id with a different canonical UUID.
+    manifest = r3.manifest.loads(remote.get_manifest(job.id))
+    manifest["job_id"] = str(uuid.uuid4())
+    _put_object(f"{PREFIX}{job.id}/manifest.json", r3.manifest.dumps(manifest))
+
+    keys_before = set(_job_object_keys(job.id, PREFIX))
+
+    with pytest.raises(r3.manifest.ManifestError):
+        repo.fetch(job.id)
+
+    # No payload object downloaded or deleted: remote objects intact, no local job dir.
+    assert set(_job_object_keys(job.id, PREFIX)) == keys_before
+    assert remote.exists(job.id)
+    assert not (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "archive"
+
+
+def test_fetch_step0_rejects_manifest_for_another_job(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """Fetch's step-0 finalize (a pre-existing jobs/<id> while the index says remote)
+    must reject a manifest/receipt whose ``job_id`` is a different canonical UUID,
+    before the remote is deleted or the index is flipped — so a receipt belonging to
+    another job cannot finalize this one. Both local and remote state stay untouched."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+    remote = repo.remotes["archive"]
+
+    # Reproduce the move step-7<->step-8 crash window: jobs/<id> present, index remote.
+    snapshot = tmp_path / "snapshot"
+    shutil.copytree(job_dir, snapshot)
+    repo.move(job.id, "archive")
+    assert not job_dir.exists()
+    shutil.copytree(snapshot, job_dir)
+    assert repo._index.get_location(job.id) == "archive"
+
+    # Tamper the job_id to a different canonical UUID, and make BOTH the remote manifest
+    # and a local receipt carry these identical bytes (so they agree byte-for-byte and
+    # the id check — not the disagreement check — is what fires).
+    manifest = r3.manifest.loads(remote.get_manifest(job.id))
+    manifest["job_id"] = str(uuid.uuid4())
+    tampered = r3.manifest.dumps(manifest)
+    _put_object(f"{PREFIX}{job.id}/manifest.json", tampered)
+    receipt_path = repo.path / ".fetch" / f"{job.id}.receipt.json"
+    receipt_path.parent.mkdir(exist_ok=True)
+    receipt_path.write_bytes(tampered)
+
+    keys_before = set(_job_object_keys(job.id, PREFIX))
+
+    with pytest.raises(r3.manifest.ManifestError):
+        repo.fetch(job.id)
+
+    # Both local and remote state untouched.
+    assert job_dir.exists()
+    assert set(_job_object_keys(job.id, PREFIX)) == keys_before
+    assert remote.exists(job.id)
+    assert repo._index.get_location(job.id) == "archive"
+    assert receipt_path.exists()
+
+
 def test_move_fetch_roundtrips_nested_directories(
     repository_with_remote: Repository, tmp_path: Path
 ) -> None:
@@ -2516,6 +2591,35 @@ def test_rebuild_fails_closed_on_job_id_key_mismatch(
 
     with pytest.raises(RuntimeError):
         repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_canonical_job_id_mismatch(
+    repository_with_remote: Repository,
+) -> None:
+    """A manifest whose ``job_id`` is a *different canonical UUID* than its object key
+    must abort rebuild fail-closed, with a diagnostic naming the remote and job, leaving
+    the old index intact. This exercises the identity binding in ``loads`` rather than
+    the schema's canonical-UUID check."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    manifest = r3.manifest.loads(repo.remotes["archive"].get_manifest(job.id))
+    manifest["job_id"] = str(uuid.uuid4())
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET,
+        Key=f"{PREFIX}{job.id}/manifest.json",
+        Body=r3.manifest.dumps(manifest),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    message = str(excinfo.value)
+    assert job.id in message and "archive" in message
     _assert_index_unchanged(repo, before)
 
 

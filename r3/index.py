@@ -207,19 +207,15 @@ class Index:
         path. Any failure raises `RuntimeError` naming the remote and job.
         """
         try:
+            # `loads(expected_job_id=...)` both structurally validates the manifest
+            # (including that its own `job_id` is a canonical UUID) and binds it to the
+            # enumerated object-key id, so a manifest for a different job is rejected.
+            # The surrounding `except Exception` wraps the resulting `ManifestError`
+            # in the fail-closed RuntimeError below, leaving the existing index intact.
             manifest = r3.manifest.loads(
-                remote.get_manifest(job_id, max_bytes=MAX_MANIFEST_BYTES)
+                remote.get_manifest(job_id, max_bytes=MAX_MANIFEST_BYTES),
+                expected_job_id=job_id,
             )
-
-            if not r3.utils.is_valid_job_id(manifest["job_id"]):
-                raise RuntimeError(
-                    f"manifest job_id {manifest['job_id']!r} is not a canonical UUID."
-                )
-            if manifest["job_id"] != job_id:
-                raise RuntimeError(
-                    f"manifest job_id {manifest['job_id']!r} does not match the "
-                    f"object key job_id {job_id!r}."
-                )
 
             # Fail closed on a manifest that declares more files or bytes than the
             # extraction caps allow, using the same bound fetch enforces — so rebuild

@@ -18,6 +18,10 @@ from r3.manifest import (
     walk_regular_files,
 )
 
+# A canonical job UUID, required by validate() for any manifest that is parsed. It
+# contains hex letters so uppercasing yields a distinct (non-canonical) spelling.
+JOB_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+
 
 def _entries() -> list[FileEntry]:
     return [
@@ -56,20 +60,20 @@ def test_build_manifest_structure() -> None:
 
 
 def test_dumps_is_deterministic_and_json() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     a = dumps(manifest)
-    b = dumps(build_manifest("j", list(reversed(_entries())), "d" * 64, 1))
+    b = dumps(build_manifest(JOB_ID, list(reversed(_entries())), "d" * 64, 1))
     assert isinstance(a, bytes)
     assert a == b  # order of input entries must not change the bytes
 
 
 def test_loads_round_trip() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     assert loads(dumps(manifest)) == manifest
 
 
 def test_loads_rejects_unknown_version() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["manifest_version"] = 999
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
@@ -81,28 +85,28 @@ def test_loads_rejects_bad_json() -> None:
 
 
 def test_loads_rejects_missing_key() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     del manifest["archive_sha256"]
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
 
 
 def test_loads_rejects_unknown_top_level_key() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["surprise"] = "value"
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
 
 
 def test_loads_rejects_unknown_file_entry_key() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["files"][0]["extra"] = 1
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
 
 
 def test_loads_rejects_duplicate_path() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["files"].append({"path": "r3.yaml", "size": 3, "sha256": "a" * 64})
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
@@ -112,15 +116,59 @@ def test_loads_rejects_duplicate_path() -> None:
     "bad", ["/abs/path", "../escape", "./leading", "a/../b", ".", "a/./b"]
 )
 def test_loads_rejects_unsafe_path(bad: str) -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["files"].append({"path": bad, "size": 1, "sha256": "e" * 64})
     with pytest.raises(ManifestError):
         loads(dumps(manifest))
 
 
+def test_loads_rejects_missing_job_id() -> None:
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
+    del manifest["job_id"]
+    with pytest.raises(ManifestError):
+        loads(dumps(manifest))
+
+
+@pytest.mark.parametrize("bad", [123, None, ["x"], {"a": 1}])
+def test_loads_rejects_non_string_job_id(bad: object) -> None:
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
+    manifest["job_id"] = bad
+    with pytest.raises(ManifestError):
+        loads(dumps(manifest))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not-a-uuid",
+        "job-1",
+        JOB_ID.upper(),  # non-canonical form: uppercase
+        JOB_ID.replace("-", ""),  # non-canonical form: no hyphens
+        "urn:uuid:" + JOB_ID,  # non-canonical form: urn prefix
+    ],
+)
+def test_loads_rejects_non_canonical_job_id(bad: str) -> None:
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
+    manifest["job_id"] = bad
+    with pytest.raises(ManifestError):
+        loads(dumps(manifest))
+
+
+def test_loads_rejects_mismatched_expected_job_id() -> None:
+    other = "22222222-2222-2222-2222-222222222222"
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
+    with pytest.raises(ManifestError):
+        loads(dumps(manifest), expected_job_id=other)
+
+
+def test_loads_accepts_matching_expected_job_id() -> None:
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
+    assert loads(dumps(manifest), expected_job_id=JOB_ID) == manifest
+
+
 @pytest.mark.parametrize("bad", ["z" * 64, "a" * 63, "a" * 65, "A" * 64, ""])
 def test_validate_rejects_bad_archive_sha256(bad: str) -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["archive_sha256"] = bad
     with pytest.raises(ManifestError):
         validate(manifest)
@@ -128,7 +176,7 @@ def test_validate_rejects_bad_archive_sha256(bad: str) -> None:
 
 @pytest.mark.parametrize("bad", ["z" * 64, "a" * 63, "A" * 64])
 def test_validate_rejects_bad_entry_sha256(bad: str) -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["files"][0]["sha256"] = bad
     with pytest.raises(ManifestError):
         validate(manifest)
@@ -136,7 +184,7 @@ def test_validate_rejects_bad_entry_sha256(bad: str) -> None:
 
 @pytest.mark.parametrize("bad", [-1, True, False])
 def test_validate_rejects_bad_archive_size(bad: object) -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["archive_size"] = bad
     with pytest.raises(ManifestError):
         validate(manifest)
@@ -144,14 +192,14 @@ def test_validate_rejects_bad_archive_size(bad: object) -> None:
 
 @pytest.mark.parametrize("bad", [-1, True, False])
 def test_validate_rejects_bad_entry_size(bad: object) -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     manifest["files"][0]["size"] = bad
     with pytest.raises(ManifestError):
         validate(manifest)
 
 
 def test_file_paths() -> None:
-    manifest = build_manifest("j", _entries(), "d" * 64, 1)
+    manifest = build_manifest(JOB_ID, _entries(), "d" * 64, 1)
     assert file_paths(manifest) == [
         Path("metadata.yaml"),
         Path("output/result.pt"),
@@ -173,7 +221,7 @@ def _manifest_for_dir(job_dir: Path) -> dict:
                     r3.utils.hash_file(child),
                 )
             )
-    return build_manifest("j", entries, "d" * 64, 1)
+    return build_manifest(JOB_ID, entries, "d" * 64, 1)
 
 
 @pytest.fixture
