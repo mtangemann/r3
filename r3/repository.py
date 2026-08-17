@@ -569,10 +569,10 @@ class Repository:
 
         dependents = self._index.find_dependents(job)
 
-        # 7. Commit the index transition, then 8. delete local atomically.
-        self._index.set_location(job_id, remote_name)
-        if remote.cache_file_list:
-            self._index.set_file_list(job_id, r3.manifest.file_paths(manifest))
+        # 7. Commit the index transition (location + cached file list together, in one
+        #    transaction), then 8. delete local atomically.
+        files = r3.manifest.file_paths(manifest) if remote.cache_file_list else None
+        self._index.set_remote_location(job_id, remote_name, files)
         self._atomic_remove_local(job_id)
         return dependents
 

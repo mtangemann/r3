@@ -483,6 +483,32 @@ class Index:
                 (files_json, job_id),
             )
 
+    def set_remote_location(
+        self, job_id: str, location: str, files: Optional[List[Path]]
+    ) -> None:
+        """Moves a job's location and cached file list in one transaction.
+
+        Both the ``location`` and ``files`` columns are written inside a single
+        `Transaction`, so they commit together or not at all: an interruption can
+        never leave the row at the new remote location with an old/NULL file list.
+
+        Paths are serialized exactly as `set_file_list` does — POSIX strings in a
+        JSON array — so the cached list is portable. Passing ``files=None`` (a
+        non-caching remote) stores SQL NULL.
+        """
+        files_json = (
+            None if files is None else json.dumps([p.as_posix() for p in files])
+        )
+        with Transaction(self._path) as transaction:
+            transaction.execute(
+                "UPDATE jobs SET location = ? WHERE id = ?",
+                (location, job_id),
+            )
+            transaction.execute(
+                "UPDATE jobs SET files = ? WHERE id = ?",
+                (files_json, job_id),
+            )
+
     def get_file_list(self, job_id: str) -> Optional[List[Path]]:
         """Returns the cached file list for a job, or None if unset."""
         with Transaction(self._path) as transaction:

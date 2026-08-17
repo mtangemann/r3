@@ -1058,6 +1058,25 @@ def test_repository_find_still_works_after_move(
         _ = results[0].files
 
 
+def test_move_commits_location_and_file_list_together(
+    repository_with_remote: Repository,
+) -> None:
+    """After a normal move to a caching remote, the index shows the new location and
+    a non-NULL cached file list. There is no observable state with the remote
+    location but an old/NULL file list: the two are committed in one transaction."""
+    repo = repository_with_remote
+    assert repo.remotes["archive"].cache_file_list  # this remote caches file lists
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    repo.move(job.id, "archive")
+
+    assert repo._index.get_location(job.id) == "archive"
+    cached = repo._index.get_file_list(job.id)
+    assert cached is not None
+    assert Path("r3.yaml") in cached
+
+
 def _archive_member_names(archive_path: Path) -> set:
     """Returns the set of member arcnames in a seekable ``tar.zst`` archive.
 

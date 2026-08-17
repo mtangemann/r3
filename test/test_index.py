@@ -414,6 +414,86 @@ def test_index_get_file_list_returns_none_when_unset(storage: Storage):
     assert index.get_file_list(job.id) is None
 
 
+def test_index_set_remote_location_caches_file_list(storage: Storage):
+    """Setting a remote location with a file list updates both columns."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("output/result.pt")]
+    index.set_remote_location(job.id, "archive", paths)
+
+    assert index.get_location(job.id) == "archive"
+    assert index.get_file_list(job.id) == paths
+
+
+def test_index_set_remote_location_none_files_stores_null(storage: Storage):
+    """A non-caching remote (files=None) sets the location but leaves files NULL."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_remote_location(job.id, "archive", None)
+
+    assert index.get_location(job.id) == "archive"
+    assert index.get_file_list(job.id) is None
+
+
+def test_index_set_remote_location_is_atomic(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+):
+    """location and files move together: if writing the files column fails, the
+    location change is rolled back too, leaving no (remote, NULL/old-files)
+    half-transition. This is red against a naive two-transaction implementation
+    (which commits the location before the files write can fail)."""
+    import sqlite3
+
+    import r3.index as index_module
+
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    assert index.get_location(job.id) == "local"
+    assert index.get_file_list(job.id) is None
+
+    real_transaction = index_module.Transaction
+
+    class _FailingCursor:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def execute(self, sql, parameters=()):
+            # Fail the files column write, after any location write has been
+            # issued within the same transaction.
+            if "UPDATE" in sql.upper() and "files" in sql:
+                raise sqlite3.OperationalError("simulated failure writing files")
+            return self._cursor.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class _FailingTransaction(Transaction):
+        def __enter__(self):
+            return _FailingCursor(super().__enter__())  # type: ignore[return-value]
+
+    monkeypatch.setattr(index_module, "Transaction", _FailingTransaction)
+
+    with pytest.raises(sqlite3.OperationalError):
+        index.set_remote_location(job.id, "archive", [Path("r3.yaml")])
+
+    # Read back via the real Transaction: neither column changed.
+    monkeypatch.setattr(index_module, "Transaction", real_transaction)
+    assert index.get_location(job.id) == "local"
+    assert index.get_file_list(job.id) is None
+
+
 def test_index_find_returns_remote_projection(storage: Storage):
     """find() returns a remote job as a metadata-only projection."""
     index = Index(storage)
