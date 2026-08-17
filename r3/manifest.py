@@ -10,7 +10,9 @@ directory to build a manifest.
 """
 
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
@@ -38,6 +40,89 @@ class FileEntry:
     path: str
     size: int
     sha256: str
+
+
+@dataclass(frozen=True)
+class WalkedFile:
+    """One regular file found by :func:`walk_regular_files`.
+
+    ``path`` is relative to the walk root; ``size`` and ``mtime_ns`` come from the same
+    ``os.lstat`` that classified the entry, so a caller needing a quiescence snapshot
+    does not have to lstat a second time.
+    """
+
+    path: Path
+    size: int
+    mtime_ns: int
+
+
+def walk_regular_files(root: Path) -> List[WalkedFile]:
+    """Enumerates every regular file under ``root``, files-only, via ``os.lstat``.
+
+    This is the single files-only gate shared by ``move``'s capture and
+    :func:`verify_directory`, so both agree on exactly which on-disk entries count as
+    payload. It never follows a symlink: it recurses only into real directories
+    (``S_ISDIR`` on the lstat) and accepts only regular files with a single hard link
+    (``S_ISREG`` and ``st_nlink == 1``). Empty directories (e.g. an empty ``output/``)
+    are tolerated — they simply contribute no files.
+
+    Returns:
+        The regular files found, as :class:`WalkedFile` records, sorted by path.
+
+    Raises:
+        ManifestError: On the first symlink (broken, to a file, or to a directory),
+            FIFO, socket, device node, other special entry, or hardlinked regular file,
+            naming the offending relative path and its type. Such an entry is a
+            data-integrity hazard the move/fetch model does not support, so this fails
+            closed rather than following it (a symlink) or silently dropping it (a
+            special file), either of which could lose data or corrupt a round-trip.
+        OSError: Filesystem errors from ``os.scandir``/``os.lstat`` (e.g. an unreadable
+            subdirectory, or an entry vanishing mid-walk) propagate unchanged rather
+            than being wrapped as ``ManifestError``.
+    """
+    results: List[WalkedFile] = []
+    _walk_regular_files(root, root, results)
+    return sorted(results, key=lambda walked: walked.path.as_posix())
+
+
+def _walk_regular_files(root: Path, current: Path, results: List[WalkedFile]) -> None:
+    with os.scandir(current) as entries:
+        children = sorted(entries, key=lambda entry: entry.name)
+    for child in children:
+        stat_result = os.lstat(child.path)
+        mode = stat_result.st_mode
+        relative = Path(child.path).relative_to(root)
+        if stat.S_ISDIR(mode):
+            _walk_regular_files(root, Path(child.path), results)
+        elif stat.S_ISREG(mode):
+            if stat_result.st_nlink > 1:
+                raise ManifestError(
+                    f"Refusing hardlinked file: {relative.as_posix()} has "
+                    f"{stat_result.st_nlink} links (only one name per file is "
+                    "supported)."
+                )
+            results.append(
+                WalkedFile(relative, stat_result.st_size, stat_result.st_mtime_ns)
+            )
+        else:
+            raise ManifestError(
+                f"Refusing special filesystem entry: {relative.as_posix()} is a "
+                f"{_describe_special_mode(mode)}."
+            )
+
+
+def _describe_special_mode(mode: int) -> str:
+    if stat.S_ISLNK(mode):
+        return "symbolic link"
+    if stat.S_ISFIFO(mode):
+        return "FIFO (named pipe)"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISCHR(mode):
+        return "character device"
+    if stat.S_ISBLK(mode):
+        return "block device"
+    return "special file"
 
 
 def build_manifest(
@@ -193,14 +278,20 @@ def verify_directory(job_dir: Path, manifest: Dict[str, Any]) -> None:
 
     Checks that the set of files on disk equals the manifest's file set and that
     every file's size and SHA-256 agree. Directories (including an empty ``output/``)
-    are not compared — the manifest lists files only.
+    are not compared — the manifest lists files only. The on-disk set is enumerated by
+    the shared files-only walker (:func:`walk_regular_files`), so a symlink at an
+    expected path or an extra special entry is rejected rather than followed or ignored
+    — a special entry must never let fetch's step-0 verification pass and delete the
+    remote authoritative copy.
 
     Raises:
-        ManifestError: On any missing file, extra file, or size/checksum mismatch.
+        ManifestError: On any missing file, extra file, size/checksum mismatch, or a
+            symlink/special/hardlinked entry on disk.
     """
     expected = {entry["path"]: entry for entry in manifest["files"]}
     actual = {
-        path.as_posix(): (job_dir / path) for path in _walk_files(job_dir)
+        walked.path.as_posix(): (job_dir / walked.path)
+        for walked in walk_regular_files(job_dir)
     }
 
     missing = sorted(set(expected) - set(actual))
@@ -220,9 +311,3 @@ def verify_directory(job_dir: Path, manifest: Dict[str, Any]) -> None:
             )
         if r3.utils.hash_file(target) != entry["sha256"]:
             raise ManifestError(f"Checksum mismatch for {path}")
-
-
-def _walk_files(root: Path) -> List[Path]:
-    return sorted(
-        child.relative_to(root) for child in root.rglob("*") if child.is_file()
-    )

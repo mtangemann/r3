@@ -1,5 +1,6 @@
 """Unit tests for r3.manifest (the integrity + listing record)."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from r3.manifest import (
     loads,
     validate,
     verify_directory,
+    walk_regular_files,
 )
 
 
@@ -207,3 +209,116 @@ def test_verify_directory_size_or_checksum_mismatch(job_dir: Path) -> None:
     (job_dir / "output" / "result.txt").write_text("tampered!")
     with pytest.raises(ManifestError):
         verify_directory(job_dir, manifest)
+
+
+def test_verify_directory_tolerates_empty_directory(tmp_path: Path) -> None:
+    """A directory legitimately absent from the manifest (an empty ``output/``) must
+    not be flagged; only special *files* are rejected."""
+    d = tmp_path / "job"
+    (d / "output").mkdir(parents=True)  # empty, leaves no manifest entry
+    (d / "r3.yaml").write_text("version: 1\n")
+    (d / "metadata.yaml").write_text("tags: []\n")
+    verify_directory(d, _manifest_for_dir(d))  # no raise
+
+
+def test_verify_directory_rejects_special_entry(job_dir: Path) -> None:
+    """An extra special entry (a FIFO) must be rejected rather than ignored: fetch's
+    step-0 verification must not pass and go on to delete the remote copy."""
+    manifest = _manifest_for_dir(job_dir)
+    os.mkfifo(job_dir / "output" / "pipe")
+    with pytest.raises(ManifestError, match="output/pipe"):
+        verify_directory(job_dir, manifest)
+
+
+def test_verify_directory_rejects_symlink_at_expected_path(job_dir: Path) -> None:
+    """A symlink placed where a regular file is expected must be rejected rather than
+    followed, even if it resolves to matching content."""
+    manifest = _manifest_for_dir(job_dir)
+    target = job_dir.parent / "elsewhere.txt"
+    target.write_text("result")  # same bytes as output/result.txt
+    (job_dir / "output" / "result.txt").unlink()
+    (job_dir / "output" / "result.txt").symlink_to(target)
+    with pytest.raises(ManifestError, match="output/result.txt"):
+        verify_directory(job_dir, manifest)
+
+
+# --------------------------------------------------------------- walk_regular_files
+
+
+def test_walk_regular_files_returns_sorted_nested_files(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "top.txt").write_text("top")
+    (root / "a" / "mid.txt").write_text("middle")
+    (root / "a" / "b" / "deep.bin").write_bytes(b"xyz")
+    (root / "empty").mkdir()  # empty dir tolerated, contributes nothing
+
+    walked = walk_regular_files(root)
+
+    assert [w.path.as_posix() for w in walked] == [
+        "a/b/deep.bin",
+        "a/mid.txt",
+        "top.txt",
+    ]
+    by_path = {w.path.as_posix(): w for w in walked}
+    assert by_path["top.txt"].size == len("top")
+    assert by_path["a/b/deep.bin"].size == 3
+    assert all(w.mtime_ns > 0 for w in walked)
+
+
+def test_walk_regular_files_rejects_fifo(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "keep.txt").write_text("keep")
+    os.mkfifo(root / "pipe")
+    with pytest.raises(ManifestError, match="pipe"):
+        walk_regular_files(root)
+
+
+def test_walk_regular_files_rejects_file_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "real.txt").write_text("real")
+    (root / "link.txt").symlink_to(root / "real.txt")
+    with pytest.raises(ManifestError, match="symbolic link"):
+        walk_regular_files(root)
+
+
+def test_walk_regular_files_rejects_dir_symlink_without_following(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    (root / "realdir").mkdir(parents=True)
+    (root / "realdir" / "inside.txt").write_text("inside")
+    external = tmp_path / "external"
+    external.mkdir()
+    (root / "dirlink").symlink_to(external)
+    with pytest.raises(ManifestError, match="symbolic link"):
+        walk_regular_files(root)
+
+
+def test_walk_regular_files_rejects_broken_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "broken").symlink_to(root / "does-not-exist")
+    with pytest.raises(ManifestError, match="symbolic link"):
+        walk_regular_files(root)
+
+
+def test_walk_regular_files_rejects_internal_hardlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_text("shared")
+    os.link(root / "a.txt", root / "b.txt")  # two names, one inode
+    with pytest.raises(ManifestError, match="hardlink"):
+        walk_regular_files(root)
+
+
+def test_walk_regular_files_rejects_external_hardlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("shared")
+    os.link(external, root / "hard.txt")  # link count > 1, twin outside the tree
+    with pytest.raises(ManifestError, match="hardlink"):
+        walk_regular_files(root)

@@ -465,6 +465,9 @@ class Repository:
             RemoteError: If an uploaded object fails content verification.
             RuntimeError: If the job changed during the move (not quiescent), or the
                 built archive does not round-trip.
+            ManifestError: If the job directory contains a symlink, special file, or
+                hardlinked regular file (rejected at capture, before any remote
+                mutation).
         """
         # Validate the id first: `move` derives a receipt path and remote keys from it
         # below, so a non-canonical id must be refused before any of that.
@@ -542,8 +545,16 @@ class Repository:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-        # 6. Quiescence re-check: abort if the job changed since the capture.
-        if _dir_snapshot(job_dir) != snapshot:
+        # 6. Quiescence re-check: abort if the job changed since the capture. A special
+        #    entry appearing between the capture and here makes _dir_snapshot raise
+        #    ManifestError; treat that as "changed" too so it routes through the same
+        #    published-manifest cleanup below rather than escaping raw and orphaning the
+        #    just-published manifest.
+        try:
+            job_changed = _dir_snapshot(job_dir) != snapshot
+        except r3.manifest.ManifestError:
+            job_changed = True
+        if job_changed:
             try:
                 remote.delete_manifest(job_id)
             except RemoteError as error:
@@ -942,20 +953,20 @@ def _payload_sizes(manifest: Dict[str, Any]) -> Dict[str, int]:
 
 
 def _dir_snapshot(job_dir: Path) -> Dict[Path, Tuple[int, int]]:
-    """Returns {relative path: (size, mtime_ns)} for every file under job_dir.
+    """Returns {relative path: (size, mtime_ns)} for every regular file under job_dir.
 
-    Used both to enumerate the job's files and to detect mutation between the move
-    capture and the local deletion (the quiescence re-check before deleting local).
+    Built from the shared files-only walker (:func:`r3.manifest.walk_regular_files`),
+    so a symlink, FIFO, socket, device, other special entry, or a hardlinked regular
+    file makes this RAISE (``ManifestError`` naming the offending path and its type)
+    rather than silently drop or follow it. ``move`` captures the snapshot before any
+    upload or manifest publication, so such an entry refuses the move up front and
+    leaves the local job intact. Used both to enumerate the job's files and to detect
+    mutation between the capture and the local deletion (the quiescence re-check).
     """
-    snapshot: Dict[Path, Tuple[int, int]] = {}
-    for child in job_dir.rglob("*"):
-        if child.is_file():
-            stat_result = child.stat()
-            snapshot[child.relative_to(job_dir)] = (
-                stat_result.st_size,
-                stat_result.st_mtime_ns,
-            )
-    return snapshot
+    return {
+        walked.path: (walked.size, walked.mtime_ns)
+        for walked in r3.manifest.walk_regular_files(job_dir)
+    }
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:

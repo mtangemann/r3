@@ -3,6 +3,7 @@
 import filecmp
 import os
 import shutil
+import socket
 import stat
 import tarfile
 import tempfile
@@ -1863,6 +1864,36 @@ def test_move_aborts_on_quiescence_violation(
     assert not repo.remotes["archive"].exists(job.id)  # stale manifest removed
 
 
+def test_move_special_entry_after_publish_routes_through_cleanup(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A special entry appearing after the manifest is published but before the step-6
+    quiescence re-check must route through the SAME cleanup as a size/mtime change: the
+    re-check's ManifestError is caught, the published manifest is deleted, and the
+    "changed during move" RuntimeError is raised — the raw ManifestError never escapes
+    to orphan the published manifest."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+    job_dir = repo.path / "jobs" / job.id
+
+    real_publish = remote.publish_manifest
+
+    def publish_then_plant_fifo(job_id: str, data: bytes) -> None:
+        real_publish(job_id, data)
+        os.mkfifo(job_dir / "output" / "pipe")  # appears before the re-check
+
+    monkeypatch.setattr(remote, "publish_manifest", publish_then_plant_fifo)
+
+    with pytest.raises(RuntimeError, match="changed during move"):
+        repo.move(job.id, "archive")
+
+    assert not remote.exists(job.id)  # published manifest cleaned up, not orphaned
+    assert job_dir.exists()  # local job intact
+    assert repo._index.get_location(job.id) == "local"
+
+
 def test_move_aborts_before_upload_if_archive_not_restorable(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1983,6 +2014,186 @@ def test_fetch_write_protects_restored_job(
     assert not is_writable(job_dir / "r3.yaml")
     assert not is_writable(job_dir / "run.py")
     assert is_writable(job_dir / "metadata.yaml")
+
+
+# --- files-only symmetry: move/fetch reject symlinks, special files, hardlinks ---
+
+
+def _create_special_entry(parent: Path, external_dir: Path, kind: str):
+    """Creates a special filesystem entry of ``kind`` under ``parent``.
+
+    Returns ``(basename, type_keyword)`` for the created entry, or ``None`` when the
+    kind cannot be created without elevated privileges (device nodes).
+    """
+    if kind == "fifo":
+        os.mkfifo(parent / "fifo")
+        return "fifo", "FIFO"
+    if kind == "socket":
+        sock = socket.socket(socket.AF_UNIX)
+        # Bind a short *relative* name from inside ``parent`` so the AF_UNIX sun_path
+        # length limit (~108 bytes) is not tripped by a long tmp path; the socket file
+        # persists on disk after the socket object is closed.
+        previous = os.getcwd()
+        os.chdir(parent)
+        try:
+            sock.bind("sock")
+        finally:
+            os.chdir(previous)
+        sock.close()
+        return "sock", "socket"
+    if kind == "broken_symlink":
+        (parent / "broken").symlink_to(parent / "does-not-exist")
+        return "broken", "symbolic link"
+    if kind == "file_symlink":
+        target = external_dir / "real_target.txt"
+        target.write_text("outside payload")
+        (parent / "filelink").symlink_to(target)
+        return "filelink", "symbolic link"
+    if kind == "dir_symlink":
+        target = external_dir / "real_dir"
+        target.mkdir()
+        (target / "inside.txt").write_text("inside")
+        (parent / "dirlink").symlink_to(target)
+        return "dirlink", "symbolic link"
+    if kind == "external_hardlink":
+        target = external_dir / "ext_source.txt"
+        target.write_text("shared bytes")
+        os.link(target, parent / "exthard")
+        return "exthard", "hardlink"
+    if kind == "internal_hardlink":
+        (parent / "inthard_a").write_text("shared bytes")
+        os.link(parent / "inthard_a", parent / "inthard_b")
+        return "inthard_a", "hardlink"  # sorts first, so it is the named offender
+    if kind == "device":
+        try:
+            os.mknod(parent / "dev0", stat.S_IFCHR | 0o600, os.makedev(1, 3))
+        except (PermissionError, OSError):
+            return None
+        return "dev0", "character device"
+    raise AssertionError(f"unknown kind: {kind}")
+
+
+SPECIAL_ENTRY_KINDS = [
+    "fifo",
+    "socket",
+    "broken_symlink",
+    "file_symlink",
+    "dir_symlink",
+    "external_hardlink",
+    "internal_hardlink",
+    "device",
+]
+
+
+@pytest.mark.parametrize("kind", SPECIAL_ENTRY_KINDS)
+def test_move_refuses_special_or_symlink_or_hardlink_entry(
+    repository_with_remote: Repository, tmp_path: Path, kind: str
+) -> None:
+    """move must refuse a FIFO, socket, (broken/file/dir) symlink, device, or
+    hardlink under the job BEFORE publishing a manifest, naming the path and its type,
+    and leave the local job — and the offending entry — intact.
+
+    This is the reproduction for the ``is_file()``-filter bug: with the old snapshot,
+    such an entry was silently dropped, so move succeeded and then deleted the local
+    copy (the FIFO case loses data outright)."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+    job_dir = repo.path / "jobs" / job.id
+    output_dir = job_dir / "output"  # committed jobs keep output/ writable
+
+    external = tmp_path / "external"
+    external.mkdir()
+    created = _create_special_entry(output_dir, external, kind)
+    if created is None:
+        pytest.skip(f"cannot create {kind} without elevated privileges")
+    basename, type_keyword = created
+    entry_path = output_dir / basename
+
+    with pytest.raises(r3.manifest.ManifestError) as excinfo:
+        repo.move(job.id, "archive")
+
+    # The error names the offending relative path AND its type.
+    message = str(excinfo.value)
+    assert f"output/{basename}" in message
+    assert type_keyword in message
+
+    # The local job and the offending entry both survive the refusal ...
+    assert job_dir.exists()
+    assert os.path.lexists(entry_path)  # lexists: a broken symlink still counts
+    # ... the index still says local, and NO final manifest was published.
+    assert repo._index.get_location(job.id) == "local"
+    assert not remote.exists(job.id)
+
+
+def test_fetch_step0_rejects_special_entry_without_deleting_remote(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """Fetch's step-0 verification (a pre-existing jobs/<id>) must reject an extra
+    special entry rather than treat the directory as matching and delete the remote
+    authoritative copy.
+
+    Reproduces the move step-7↔step-8 crash window (jobs/<id> present, index remote),
+    then plants a FIFO: the old ``is_file()`` walk ignored it, so verification passed
+    and fetch deleted the remote."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+    remote = repo.remotes["archive"]
+
+    # Snapshot the committed bytes, move (uploads + deletes local), then recreate
+    # jobs/<id> from the snapshot to reproduce the crash-window state.
+    snapshot = tmp_path / "snapshot"
+    shutil.copytree(job_dir, snapshot)
+    repo.move(job.id, "archive")
+    assert not job_dir.exists()
+    shutil.copytree(snapshot, job_dir)
+    assert repo._index.get_location(job.id) == "archive"
+    assert remote.exists(job.id)
+
+    # output/ stays writable on a committed job, so a FIFO can be planted there.
+    os.mkfifo(job_dir / "output" / "pipe")
+
+    with pytest.raises((RuntimeError, r3.manifest.ManifestError)):
+        repo.fetch(job.id)
+
+    # The remote copy is preserved and the index still points at it: verification
+    # refused to accept the tampered directory.
+    assert remote.exists(job.id)
+    assert repo._index.get_location(job.id) == "archive"
+
+
+def test_move_fetch_roundtrips_nested_directories(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """Ordinary files and nested directories still round-trip unchanged through
+    commit -> move -> fetch."""
+    repo = repository_with_remote
+    src = tmp_path / "job"
+    # Nested payload dirs live under the committed tree (not output/, which R3 drops).
+    (src / "code" / "deep" / "nested").mkdir(parents=True)
+    (src / "r3.yaml").write_text("dependencies: []\n")
+    (src / "metadata.yaml").write_text("tags: [roundtrip]\n")
+    (src / "top.txt").write_text("top-level payload")
+    (src / "code" / "deep" / "mid.bin").write_bytes(b"\x00\x01mid")
+    (src / "code" / "deep" / "nested" / "leaf.txt").write_text("leaf payload")
+
+    job = repo.commit(Job(src))
+    assert job.id is not None
+    job_dir = repo.path / "jobs" / job.id
+
+    repo.move(job.id, "archive")
+    assert not job_dir.exists()
+    repo.fetch(job.id)
+
+    assert (job_dir / "top.txt").read_text() == "top-level payload"
+    assert (job_dir / "code" / "deep" / "mid.bin").read_bytes() == b"\x00\x01mid"
+    assert (
+        job_dir / "code" / "deep" / "nested" / "leaf.txt"
+    ).read_text() == "leaf payload"
+    assert repo._index.get_location(job.id) == "local"
 
 
 # --- atomic, bucket-backed, fail-closed rebuild ---
