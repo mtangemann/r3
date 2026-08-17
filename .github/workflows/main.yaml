@@ -35,3 +35,20 @@ jobs:
 
       - name: Run mypy
         run: uv run mypy r3 test migration
+
+
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      # AWS_CONFIG_FILE=/dev/null keeps a global ~/.aws/config (endpoint_url) from
+      # bypassing moto. live_s3 tests need real credentials and stay out of CI.
+      - name: Run tests
+        run: AWS_CONFIG_FILE=/dev/null uv run python -m pytest -m "not live_s3"
