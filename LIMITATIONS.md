@@ -9,6 +9,26 @@ pointing multiple processes or people at one repository.
 
 ---
 
+## Remote storage is an alpha feature
+
+**Impact.** The remote-storage extension — `r3 move`/`fetch`/`remove`, the `r3 remote`
+commands, the S3/CEPH backend, the bucket object layout, and the Python API around
+them — is **alpha**. Its on-bucket layout, on-disk layout, CLI, and Python API may
+change in backward-incompatible ways between releases, possibly without a migration
+path, and it has not yet been exercised against a real production workload.
+
+**Workaround.** Treat archived jobs as reproducible or separately backed up: do not
+make a remote the only copy of something you cannot afford to lose, and expect that a
+future release may require re-moving or re-fetching jobs. The rest of R3 (local
+commit/checkout/find) is not affected by this caveat.
+
+**Status.** Intentional, and called out so early errors in the design can still be
+fixed. The layout deliberately leaves room for the planned extensions (see
+[`ROADMAP.md`](ROADMAP.md)); the feature graduates from alpha once it has proven
+itself in real use.
+
+---
+
 ## No concurrency control (single writer per repository)
 
 **Impact.** R3 assumes one mutating process per repository at a time. Running
