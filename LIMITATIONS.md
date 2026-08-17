@@ -146,6 +146,28 @@ contains at least one file.
 
 ---
 
+## Symlinks and special files are not supported
+
+**Impact.** R3 stores regular files only and does not preserve symbolic links. At
+**commit**, a symlink to a file is silently dereferenced (the target's content is
+stored as a plain file), a symlink to a directory is followed and flattened into the
+job, and a broken symlink is silently dropped — in no case is the link itself kept. At
+**move**, a job directory that contains a symlink, FIFO, socket, device node, or a
+hardlinked file (`st_nlink > 1`) — for example something a job's run wrote into
+`output/` — is refused outright, naming the offending path (the job stays local and
+intact). Fetched-job verification enforces the same rule.
+
+**Workaround.** Keep job directories to regular files and non-empty directories;
+materialize anything reached through a symlink as a regular file before committing.
+
+**Status.** Making `commit` fail closed on symlinks/special files (instead of silently
+altering them), and eventually preserving symlinks properly, are on the roadmap — see
+[ROADMAP.md](ROADMAP.md).
+
+**Details:** see the remote-storage durable-design notes.
+
+---
+
 ## Remote configuration is durable metadata — back it up
 
 **Impact.** A remote's endpoint/bucket/prefix live in the repository's `r3.yaml`, not
