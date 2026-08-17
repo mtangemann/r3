@@ -2955,8 +2955,8 @@ def test_rebuild_fails_closed_on_non_directory_local_job_entry(
     abort fail-closed (naming the offending entry), leaving the previous index intact so
     the job is never dropped.
 
-    This is Codex's reproduction: commit a job, drop its local directory but KEEP its
-    index row, then plant a non-directory entry where the directory used to be."""
+    Reproduction: commit a job, drop its local directory but KEEP its index row, then
+    plant a non-directory entry where the directory used to be."""
     repo = repository
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
