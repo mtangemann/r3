@@ -1,14 +1,15 @@
 """Unit tests for `r3.index`."""
 
 import datetime
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
 import yaml
 
-from r3.index import Index
-from r3.job import Job, JobDependency
+from r3.index import Index, Transaction
+from r3.job import FilesUnavailableError, Job, JobDependency
 from r3.storage import Storage
 
 DATA_PATH = Path(__file__).parent / "data"
@@ -262,3 +263,471 @@ def test_index_find_dependents_uses_cached_metadata(storage_with_jobs: Storage):
     job = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
     dependents = index.find_dependents(job)
     assert all(dependent.uses_cached_metadata() for dependent in dependents)
+
+
+def test_index_find_dependents_returns_remote_child_as_projection(storage: Storage):
+    """A remote dependent is returned as a metadata-only projection, not a
+    FileNotFoundError from ``storage.get`` on the missing local directory."""
+    index = Index(storage)
+
+    parent = get_dummy_job("base")
+    parent.metadata["tags"] = ["parent"]
+    parent = storage.add(parent)
+    index.add(parent)
+    assert parent.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    child._config["dependencies"] = [JobDependency("parent", parent.id).to_config()]
+    child = storage.add(child)
+    index.add(child)
+    assert child.id is not None
+
+    # Simulate a move of the child: flip it to remote and drop its local files.
+    index.set_location(child.id, "archive")
+    storage.remove(child)
+
+    dependents = index.find_dependents(parent)
+    assert {dependent.id for dependent in dependents} == {child.id}
+    dependent = next(iter(dependents))
+    # The remote child is a projection: its files raise until it is fetched.
+    with pytest.raises(FilesUnavailableError):
+        _ = dependent.files
+
+
+def test_index_find_dependents_still_returns_local_child(storage: Storage):
+    """A local dependent must still resolve to a real local Job with files."""
+    index = Index(storage)
+
+    parent = get_dummy_job("base")
+    parent.metadata["tags"] = ["parent"]
+    parent = storage.add(parent)
+    index.add(parent)
+    assert parent.id is not None
+
+    child = get_dummy_job("base")
+    child.metadata["tags"] = ["child"]
+    child._config["dependencies"] = [JobDependency("parent", parent.id).to_config()]
+    child = storage.add(child)
+    index.add(child)
+    assert child.id is not None
+
+    dependents = index.find_dependents(parent)
+    assert {dependent.id for dependent in dependents} == {child.id}
+    # A local dependent exposes its files without raising.
+    assert Path("run.py") in next(iter(dependents)).files
+
+
+def test_index_add_defaults_location_to_local(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    assert index.get_location(job.id) == "local"
+
+
+def test_index_set_location(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    index.set_location(job.id, "archive")
+    assert index.get_location(job.id) == "archive"
+    index.set_location(job.id, "local")
+    assert index.get_location(job.id) == "local"
+
+
+def test_index_rebuild_defaults_location_to_local(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    index.rebuild()
+    assert index.get_location(job.id) == "local"
+
+
+def test_index_find_with_location_filter(storage_with_jobs: Storage):
+    index = Index(storage_with_jobs)
+    all_jobs = index.find({})
+    assert len(all_jobs) == 3
+    job = all_jobs[0]
+    assert job.id is not None
+    index.set_location(job.id, "archive")
+    local_jobs = index.find({}, location="local")
+    assert len(local_jobs) == 2
+    archived_jobs = index.find({}, location="archive")
+    assert len(archived_jobs) == 1
+    assert archived_jobs[0].id == job.id
+    all_jobs_again = index.find({})
+    assert len(all_jobs_again) == 3
+
+
+def test_index_find_location_filter_is_not_sql_injectable(storage_with_jobs: Storage):
+    """A crafted location value is a literal, not SQL that bypasses the filter.
+
+    With the value interpolated as a raw string literal, ``missing' OR 1=1 --``
+    breaks out of the quotes and the ``OR 1=1`` matches every row. Bound as a
+    parameter, it is treated as a location value that matches nothing.
+    """
+    index = Index(storage_with_jobs)
+    # The payload would match all rows if the filter were bypassed.
+    assert len(index.find({})) == 3
+    results = index.find({}, location="missing' OR 1=1 --")
+    assert len(results) == 0
+
+
+def test_index_rebuild_creates_files_column(storage: Storage):
+    """The rebuilt schema must include the files column."""
+    index = Index(storage)
+    index.rebuild()
+    import sqlite3
+    conn = sqlite3.connect(str(storage.root / "index.sqlite"))
+    cursor = conn.execute("PRAGMA table_info(jobs)")
+    columns = {row[1] for row in cursor.fetchall()}
+    conn.close()
+    assert "files" in columns
+
+
+def test_index_set_and_get_file_list(storage: Storage):
+    """File list round-trips through SQLite as a JSON array of POSIX strings."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("output/result.pt")]
+    index.set_file_list(job.id, paths)
+    result = index.get_file_list(job.id)
+    assert result == paths
+
+
+def test_index_get_file_list_returns_none_when_unset(storage: Storage):
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    assert index.get_file_list(job.id) is None
+
+
+def test_index_set_remote_location_caches_file_list(storage: Storage):
+    """Setting a remote location with a file list updates both columns."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("output/result.pt")]
+    index.set_remote_location(job.id, "archive", paths)
+
+    assert index.get_location(job.id) == "archive"
+    assert index.get_file_list(job.id) == paths
+
+
+def test_index_set_remote_location_none_files_stores_null(storage: Storage):
+    """A non-caching remote (files=None) sets the location but leaves files NULL."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_remote_location(job.id, "archive", None)
+
+    assert index.get_location(job.id) == "archive"
+    assert index.get_file_list(job.id) is None
+
+
+def test_index_set_remote_location_is_atomic(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+):
+    """location and files move together: if writing the files column fails, the
+    location change is rolled back too, leaving no (remote, NULL/old-files)
+    half-transition. This is red against a naive two-transaction implementation
+    (which commits the location before the files write can fail)."""
+    import sqlite3
+
+    import r3.index as index_module
+
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    assert index.get_location(job.id) == "local"
+    assert index.get_file_list(job.id) is None
+
+    real_transaction = index_module.Transaction
+
+    class _FailingCursor:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def execute(self, sql, parameters=()):
+            # Fail the files column write, after any location write has been
+            # issued within the same transaction.
+            if "UPDATE" in sql.upper() and "files" in sql:
+                raise sqlite3.OperationalError("simulated failure writing files")
+            return self._cursor.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class _FailingTransaction(Transaction):
+        def __enter__(self):
+            return _FailingCursor(super().__enter__())  # type: ignore[return-value]
+
+    monkeypatch.setattr(index_module, "Transaction", _FailingTransaction)
+
+    with pytest.raises(sqlite3.OperationalError):
+        index.set_remote_location(job.id, "archive", [Path("r3.yaml")])
+
+    # Read back via the real Transaction: neither column changed.
+    monkeypatch.setattr(index_module, "Transaction", real_transaction)
+    assert index.get_location(job.id) == "local"
+    assert index.get_file_list(job.id) is None
+
+
+def test_index_find_returns_remote_projection(storage: Storage):
+    """find() returns a remote job as a metadata-only projection."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    # Simulate the move: set location to remote, store a file list, drop local files.
+    index.set_location(job.id, "archive")
+    paths = [Path("r3.yaml"), Path("metadata.yaml"), Path("run.py")]
+    index.set_file_list(job.id, paths)
+    storage.remove(job)
+
+    results = index.find({"tags": "test"})
+    assert len(results) == 1
+    found_job = results[0]
+    assert found_job.id == job.id
+    assert isinstance(found_job.metadata, dict)
+    # Files are not on the projection; they raise until fetched.
+    with pytest.raises(FilesUnavailableError):
+        _ = found_job.files
+    # The cached file list lives in the index, not on the Job.
+    assert index.get_file_list(job.id) == paths
+
+
+def test_index_get_returns_remote_projection(storage: Storage):
+    """Index.get() returns a remote job as a metadata-only projection."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_location(job.id, "archive")
+    storage.remove(job)
+
+    found = index.get(job.id)
+    assert found.id == job.id
+    with pytest.raises(FilesUnavailableError):
+        _ = found.files
+
+
+def test_index_get_unknown_id_raises_keyerror(storage: Storage):
+    index = Index(storage)
+    with pytest.raises(KeyError):
+        index.get("nonexistent-id")
+
+
+def test_index_find_remote_job_without_file_list(
+    storage: Storage,
+):
+    """A remote job with no cached file list is still a projection; files raise."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    index.set_location(job.id, "archive")
+    # Note: no set_file_list call — files column stays NULL.
+    storage.remove(job)
+
+    results = index.find({"tags": "test"})
+    assert len(results) == 1
+    found_job = results[0]
+    assert index.get_file_list(job.id) is None
+    with pytest.raises(FilesUnavailableError):
+        _ = found_job.files
+
+
+def test_index_rebuild_local_only_without_remotes(storage_with_jobs: Storage):
+    """With no configured remotes, rebuild reconstructs from local storage alone and
+    leaves no stale ``index.sqlite.new`` behind."""
+    index = Index(storage_with_jobs)
+    index.rebuild()
+    assert len(index) == 3
+    assert not (storage_with_jobs.root / "index.sqlite.new").exists()
+
+
+def test_index_rebuild_does_not_read_remotes_for_local_jobs(storage: Storage):
+    """A remote is only consulted for its listing; local jobs never trigger a read.
+
+    With one job that is local, rebuild must enumerate the remote's job ids (to find
+    remote-only jobs) but must not fetch any per-job artifact from it.
+    """
+    import unittest.mock as mock
+
+    remote = mock.MagicMock()
+    remote.list_job_ids.return_value = iter([])
+
+    # Construction auto-rebuilds against empty storage; reset before the real check.
+    index = Index(storage, {"archive": remote})
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    remote.reset_mock()
+    remote.list_job_ids.return_value = iter([])
+    index.rebuild()
+
+    assert len(index) == 1
+    remote.list_job_ids.assert_called_once()
+    remote.get_manifest.assert_not_called()
+    remote.get_sidecar.assert_not_called()
+    remote.archive_size.assert_not_called()
+
+
+def test_index_get_local_missing_directory_raises_corruption(storage: Storage):
+    """A local row whose jobs/<id> directory is gone surfaces as a clear corruption
+    error rather than a bare FileNotFoundError."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    # Drop the local directory while the index still records the row as local.
+    storage.remove(job)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.get(job_id)
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "director" in message.lower()
+
+
+def test_index_get_local_missing_r3yaml_raises_corruption(storage: Storage):
+    """A local row whose directory exists but lacks r3.yaml surfaces as a clear
+    corruption error instead of a confusing later failure."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    job_dir = storage.root / "jobs" / job_id
+    os.chmod(job_dir, 0o755)  # committed jobs are read-only; allow the unlink
+    (job_dir / "r3.yaml").unlink()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.get(job_id)
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "r3.yaml" in message
+
+
+def test_index_find_local_missing_directory_raises_corruption(storage: Storage):
+    """find() raises the clear corruption error for a local row with no directory,
+    rather than silently skipping or failing confusingly later."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    storage.remove(job)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.find({})
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "director" in message.lower()
+
+
+def test_index_find_local_missing_r3yaml_raises_corruption(storage: Storage):
+    """find() raises the clear corruption error for a local row whose directory lacks
+    r3.yaml."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+    job_id = job.id
+
+    job_dir = storage.root / "jobs" / job_id
+    os.chmod(job_dir, 0o755)
+    (job_dir / "r3.yaml").unlink()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        index.find({})
+    message = str(exc_info.value)
+    assert job_id in message
+    assert "corrupt" in message.lower()
+    assert "r3.yaml" in message
+
+
+def test_index_find_does_not_deserialize_files_column(storage: Storage):
+    """find() selects only id/timestamp/metadata/location and loads the file list
+    lazily, so non-JSON garbage in the files column must not make find raise."""
+    index = Index(storage)
+    job = get_dummy_job("base")
+    job = storage.add(job)
+    index.add(job)
+    assert job.id is not None
+
+    # Write non-deserializable JSON directly into the files column.
+    with Transaction(storage.root / "index.sqlite") as cursor:
+        cursor.execute(
+            "UPDATE jobs SET files = ? WHERE id = ?",
+            ("not valid json {[", job.id),
+        )
+
+    results = index.find({})
+    assert len(results) == 1
+    assert results[0].id == job.id
+
+
+def test_transaction_rolls_back_on_exception(storage: Storage):
+    """A Transaction that raises mid-block must not persist its writes."""
+    index = Index(storage)
+    path = storage.root / "index.sqlite"
+    del index
+
+    class _BoomError(Exception):
+        pass
+
+    # A write followed by a raise inside the block: the exception must
+    # propagate and the write must not be committed.
+    with pytest.raises(_BoomError):
+        with Transaction(path) as cursor:
+            cursor.execute(
+                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                ("rollback-sentinel", "2021-01-01T00:00:00", "{}"),
+            )
+            raise _BoomError
+
+    # A fresh connection must not see the rolled-back row.
+    with Transaction(path) as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?", ("rollback-sentinel",)
+        )
+        assert cursor.fetchone()[0] == 0

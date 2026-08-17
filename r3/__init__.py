@@ -4,6 +4,7 @@ from pathlib import Path
 
 from r3.job import (
     Dependency,
+    FilesUnavailableError,
     FindAllDependency,
     FindLatestDependency,
     GitDependency,
@@ -39,6 +40,7 @@ __all__ = [
     "FindAllDependency",
     "FindLatestDependency",
     "GitDependency",
+    "FilesUnavailableError",
     "Job",
     "JobDependency",
     "QueryAllDependency",

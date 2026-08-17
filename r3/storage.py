@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterator, Optional, Union
 import yaml
 from executor import execute
 
+import r3.utils
 from r3.job import Dependency, GitDependency, Job, JobDependency
 
 
@@ -88,7 +89,14 @@ class Storage:
 
         Returns:
             The job with the given ID.
+
+        Raises:
+            ValueError: If ``job_id`` is not a canonical UUID (defense in depth).
+            FileNotFoundError: If no such job is stored.
         """
+        # Defense in depth: refuse a non-canonical id before it is joined onto the
+        # jobs/ path, even though every caller should already have validated it.
+        r3.utils.validate_job_id(job_id)
         if job_id not in self:
             raise FileNotFoundError(f"Job not found: {job_id}")
 
@@ -104,6 +112,13 @@ class Storage:
         for path in (self.root / "jobs").iterdir():
             if path.is_dir():
                 yield Job(path, path.name)
+
+    def job_entries(self) -> Iterator[Path]:
+        """Yields every raw child of jobs/, UNFILTERED (symlinks, broken symlinks, and
+        non-directory entries included). Unlike jobs(), it does not filter by is_dir():
+        the rebuild validation boundary must SEE invalid entries to fail closed on them
+        rather than silently skip them."""
+        yield from (self.root / "jobs").iterdir()
 
     def add(self, job: Job) -> Job:
         """Adds a job to the storage.
@@ -140,7 +155,6 @@ class Storage:
         with open(job_path / "r3.yaml", "w") as config_file:
             # REVIEW: Any way to avoid using the private attribute?
             yaml.dump(job._config, config_file)
-        _remove_write_permissions(job_path / "r3.yaml")
 
         with open(job_path / "metadata.yaml", "w") as metadata_file:
             yaml.dump(job.metadata, metadata_file)
@@ -149,15 +163,32 @@ class Storage:
             if destination in [Path("r3.yaml"), Path("metadata.yaml")]:
                 continue
 
+            # Storage.add is only called for local jobs, so source is never None.
+            assert source is not None
             target = job_path / destination
 
             os.makedirs(target.parent, exist_ok=True)
             shutil.copy(source, target)
-            _remove_write_permissions(target)
 
-        _remove_write_permissions(job_path)
+        self.protect_job(job_path)
 
         return Job(job_path, job_id)
+
+    def protect_job(self, job_path: Union[str, os.PathLike]) -> None:
+        """Applies the write-protection a committed job gets.
+
+        The job directory, ``r3.yaml``, and every regular file except the top-level
+        ``metadata.yaml`` become read-only; ``metadata.yaml`` and all subdirectories
+        (including ``output/``) stay writable. Idempotent, so it is safe to re-apply
+        to an already protected directory — e.g. a job restored by ``fetch``, which
+        must match a committed job's permissions.
+        """
+        job_path = Path(job_path)
+        metadata = Path("metadata.yaml")
+        for child in job_path.rglob("*"):
+            if child.is_file() and child.relative_to(job_path) != metadata:
+                _remove_write_permissions(child)
+        _remove_write_permissions(job_path)
 
     def remove(self, job: Job) -> None:
         """Removes a job from the storage.
@@ -236,6 +267,8 @@ class Storage:
         """
         destination = destination / dependency.destination
 
+        # Repository._preflight_check_dependency mirrors this descend rule to check
+        # locality ahead of checkout; update it in lockstep if this condition changes.
         if str(dependency.source) == "." and dependency.recursive_checkout:
             job = self.get(dependency.job)
             self.checkout_job(job, destination)

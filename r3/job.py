@@ -11,6 +11,15 @@ import yaml
 import r3.utils
 
 
+class FilesUnavailableError(RuntimeError):
+    """Raised when a job's files are not locally available (the job is on a remote).
+
+    A job retrieved from the index while stored on a remote is a metadata-only
+    projection: its `files`, `hash()`, and `dependencies` are not available until the
+    job is fetched back to local storage.
+    """
+
+
 class Job:
     """A computational job."""
 
@@ -20,13 +29,20 @@ class Job:
         id: Optional[str] = None,
         cached_timestamp: Optional[datetime] = None,
         cached_metadata: Optional[Dict[str, Any]] = None,
+        remote_location: Optional[str] = None,
     ) -> None:
         """Initializes a job instance.
 
         Parameters:
             path: Path to the job's root directory.
-            id: Job id for committed jobs. This is set automatically for jobs retrieved
-                from a repository.
+            id: Job id for committed jobs. This is set automatically for jobs
+                retrieved from a repository.
+            cached_timestamp: Pre-loaded timestamp from the index.
+            cached_metadata: Pre-loaded metadata from the index.
+            remote_location: If set, this job is a metadata-only projection of a job
+                stored on the named remote. Its files are not available locally, so
+                `files`, `hash()`, and `dependencies` raise `FilesUnavailableError`
+                until the job is fetched.
         """
         self._path = Path(path).absolute()
         self.id = id
@@ -34,6 +50,7 @@ class Job:
         self._metadata: Optional[Dict[str, Any]] = cached_metadata
         self._metadata_from_cache = cached_metadata is not None
         self._timestamp = cached_timestamp
+        self._remote_location: Optional[str] = remote_location
         self._files: Optional[Dict[Path, Path]] = None
         self.__config: Optional[Dict[str, Any]] = None
         self._dependencies: Optional[Sequence["Dependency"]] = None
@@ -69,7 +86,14 @@ class Job:
         return self._metadata_from_cache
 
     def reload_metadata(self) -> None:
-        """Reloads the metadata from the metadata file."""
+        """Reloads the metadata from the metadata file.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection. Its metadata
+                file is not available locally, so reloading would wipe the valid
+                cached metadata; the cached value stays readable via `metadata`.
+        """
+        self._require_local("metadata")
         if (self.path / "metadata.yaml").is_file():
             with open(self.path / "metadata.yaml", "r") as metadata_file:
                 self._metadata = yaml.safe_load(metadata_file)
@@ -81,7 +105,13 @@ class Job:
         """Saves the job metadata to the metadata file.
 
         This method has to be called after modifying the metadata dictionary.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection. Editing the
+                metadata of a job stored on a remote is not supported; fetch the job
+                back to local storage first.
         """
+        self._require_local("metadata")
         with open(self.path / "metadata.yaml", "w") as metadata_file:
             yaml.dump(self.metadata, metadata_file)
 
@@ -112,10 +142,25 @@ class Job:
         """
         return self._timestamp is not None
 
+    def _require_local(self, what: str) -> None:
+        """Raises FilesUnavailableError if this job is a remote projection."""
+        if self._remote_location is not None:
+            raise FilesUnavailableError(
+                f"Cannot access {what} of job {self.id}: it is stored on remote "
+                f"'{self._remote_location}'. Run `r3 fetch {self.id}` first."
+            )
+
     # REVIEW: Replace with a method that returns an iterator?
     @property
     def files(self) -> Mapping[Path, Path]:
-        """Files belonging to this job."""
+        """Files belonging to this job, mapping each relative path to its absolute
+        path on disk.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection (files not
+                available locally).
+        """
+        self._require_local("files")
         if self._files is None:
             # Copy the config's ignore list rather than mutating it: it is written
             # verbatim to the committed r3.yaml.
@@ -136,7 +181,12 @@ class Job:
 
     @property
     def dependencies(self) -> Sequence["Dependency"]:
-        """Dependencies of this job."""
+        """Dependencies of this job.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection.
+        """
+        self._require_local("dependencies")
         if self._dependencies is None:
             self._dependencies = [
                 Dependency.from_config(config)
@@ -174,6 +224,7 @@ class Job:
                 necessary. If set to `True`, this will recompute the job hash in any
                 case.
         """
+        self._require_local("hash")
         if self._hash is None or recompute:
             hashes = dict()
 

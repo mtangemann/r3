@@ -1,6 +1,15 @@
 site_name: R3
 repo_url: https://github.com/mtangemann/r3
 
+# Internal working records (design plans, reviews, superpowers dispositions) live
+# under docs/ for convenience but are not part of the published site. They link to
+# source files and root-level docs outside the MkDocs tree, so exclude them from
+# the build to keep `mkdocs build --strict` clean.
+exclude_docs: |
+  plans/
+  reviews/
+  superpowers/
+
 plugins:
 - mkdocstrings
 - search
@@ -19,5 +28,6 @@ nav:
 - Home: index.md
 - tutorial.md
 - cli.md
+- remote-storage.md
 - python_api.md
 - repository_format.md
