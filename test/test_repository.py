@@ -4,6 +4,7 @@ import filecmp
 import os
 import shutil
 import stat
+import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Generator, Sequence, Union
 
 import boto3
 import pytest
+import pyzstd
 import yaml
 from executor import execute
 from moto import mock_aws
@@ -1004,6 +1006,53 @@ def test_repository_find_still_works_after_move(
     results = repository_with_remote.find({"tags": "findme"})
     assert len(results) == 1
     assert results[0].id == job.id
+
+    # find() after move() yields a metadata-only projection, not a files-bearing job:
+    # touching its files must raise rather than silently return an empty/wrong set.
+    with pytest.raises(FilesUnavailableError):
+        _ = results[0].files
+
+
+def _archive_member_names(archive_path: Path) -> set:
+    """Returns the set of member arcnames in a seekable ``tar.zst`` archive.
+
+    Mirrors how :mod:`r3.archive` reads an archive back (seekable zstd + streaming
+    tar), so the assertions see exactly the members r3 wrote.
+    """
+    with pyzstd.SeekableZstdFile(str(archive_path), "r") as compressed:
+        with tarfile.open(fileobj=compressed, mode="r|") as tar:
+            return {member.name for member in tar}
+
+
+def test_move_archive_includes_root_files_and_excludes_output(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """A committable file at the job root must survive move() as an archive member.
+
+    This pins the archive contents end to end: a payload at the job root reaches the
+    remote's ``data.tar.zst``, while a payload under ``output/`` — excluded from the
+    committed job — never enters the archive.
+    """
+    src = tmp_path / "job"
+    src.mkdir()
+    (src / "r3.yaml").write_text("dependencies: []\n")
+    (src / "metadata.yaml").write_text("tags: [archive-contents]\n")
+    (src / "data.bin").write_bytes(b"payload-at-root")
+    (src / "output").mkdir()
+    (src / "output" / "dropped.bin").write_bytes(b"payload-in-output")
+
+    job = repository_with_remote.commit(Job(src))
+    assert job.id is not None
+
+    repository_with_remote.move(job.id, "archive")
+
+    archive_path = tmp_path / "downloaded.tar.zst"
+    repository_with_remote.remotes["archive"].download_archive(job.id, archive_path)
+
+    members = _archive_member_names(archive_path)
+    assert "data.bin" in members
+    # output/ is excluded from the committed job, so it never enters the archive.
+    assert "output/dropped.bin" not in members
 
 
 def test_checkout_raises_for_archived_job(
