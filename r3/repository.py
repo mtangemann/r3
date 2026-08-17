@@ -32,7 +32,7 @@ from r3.job import (
     QueryDependency,
 )
 from r3.manifest import SIDECAR_PATHS, FileEntry
-from r3.remote import Remote, RemoteError
+from r3.remote import Remote, RemoteError, validate_remote_name
 from r3.storage import Storage
 
 R3_FORMAT_VERSION = "1.0.0-beta.9"
@@ -77,6 +77,16 @@ class Repository:
         # is missing — so the remotes have to be available at construction time.
         self._remotes: Dict[str, Remote] = {}
         for name, remote_config in config.get("remotes", {}).items():
+            # Validate every configured remote name before any remote/index/bucket is
+            # touched: a stored (hand-written) "local" or empty name would collide
+            # with the index's location sentinel and must fail with a recovery hint.
+            try:
+                validate_remote_name(name)
+            except ValueError as error:
+                raise ValueError(
+                    f"Invalid remote in {self.path / 'r3.yaml'}: {error} Rename the "
+                    "remote to a valid name in r3.yaml, then run `r3 rebuild-index`."
+                ) from error
             self._remotes[name] = Remote.from_config(remote_config)
 
         self._index = Index(self._storage, self._remotes)

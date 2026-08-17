@@ -908,6 +908,43 @@ def test_repository_without_remotes(repository: Repository) -> None:
     assert len(repository.remotes) == 0
 
 
+def _write_remotes_config(repo_path: Path, remotes: dict) -> None:
+    """Overwrites the repository's r3.yaml with the given remotes map."""
+    config_path = repo_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    config["remotes"] = remotes
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+
+def test_repository_open_rejects_reserved_local_remote(tmp_path: Path) -> None:
+    """A stored 'local' remote collides with the index's location sentinel and must
+    be rejected at open, with a recovery hint, before the index/bucket is touched.
+
+    No moto: validation happens before any remote/index construction, so opening must
+    fail with the reserved-name ValueError rather than any AWS/network error.
+    """
+    repo = Repository.init(tmp_path / "repository")
+    _write_remotes_config(
+        repo.path, {"local": {"type": "s3", "bucket": BUCKET, "prefix": PREFIX}}
+    )
+
+    with pytest.raises(ValueError, match="reserved"):
+        Repository(repo.path)
+
+
+def test_repository_open_rejects_empty_remote_name(tmp_path: Path) -> None:
+    """A stored empty-named remote is rejected at open."""
+    repo = Repository.init(tmp_path / "repository")
+    _write_remotes_config(
+        repo.path, {"": {"type": "s3", "bucket": BUCKET, "prefix": PREFIX}}
+    )
+
+    with pytest.raises(ValueError):
+        Repository(repo.path)
+
+
 def test_repository_move_uploads_and_removes_local(
     repository_with_remote: Repository,
 ) -> None:

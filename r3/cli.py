@@ -11,7 +11,7 @@ import click
 import yaml
 
 import r3
-from r3.remote import Remote
+from r3.remote import Remote, validate_remote_name
 
 
 @click.group(
@@ -425,6 +425,14 @@ def remote_add(
     repository_path: Path,
 ) -> None:
     """Add a remote storage backend."""
+    # Reject a reserved ("local") or empty name before touching r3.yaml, so a
+    # rejection leaves the config byte-for-byte unchanged (the atomic writer below is
+    # never reached).
+    try:
+        validate_remote_name(name)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
     config_path = repository_path / "r3.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)

@@ -313,6 +313,68 @@ def test_cli_remote_add_s3_without_bucket_leaves_config_unchanged(
     assert "archive" not in config.get("remotes", {})
 
 
+def test_cli_remote_add_reserved_name_local_leaves_config_unchanged(
+    tmp_path: Path,
+) -> None:
+    """'local' is reserved (the index's location sentinel) and must be rejected
+    without touching r3.yaml."""
+    repo = Repository.init(tmp_path / "repository")
+    config_path = repo.path / "r3.yaml"
+    before = config_path.read_bytes()
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "local",
+            "--type", "s3",
+            "--bucket", "my-bucket",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    # r3.yaml must be byte-for-byte unchanged (the atomic writer was not called).
+    assert config_path.read_bytes() == before
+
+
+def test_cli_remote_add_empty_name_leaves_config_unchanged(tmp_path: Path) -> None:
+    """An empty remote name is rejected and never lands in r3.yaml."""
+    repo = Repository.init(tmp_path / "repository")
+    config_path = repo.path / "r3.yaml"
+    before = config_path.read_bytes()
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "",
+            "--type", "s3",
+            "--bucket", "my-bucket",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert config_path.read_bytes() == before
+
+
+def test_cli_remote_add_normal_name_persists_and_reopens(tmp_path: Path) -> None:
+    """A valid remote name (e.g. 'archive') is accepted, persisted, and re-opens."""
+    repo = Repository.init(tmp_path / "repository")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "remote", "add", "archive",
+            "--type", "s3",
+            "--bucket", "my-bucket",
+            "--repository", str(repo.path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "archive" in Repository(repo.path).remotes
+
+
 def test_cli_remote_add_ceph_flags_round_trip(tmp_path: Path) -> None:
     """The CEPH flags persist into r3.yaml and parse back via from_config."""
     from r3.remote import Remote

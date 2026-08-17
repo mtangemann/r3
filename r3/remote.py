@@ -34,6 +34,31 @@ class RemoteError(Exception):
     """Raised when a remote transport operation fails or cannot be verified."""
 
 
+# The index uses the literal string "local" as the location sentinel for "stored in
+# local storage" (see r3.index / Repository). Reserving it as an invalid remote name
+# at every boundary is what stops a remote named "local" from colliding with that
+# sentinel and stranding a moved job on the remote.
+RESERVED_REMOTE_NAME = "local"
+
+
+def validate_remote_name(name: object) -> None:
+    """Raises ``ValueError`` unless ``name`` is a valid remote name.
+
+    Rejects the reserved name ``"local"`` (the index's location sentinel — a remote of
+    that name would collide with it) and an empty or whitespace-only name. Called at
+    both boundaries that accept a remote name: ``r3 remote add`` before it rewrites
+    ``r3.yaml``, and ``Repository`` open for every configured remote. ``ValueError``
+    is deliberate: the CLI already funnels these into clean user-facing errors.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Remote name must be a non-empty string.")
+    if name == RESERVED_REMOTE_NAME:
+        raise ValueError(
+            f"{name!r} is a reserved remote name (it is the index's sentinel for "
+            "local storage) and cannot be used."
+        )
+
+
 class Remote(ABC):
     """Abstract base class for remote storage backends.
 
