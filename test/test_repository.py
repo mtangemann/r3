@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Generator, Sequence, Union
+from typing import Generator, Optional, Sequence, Union
 
 import boto3
 import pytest
@@ -2890,6 +2890,107 @@ def test_rebuild_fails_closed_on_uuid_named_symlink_to_directory(
     _assert_index_unchanged(repo, before)
     with pytest.raises(KeyError):
         repo._index.get_location(link_id)
+
+
+def _plant_non_directory_job_entry(
+    path: Path, external_dir: Path, kind: str
+) -> Optional[str]:
+    """Plants a non-directory entry of ``kind`` at ``path`` (a former ``jobs/<uuid>``).
+
+    Returns a short human-readable type keyword, or None if the kind cannot be created
+    in this environment (mirrors ``_create_special_entry``'s graceful skip). These are
+    exactly the entry kinds ``Storage.jobs()``'s ``is_dir()`` filters out: a broken
+    symlink and any non-directory make ``is_dir()`` return False, and ``is_dir()``
+    follows a symlink-to-a-file to the file and rejects it too.
+    """
+    if kind == "broken_symlink":
+        path.symlink_to(external_dir / "does-not-exist")
+        return "broken symlink"
+    if kind == "file_symlink":
+        target = external_dir / "real_target.txt"
+        target.write_text("outside payload")
+        path.symlink_to(target)
+        return "symlink to a file"
+    if kind == "regular_file":
+        path.write_text("not a job directory")
+        return "regular file"
+    if kind == "fifo":
+        try:
+            os.mkfifo(path)
+        except (AttributeError, OSError):
+            return None
+        return "FIFO"
+    raise AssertionError(f"unknown kind: {kind}")
+
+
+NON_DIRECTORY_LOCAL_JOB_ENTRY_KINDS = [
+    "broken_symlink",
+    "file_symlink",
+    "regular_file",
+    "fifo",
+]
+
+
+@pytest.mark.parametrize("kind", NON_DIRECTORY_LOCAL_JOB_ENTRY_KINDS)
+def test_rebuild_fails_closed_on_non_directory_local_job_entry(
+    repository: Repository, tmp_path: Path, kind: str
+) -> None:
+    """A ``jobs/<uuid>`` entry that is not a real directory -- a broken symlink, a
+    symlink to a file, a regular file, or a FIFO -- is filtered out by
+    ``Storage.jobs()``'s ``is_dir()`` (which follows symlinks and rejects
+    non-directories). Left to that filter, rebuild would silently drop the job's
+    previously-indexed row. Rebuild must instead validate every raw ``jobs/`` entry and
+    abort fail-closed (naming the offending entry), leaving the previous index intact so
+    the job is never dropped.
+
+    This is Codex's reproduction: commit a job, drop its local directory but KEEP its
+    index row, then plant a non-directory entry where the directory used to be."""
+    repo = repository
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    before = (repo.path / "index.sqlite").read_bytes()
+
+    job_path = repo.path / "jobs" / job.id
+    repo._storage.remove(job)
+    assert not job_path.exists()
+
+    external = tmp_path / "external"
+    external.mkdir()
+    if _plant_non_directory_job_entry(job_path, external, kind) is None:
+        pytest.skip(f"cannot create {kind} in this environment")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    assert f"jobs/{job.id}" in str(excinfo.value)
+
+    _assert_index_unchanged(repo, before)
+    # The job's row is never dropped: it still resolves from the untouched index.
+    assert repo._index.get_location(job.id) == "local"
+
+
+def test_rebuild_fails_closed_on_non_canonical_non_directory_local_entry(
+    repository: Repository,
+) -> None:
+    """A non-canonical, non-directory ``jobs/`` entry aborts too. ``is_dir()`` would
+    silently skip a bare ``jobs/not-a-uuid`` regular file; the raw-entry boundary sees
+    it and the id-validity guard (which fires before the is_dir guard) fails rebuild
+    closed, leaving the previous index intact and the real job's row untouched."""
+    repo = repository
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    (repo.path / "jobs" / "not-a-uuid").write_text("not a job")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    assert "jobs/not-a-uuid" in str(excinfo.value)
+
+    _assert_index_unchanged(repo, before)
+    assert repo._index.get_location(job.id) == "local"
+    with pytest.raises(KeyError):
+        repo._index.get_location("not-a-uuid")
 
 
 def test_rebuild_local_wins_over_duplicate_remote_leftovers(

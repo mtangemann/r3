@@ -113,6 +113,13 @@ class Storage:
             if path.is_dir():
                 yield Job(path, path.name)
 
+    def job_entries(self) -> Iterator[Path]:
+        """Yields every raw child of jobs/, UNFILTERED (symlinks, broken symlinks, and
+        non-directory entries included). Unlike jobs(), it does not filter by is_dir():
+        the rebuild validation boundary must SEE invalid entries to fail closed on them
+        rather than silently skip them."""
+        yield from (self.root / "jobs").iterdir()
+
     def add(self, job: Job) -> Job:
         """Adds a job to the storage.
 
