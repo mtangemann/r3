@@ -1,8 +1,9 @@
 # Independent Review: Remote Storage Feature Branch
 
-> **Superseded** — this predates and is superseded by the current durable design
-> ([`../superpowers/specs/2026-08-04-remote-storage-durable-design.md`](../superpowers/specs/2026-08-04-remote-storage-durable-design.md)),
-> which was written to address this review; kept for historical context.
+> **Historical** — this independent review of the feature branch led to the current
+> durable design
+> ([`../superpowers/specs/2026-08-04-remote-storage-durable-design.md`](../superpowers/specs/2026-08-04-remote-storage-durable-design.md));
+> its findings are resolved there and in the shipped code.
 
 **Review date:** 2026-08-04
 

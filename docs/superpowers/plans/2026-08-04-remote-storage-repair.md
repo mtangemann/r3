@@ -74,7 +74,7 @@ review), each with regression tests:
    write-protected to match committed jobs (I2).
 5. F-11: bound the `location` parameter in `Index.find` (pulled forward from E4; the
    lazy file-list part of E4 remains).
-All green (320 tests, 3 live-S3 skipped, ruff, mypy). Commits `8df8b07..5e1eb83`
+All green (320 tests, 3 live-S3 skipped, ruff, mypy). The A–D remediation commits
 (not pushed). Next: Phase E.
 
 **Execution status (2026-08-11) — Phase E done (index durability, F-08/F-09/F-10).**
@@ -97,7 +97,7 @@ E3: `get`/`find` raise a clear corruption error for a `local` row whose director
 `r3.yaml` is missing (shared `_local_job` helper), instead of a bare `FileNotFoundError`.
 E4: `find` was already lazy about the `files` column (and F-11's bound `location`
 param landed in the A–D remediation), so E4 is a regression test pinning the laziness.
-All green (339 tests, 3 live-S3 skipped, ruff, mypy). Commits `e8083d1..1db022e`
+All green (339 tests, 3 live-S3 skipped, ruff, mypy). The Phase E commits
 (not pushed). Deferred-to-F note surfaced by review: `find_dependents` still routes a
 corrupt/remote dependent through `storage.get` (F2/§10). Next: Phase F (dependencies &
 checkout), G (CLI + remove protocol + remote check), H (failure tests, docs, live-S3,
@@ -122,7 +122,7 @@ edge requires `dep.job` local; it descends into a target's own deps only for a r
 behind a non-recursive edge nor misses a non-recursive edge to a remote job); it is
 cycle-guarded and runs fully before any checkout side effect (no partial checkout on
 refusal). A reciprocal drift comment was added at `Storage.checkout_job_dependency`.
-All green (349 tests, 3 live-S3 skipped, ruff, mypy). Commits `7fe0a9a..43abd47`
+All green (349 tests, 3 live-S3 skipped, ruff, mypy). The Phase F commits
 (not pushed). Next: Phase G (CLI + `remove` protocol + `remote check` + config
 validation + `edit` refuses remote), then H (failure tests, docs, live-S3, final gate).
 
@@ -136,7 +136,7 @@ gone" completes instead of raising I7 corruption); referenced-by guard; sweeps
 deletes the local dir + all `.fetch`/`.trash` recovery artifacts (glob `<id>*`); then
 the index row. Added `Remote.has_objects` (existence probe covering a partially-swept
 job), `Index.remove_by_id`, a `Union[Job, str]` signature, and the CLI passes the raw
-id. G2: a new read-only `r3 remote check` reconciliation (`RemoteCheckReport` +
+id. G2: a new read-only `r3 remote check` reconciliation (`_RemoteCheckReport` +
 `Repository.remote_check()`) reporting five drift categories — orphan/location-
 disagreeing complete manifests, manifestless prefixes, leftover staging manifests,
 broken/unfetchable remote rows (missing manifest or HEAD `archive_size` mismatch), and
@@ -148,11 +148,23 @@ mode-preserving) `r3.yaml` write and exposes the CEPH flags; `remote remove` pro
 bucket (not the index) — refuses while complete manifests exist (naming jobs), refuses
 residual debris unless `--force` (which reports what becomes unmanaged). G4: `r3 edit`
 refuses a remote job before `click.edit` (no stray file). All green (385 tests, 3
-live-S3 skipped, ruff, mypy). Commits `82cf2e5..ab2e06c` (not pushed). Deferred, noted:
+live-S3 skipped, ruff, mypy). The Phase G commits (not pushed). Deferred, noted:
 `remote check` doesn't probe index rows pointing at a no-longer-configured remote
 (distinct drift class; future work). Next: Phase H (F-12 failure-mode assertions, F-14
 docs, live-S3/multipart rewrite — opt-in, not run here, final gate + F-01..F-14
 disposition).
+
+**Execution status (2026-08-17) — Phase H done (failure tests, docs, live-S3, final
+gate).** H1 filled the remaining failure-mode coverage gaps; H2 rewrote the live-S3
+suite for the archive-only transport + multipart (opt-in, must be run against CEPH —
+not run here); H3 added the user-facing remote-storage guide, the README alpha note,
+`ROADMAP.md`, and the `LIMITATIONS`/`CONTRIBUTING` updates; H4 produced the
+finding-disposition summary and the final gate. A follow-on surface/cleanup batch
+extracted the `remote check` reconciliation into `r3/remote_check.py`, underscored its
+result types and gave them alpha docstrings, added the `r3.yaml` comment-loss warning,
+and swept spec-ID references out of tests and code. All green (390 passed, 6 deselected
+live-S3, ruff, mypy). Next is a whole-branch commit-message reword (drop spec IDs), then
+hand-off to finish the branch.
 
 **Remote layout (§4), four objects per job:** `data.tar.zst` (file members only —
 manifest files minus the two sidecars), `r3.yaml` (sidecar), `metadata.yaml`

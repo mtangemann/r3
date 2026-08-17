@@ -1,9 +1,10 @@
 # Proposal: Separate Job Manifest from File Access
 
-> **Superseded** — this predates the current durable design
-> ([`2026-08-04-remote-storage-durable-design.md`](2026-08-04-remote-storage-durable-design.md)),
-> which is now the authoritative remote-storage design and places this API redesign
-> out of scope as separate, still-exploratory later work; kept for historical context.
+> **Exploratory / deferred** — the `job.file_paths` / manifest API redesign proposed
+> here is out of scope of the current durable design
+> ([`2026-08-04-remote-storage-durable-design.md`](2026-08-04-remote-storage-durable-design.md))
+> and remains a separate later effort (see `ROADMAP.md`); it is not part of the
+> shipped remote-storage feature.
 
 **Status:** Exploratory suggestion; not final or approved for implementation.
 

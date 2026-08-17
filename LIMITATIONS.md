@@ -32,7 +32,7 @@ where `flock` semantics are unreliable). Most relevant once concurrent writers b
 normal — i.e. the shared-remote/collaboration feature — and best designed together
 with it. Not scheduled otherwise.
 
-**Details:** [durable-design §2 (single-writer assumption), §7.2](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 
@@ -54,7 +54,7 @@ command and, if in doubt, `r3 rebuild-index` + `r3 remote check`.
 **Status.** Follow-up: add explicit file+directory `fsync` at commit points if
 power-loss durability is required.
 
-**Details:** [durable-design §5–7, §12](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 
@@ -73,7 +73,7 @@ silently truncated. This is a detection, not a lock: don't rely on racing it.
 **Status.** A stronger active-job marker / run-lifecycle integration is possible but
 out of scope for the remote-storage work.
 
-**Details:** [durable-design §5](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 
@@ -90,7 +90,7 @@ another's jobs.
 **Status.** Shared remotes for collaboration are a planned future feature; they
 require both a concurrency design and revised lifecycle/ownership rules.
 
-**Details:** [durable-design §9, §14 (deferred)](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 
@@ -108,7 +108,7 @@ reclamation (a mutating `gc`) is deferred.
 orphans, abort incomplete multipart uploads) is a documented follow-up, to be
 designed together with shared-remote semantics.
 
-**Details:** [durable-design §9](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 
@@ -122,7 +122,7 @@ across local and remote jobs.
 **Workaround.** Don't depend on empty directories; ensure a directory you depend on
 contains at least one file.
 
-**Details:** [durable-design §10](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 
@@ -135,7 +135,7 @@ is **not**: lose it and you lose the pointer to where your archived jobs are sto
 **Workaround.** Back up `r3.yaml` alongside your data. `r3 remote remove` refuses to
 drop a remote while complete jobs still exist under its prefix.
 
-**Details:** [durable-design §9](docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md)
+**Details:** see the remote-storage durable-design notes.
 
 ---
 

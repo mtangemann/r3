@@ -1,5 +1,7 @@
 # Remote Storage for R3
 
+> **Superseded** — the design here is superseded by the current durable design (`docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md`); retained as a historical record.
+
 ## Problem
 
 R3 uses a single monolithic local repository. Large or old jobs consume disk

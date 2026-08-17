@@ -145,9 +145,15 @@ deselected tests are the `live_s3` suite.
 against the lab CEPH endpoint:
 
 ```bash
-export R3_TEST_S3_ENDPOINT=...   # CEPH endpoint URL
-export R3_TEST_S3_BUCKET=...     # a test bucket
-export R3_TEST_S3_ACCESS_KEY=... R3_TEST_S3_SECRET_KEY=...
+# Credentials come from the AWS profile / standard AWS credential chain — there is
+# no access-key/secret-key env var. Required:
+export R3_TEST_S3_ENDPOINT_URL=https://ceph.example.com   # CEPH endpoint URL
+export R3_TEST_S3_BUCKET=my-r3-test-bucket                # a bucket you can write to
+# Optional; a realistic CEPH RGW setup:
+export R3_TEST_S3_PROFILE=ceph                            # AWS profile holding the credentials
+export R3_TEST_S3_ADDRESSING_STYLE=path                   # CEPH RGW typically needs path-style
+export R3_TEST_S3_REQUEST_CHECKSUM_CALCULATION=when_required  # older CEPH RGW builds need this
+# Also optional: R3_TEST_S3_PREFIX, R3_TEST_S3_RESPONSE_CHECKSUM_VALIDATION
 python -m pytest -m live_s3 -q
 ```
 

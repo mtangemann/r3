@@ -1,5 +1,7 @@
 # Remote Storage Extensions: Archive Format and File List Caching
 
+> **Superseded** — the design here is superseded by the current durable design (`docs/superpowers/specs/2026-08-04-remote-storage-durable-design.md`); retained as a historical record.
+
 ## Problem
 
 The first iteration of remote storage (feature/remote-storage) moves job directories
