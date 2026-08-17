@@ -40,7 +40,11 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 gets the full history: a git-dependency test clones this
+      # repo and checks out an old commit, which the default shallow clone omits.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
