@@ -216,10 +216,15 @@ def _full_lifecycle(repo: Repository, tmp_path: Path) -> None:
     assert not (repo.path / "jobs" / job.id).exists()
     assert repo._index.get_location(job.id) == "archive"
 
-    # find() projects the remote job from the index (files from the cached list).
+    # find() surfaces the job as a metadata-only projection: Job.files raises
+    # FilesUnavailableError for remote projections by design (see commit
+    # c2767f8). The cached file list lives on the index instead.
     found = repo.find({"tags": "live-test"})
     assert len(found) == 1
-    assert sorted(found[0].files.keys()) == expected_files
+    assert found[0].id == job.id
+    cached_files = repo._index.get_file_list(job.id)
+    assert cached_files is not None
+    assert sorted(cached_files) == expected_files
 
     repo.fetch(job.id)
     assert (repo.path / "jobs" / job.id).exists()

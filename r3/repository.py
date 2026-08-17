@@ -389,8 +389,10 @@ class Repository:
     def get_job_by_id(self, job_id: str) -> Job:
         """Returns the job with the given ID.
 
-        For remote jobs, returns a Job with cached_file_paths populated from the
-        index (no local files). For unknown IDs, raises KeyError.
+        For remote jobs, returns a metadata-only projection: ``files``,
+        ``hash()``, and ``dependencies`` raise ``FilesUnavailableError`` until
+        the job is fetched. The cached file list, if any, lives on the index
+        (:meth:`Index.get_file_list`). For unknown IDs, raises KeyError.
         """
         return self._index.get(job_id)
 
