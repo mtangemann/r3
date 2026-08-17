@@ -1667,20 +1667,57 @@ def test_migration_beta_9_adds_files_column(tmp_path: Path) -> None:
 # --- move/fetch crash-safety ---
 
 
-def test_move_aborts_and_keeps_local_on_verify_failure(
+def test_move_verifies_by_streaming_without_second_temp_file(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If an uploaded object fails content verification, move aborts before
-    publishing the manifest and leaves the local job intact."""
+    """move verifies the uploaded archive by streaming its digest from the remote,
+    never downloading it into a second temp file. That keeps at most one archive-sized
+    temp (data.tar.zst) in scratch at a time, so a large-job move cannot fail purely
+    because verification duplicated the archive under /tmp."""
     repo = repository_with_remote
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
     remote = repo.remotes["archive"]
 
-    def corrupt_download(job_id: str, destination: Path) -> None:
-        destination.write_bytes(b"corrupted")
+    calls = {"stream": 0}
+    real_archive_sha256 = remote.archive_sha256
 
-    monkeypatch.setattr(remote, "download_archive", corrupt_download)
+    def counting_stream(job_id: str) -> str:
+        calls["stream"] += 1
+        return real_archive_sha256(job_id)
+
+    def forbidden_download(job_id: str, destination: Path) -> None:
+        raise AssertionError(
+            "move must verify by streaming the digest, not by downloading the "
+            "archive into a second temp file"
+        )
+
+    monkeypatch.setattr(remote, "archive_sha256", counting_stream)
+    monkeypatch.setattr(remote, "download_archive", forbidden_download)
+
+    repo.move(job.id, "archive")
+
+    assert calls["stream"] == 1  # the streamed digest is what verifies the archive
+    assert repo._index.get_location(job.id) == "archive"
+    assert remote.exists(job.id)
+
+
+def test_move_aborts_and_keeps_local_on_verify_failure(
+    repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the uploaded archive fails content verification, move aborts before
+    publishing the manifest and leaves the local job intact. Verification streams the
+    archive's digest from the remote, so a forced digest mismatch stands in for a
+    corrupted upload."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+
+    def wrong_digest(job_id: str) -> str:
+        return "0" * 64
+
+    monkeypatch.setattr(remote, "archive_sha256", wrong_digest)
 
     with pytest.raises(RemoteError):
         repo.move(job.id, "archive")
@@ -1803,17 +1840,16 @@ def test_move_retry_succeeds_after_verify_failure(
     remote = repo.remotes["archive"]
     job_dir = repo.path / "jobs" / job.id
 
-    real_download = remote.download_archive
+    real_archive_sha256 = remote.archive_sha256
     state = {"failed": False}
 
-    def flaky_download(job_id: str, destination: Path) -> None:
+    def flaky_archive_sha256(job_id: str) -> str:
         if not state["failed"]:
             state["failed"] = True
-            destination.write_bytes(b"corrupted")  # first verify read-back mismatches
-            return
-        real_download(job_id, destination)
+            return "0" * 64  # first verify's streamed digest mismatches
+        return real_archive_sha256(job_id)
 
-    monkeypatch.setattr(remote, "download_archive", flaky_download)
+    monkeypatch.setattr(remote, "archive_sha256", flaky_archive_sha256)
 
     with pytest.raises(RemoteError):
         repo.move(job.id, "archive")

@@ -4,6 +4,8 @@ Uses moto to mock S3. Note that moto cannot reproduce CEPH RGW quirks (multipart
 ETags, checksum-header handling); those are covered by the opt-in live_s3 suite.
 """
 
+import hashlib
+import io
 from pathlib import Path
 from typing import Generator
 
@@ -11,6 +13,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+import r3.utils
 from r3.remote import Remote, RemoteError, S3Remote
 
 BUCKET = "test-remote-bucket"
@@ -119,6 +122,49 @@ def test_put_and_download_archive(s3_remote: S3Remote, tmp_path: Path) -> None:
     out = tmp_path / "out.tar.zst"
     s3_remote.download_archive(JOB1, out)
     assert out.read_bytes() == b"payload-bytes"
+
+
+def test_archive_sha256_matches_uploaded_content(
+    s3_remote: S3Remote, tmp_path: Path
+) -> None:
+    """archive_sha256 streams the uploaded object back and returns the same digest as
+    hashing the local file — content verification without a second local copy."""
+    data = b"payload-bytes" * 100_000  # a few MiB, spanning several hash chunks
+    archive = tmp_path / "a.tar.zst"
+    archive.write_bytes(data)
+    s3_remote.put_archive(JOB1, archive)
+
+    assert s3_remote.archive_sha256(JOB1) == hashlib.sha256(data).hexdigest()
+    assert s3_remote.archive_sha256(JOB1) == r3.utils.hash_file(archive)
+
+
+def test_archive_sha256_reads_body_in_bounded_chunks(
+    s3_remote: S3Remote, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The streamed hash must read the object body in fixed-size chunks, never a single
+    whole-body .read() — so peak extra memory is one chunk, not the whole archive."""
+    from r3.remote import _HASH_CHUNK_SIZE
+
+    data = b"x" * (_HASH_CHUNK_SIZE * 3 + 123)
+
+    class RecordingBody:
+        def __init__(self, payload: bytes) -> None:
+            self._buffer = io.BytesIO(payload)
+            self.read_sizes: list = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            return self._buffer.read(size)
+
+    body = RecordingBody(data)
+    monkeypatch.setattr(
+        s3_remote._client, "get_object", lambda **kwargs: {"Body": body}
+    )
+
+    assert s3_remote.archive_sha256(JOB1) == hashlib.sha256(data).hexdigest()
+    # Bounded, repeated reads — never one unbounded slurp of the whole body into memory.
+    assert len(body.read_sizes) > 1
+    assert all(size == _HASH_CHUNK_SIZE for size in body.read_sizes)
 
 
 def test_archive_size_none_when_missing(s3_remote: S3Remote) -> None:

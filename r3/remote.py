@@ -12,6 +12,7 @@ archive and manifest *content* logic lives in ``r3.archive`` / ``r3.manifest``.
 ``Repository`` orchestrates the crash-safe ``move``/``fetch`` state machines on top.
 """
 
+import hashlib
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
@@ -28,6 +29,11 @@ MAX_CONCURRENCY = 4
 _MANIFEST_NAME = "manifest.json"
 _STAGING_MANIFEST_NAME = "manifest.json.staging"
 _ARCHIVE_NAME = "data.tar.zst"
+
+# Chunk size for streaming an object's hash. Bounds peak extra memory during
+# upload verification to one chunk, so `move` never needs a second archive-sized
+# local copy just to re-hash the upload.
+_HASH_CHUNK_SIZE = 1024 * 1024
 
 
 class RemoteError(Exception):
@@ -104,6 +110,16 @@ class Remote(ABC):
     @abstractmethod
     def download_archive(self, job_id: str, destination: Path) -> None:
         """Downloads the payload archive to a local path."""
+
+    @abstractmethod
+    def archive_sha256(self, job_id: str) -> str:
+        """Streams the uploaded payload archive and returns its SHA-256 hex digest.
+
+        The object is read in fixed-size chunks and hashed on the fly, so verifying
+        an upload never materializes a second full local copy of the archive (peak
+        extra footprint is one chunk). Used by ``move`` to content-verify the archive
+        against its expected digest without duplicating it in scratch.
+        """
 
     @abstractmethod
     def get_sidecar(self, job_id: str, name: str) -> bytes:
@@ -467,6 +483,22 @@ class S3Remote(Remote):
             str(destination),
             Config=self._transfer_config,
         )
+
+    def archive_sha256(self, job_id: str) -> str:
+        # Stream the object body in fixed-size chunks, hashing as we go, so the digest
+        # is computed without ever holding the whole archive in memory or writing a
+        # second full copy to scratch (the previous verify path downloaded a temp copy).
+        response = self._client.get_object(
+            Bucket=self.bucket, Key=self._archive_key(job_id)
+        )
+        body = response["Body"]
+        digest = hashlib.sha256()
+        while True:
+            chunk = body.read(_HASH_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+        return digest.hexdigest()
 
     def get_sidecar(self, job_id: str, name: str) -> bytes:
         return self._get_bytes(self._sidecar_key(job_id, name))

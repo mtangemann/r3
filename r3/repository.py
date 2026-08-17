@@ -538,7 +538,7 @@ class Repository:
                 remote.put_sidecar(job_id, name, data)
 
             # 4. Content-verify every uploaded object before publishing.
-            self._verify_upload(remote, job_id, result.sha256, sidecar_bytes, temp_dir)
+            self._verify_upload(remote, job_id, result.sha256, sidecar_bytes)
 
             # 5. Publish the manifest (verified staging-copy) — the completion marker.
             remote.publish_manifest(job_id, manifest_bytes)
@@ -677,15 +677,16 @@ class Repository:
         job_id: str,
         archive_sha256: str,
         sidecar_bytes: Dict[str, bytes],
-        temp_dir: Path,
     ) -> None:
-        """Downloads every uploaded object back and content-verifies it before the
-        manifest is published. Raises RemoteError on any mismatch."""
-        verify_path = temp_dir / "verify.tar.zst"
-        remote.download_archive(job_id, verify_path)
-        if r3.utils.hash_file(verify_path) != archive_sha256:
+        """Content-verifies every uploaded object before the manifest is published.
+        Raises RemoteError on any mismatch.
+
+        The archive is verified by streaming its digest straight from the remote
+        (``archive_sha256``) rather than downloading a second copy to scratch, so at
+        most one archive-sized temp file (the source ``data.tar.zst``) exists during a
+        move. The sidecars are tiny, so they are fetched and byte-compared directly."""
+        if remote.archive_sha256(job_id) != archive_sha256:
             raise RemoteError(f"Archive content verification failed for job {job_id}.")
-        verify_path.unlink()
         for name, data in sidecar_bytes.items():
             if remote.get_sidecar(job_id, name) != data:
                 raise RemoteError(

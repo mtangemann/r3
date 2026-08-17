@@ -109,6 +109,13 @@ see what would move, including dependents, without doing it.
 deleting the local copy and aborts if they changed, so a still-running job is detected
 rather than silently truncated.
 
+`move` builds a temporary compressed archive of the job under the system temp
+directory (Python's `tempfile`, usually `/tmp`) before uploading it. When moving large
+jobs, make sure that location has enough free space for one archive-sized file. On an
+HPC node where `/tmp` is small, point `tempfile` at a roomier scratch filesystem by
+setting the `TMPDIR` environment variable (for example
+`TMPDIR=/scratch/$USER r3 move <job_id> <remote>`).
+
 Fetch a moved job back to local storage:
 
 ```bash
