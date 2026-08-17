@@ -308,12 +308,14 @@ def test_publish_manifest_incomplete_copy_result_is_failure(
     assert _keys_under(f"{PREFIX}{JOB1}/") == set()
 
 
-def test_publish_manifest_final_verify_mismatch_cleans_up_staging(
+def test_publish_manifest_final_verify_mismatch_cleans_up(
     s3_remote: S3Remote, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Staging verify PASSES but the copied final key reads back wrong bytes. This
-    # exercises the final re-GET byte-compare (the H1 linchpin): a copy that
-    # "succeeded" but did not materialize the right bytes must be a RemoteError.
+    # exercises the final re-GET byte-compare: a copy that "succeeded" but did not
+    # materialize the right bytes must be a RemoteError, AND the untrusted final
+    # manifest must be removed so exists()/listing don't classify the job as
+    # published on a marker verification just rejected.
     manifest_bytes = b'{"ok": true}'
 
     def _get_bytes_final_differs(key: str) -> bytes:
@@ -322,10 +324,41 @@ def test_publish_manifest_final_verify_mismatch_cleans_up_staging(
     monkeypatch.setattr(s3_remote, "_get_bytes", _get_bytes_final_differs)
     with pytest.raises(RemoteError):
         s3_remote.publish_manifest(JOB1, manifest_bytes)
-    # Staging is cleaned up. (The final key is intentionally left in place; move()
-    # keeps the local copy and clears it via delete_manifest-first on retry.)
+    # Both the staging key and the untrusted final manifest are removed.
     keys = _keys_under(f"{PREFIX}{JOB1}/")
     assert f"{PREFIX}{JOB1}/manifest.json.staging" not in keys
+    assert f"{PREFIX}{JOB1}/manifest.json" not in keys
+    assert keys == set()
+
+
+def test_publish_manifest_cleanup_failure_flags_remaining_final_key(
+    s3_remote: S3Remote, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Final-verify fails AND the best-effort cleanup cannot remove the untrusted
+    # final key. The original verification RemoteError must still propagate (never
+    # masked by the secondary delete error), and its message must flag that a
+    # completion marker may still be visible and name the final key.
+    manifest_bytes = b'{"ok": true}'
+    final_key = f"{PREFIX}{JOB1}/manifest.json"
+
+    def _get_bytes_final_differs(key: str) -> bytes:
+        return manifest_bytes if key.endswith(".staging") else b"wrong-bytes"
+
+    def _delete_fails(keys: list) -> None:
+        raise RemoteError("secondary delete boom")
+
+    monkeypatch.setattr(s3_remote, "_get_bytes", _get_bytes_final_differs)
+    monkeypatch.setattr(s3_remote, "_delete", _delete_fails)
+
+    with pytest.raises(RemoteError) as excinfo:
+        s3_remote.publish_manifest(JOB1, manifest_bytes)
+
+    message = str(excinfo.value)
+    # The original verification failure propagates, not the secondary delete error.
+    assert "Final manifest verification failed" in message
+    assert "secondary delete boom" not in message
+    # The message flags the untrusted final key that could not be removed.
+    assert final_key in message
 
 
 def test_list_job_ids_paginates_beyond_one_page(s3_remote: S3Remote) -> None:

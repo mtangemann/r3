@@ -407,8 +407,9 @@ class S3Remote(Remote):
         result is checked for a completed copy and the final key is re-read and
         byte-compared before staging is deleted — the final manifest is the job's
         completion marker, so it must be correct before this returns. On any
-        failure the staging object is cleaned up best-effort and RemoteError is
-        raised.
+        failure both the staging object and the (possibly copied) final manifest
+        are cleaned up best-effort and RemoteError is raised; if the untrusted
+        final key cannot be removed, the error says so and names it.
         """
         staging_key = self._staging_manifest_key(job_id)
         final_key = self._manifest_key(job_id)
@@ -439,27 +440,42 @@ class S3Remote(Remote):
                 raise RemoteError(
                     f"CopyObject did not report a completed copy for job {job_id}."
                 )
-            # On a final-verify failure the (bad) final key may remain visible to
-            # exists(); we deliberately do NOT delete it here, since in a
-            # retry-over-existing scenario that could remove a previously-good
-            # manifest. move() keeps the local copy and its delete_manifest-first
-            # step clears the bad final key on the next attempt.
             if self._get_bytes(final_key) != manifest_bytes:
                 raise RemoteError(
                     f"Final manifest verification failed for job {job_id}."
                 )
         except Exception as error:
-            # Best-effort staging cleanup on any failure; swallow a secondary
-            # delete error so it cannot mask the original failure.
+            # Best-effort cleanup on any failure. Delete BOTH the staging key and
+            # the final manifest key: move() invalidates any stale manifest (its
+            # delete_manifest-first step) before ever calling publish_manifest, so
+            # there is no previously-good final manifest to protect here. Leaving an
+            # untrusted final key visible would instead make exists()/list_job_ids()
+            # classify the job as published on a marker verification just rejected.
+            # Deleting a not-yet-created final key (a failure at or before the copy)
+            # is a harmless no-op, so including it on every failure path is safe.
+            # Swallow secondary delete errors so they never mask the original failure.
             try:
                 self._delete([staging_key])
             except Exception:
                 pass
-            if isinstance(error, RemoteError):
+            final_key_cleared = True
+            try:
+                self._delete([final_key])
+            except Exception:
+                final_key_cleared = False
+
+            if final_key_cleared and isinstance(error, RemoteError):
                 raise
-            raise RemoteError(
-                f"Failed to publish manifest for job {job_id}: {error}"
-            ) from error
+            if isinstance(error, RemoteError):
+                message = str(error)
+            else:
+                message = f"Failed to publish manifest for job {job_id}: {error}"
+            if not final_key_cleared:
+                message += (
+                    " An untrusted completion marker may still be visible at "
+                    f"{final_key}."
+                )
+            raise RemoteError(message) from error
 
         # Best-effort: the publish has already succeeded (final key verified), so a
         # trailing delete hiccup must not turn a good publish into a move() failure.
