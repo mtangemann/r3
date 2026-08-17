@@ -111,9 +111,15 @@ class Index:
     ) -> Tuple[List[Tuple[str, str, str]], List[Tuple[str, str]], Set[str]]:
         """Collects local job rows and dependency edges from storage.
 
-        A `jobs/<id>` directory missing its `r3.yaml` is corruption (R3's own write
-        paths never produce one) and aborts the rebuild rather than being adopted as a
-        valid local job.
+        `Storage.jobs()` is a raw enumerator (it yields every `jobs/<name>` entry that
+        `is_dir()` accepts, following symlinks), so each candidate is validated here
+        before it is parsed or accepted, mirroring the remote side's validating rebuild.
+        Three local-corruption cases abort the rebuild rather than being adopted: a
+        directory name that is not a canonical UUID (R3 only ever names jobs
+        `str(uuid.uuid4())`), a job root that is a symlink (a UUID-named symlink to a
+        directory is followed by `is_dir()` and must never be traversed or adopted), and
+        a `jobs/<id>` directory missing its `r3.yaml` (R3's own write paths never
+        produce one).
         """
         jobs: List[Tuple[str, str, str]] = []
         dependencies: List[Tuple[str, str]] = []
@@ -121,6 +127,26 @@ class Index:
 
         for job in self.storage.jobs():
             assert job.id is not None
+            # Reject a non-canonical directory name before it becomes an index id: it
+            # would resolve to "local" yet fail every later read path that re-validates
+            # the id (find/get). Aborting here leaves the previous index intact.
+            if not r3.utils.is_valid_job_id(job.id):
+                raise RuntimeError(
+                    f"Corrupt local storage: jobs/{job.id} is not a canonical UUID; a "
+                    "job id must be a canonical UUID. Aborting rebuild without "
+                    "modifying the existing index."
+                )
+            # Reject a symlinked job root (is_symlink uses lstat and does not follow
+            # the link): a UUID-named symlink to a directory is followed by
+            # `Storage.jobs()`'s `is_dir()` and would otherwise be adopted. A job root
+            # must be a real directory; a symlink is local corruption and is never
+            # traversed or adopted. Aborting here leaves the previous index intact.
+            if job.path.is_symlink():
+                raise RuntimeError(
+                    f"Corrupt local storage: jobs/{job.id} is a symlink, but a job "
+                    "root must be a real directory (a symlink is never traversed or "
+                    "adopted). Aborting rebuild without modifying the existing index."
+                )
             if not (job.path / "r3.yaml").is_file():
                 raise RuntimeError(
                     f"Corrupt local job {job.id}: jobs/{job.id} has no r3.yaml. "

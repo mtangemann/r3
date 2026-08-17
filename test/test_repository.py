@@ -2735,6 +2735,67 @@ def test_rebuild_fails_closed_on_local_job_missing_r3yaml(
     _assert_index_unchanged(repo, before)
 
 
+def test_rebuild_fails_closed_on_non_canonical_local_job_dir(
+    repository: Repository,
+) -> None:
+    """A ``jobs/<name>`` directory whose name is not a canonical UUID is local
+    corruption: rebuild must abort fail-closed (naming the offending entry) and leave
+    the previous index intact rather than indexing an id its own read path cannot
+    materialize."""
+    repo = repository
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    # Rename the well-formed job directory (its r3.yaml moves with it) so the only
+    # defect is the non-canonical name -- the id-validity guard is the sole cause.
+    (repo.path / "jobs" / job.id).rename(repo.path / "jobs" / "not-a-uuid")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    assert "jobs/not-a-uuid" in str(excinfo.value)
+
+    _assert_index_unchanged(repo, before)
+    # The old row still resolves from the index; the bad entry is never indexed.
+    assert repo._index.get_location(job.id) == "local"
+    with pytest.raises(KeyError):
+        repo._index.get_location("not-a-uuid")
+
+
+def test_rebuild_fails_closed_on_uuid_named_symlink_to_directory(
+    repository: Repository,
+    tmp_path: Path,
+) -> None:
+    """A ``jobs/<uuid>`` symlink pointing at a directory outside ``jobs/`` is followed
+    by ``Storage.jobs()`` (``is_dir()`` follows links), so rebuild must reject it as
+    local corruption: abort fail-closed (naming the offending entry), leave the
+    previous index intact, and never adopt the symlink target."""
+    repo = repository
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    # A fully adoptable job outside jobs/: without the symlink guard, rebuild would
+    # follow the link and index it, so the guard is the sole cause of the abort.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copy(repo.path / "jobs" / job.id / "r3.yaml", outside / "r3.yaml")
+    shutil.copy(
+        repo.path / "jobs" / job.id / "metadata.yaml", outside / "metadata.yaml"
+    )
+
+    link_id = str(uuid.uuid4())
+    os.symlink(outside, repo.path / "jobs" / link_id)
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    assert f"jobs/{link_id}" in str(excinfo.value)
+
+    _assert_index_unchanged(repo, before)
+    with pytest.raises(KeyError):
+        repo._index.get_location(link_id)
+
+
 def test_rebuild_local_wins_over_duplicate_remote_leftovers(
     repository_with_two_remotes: Repository,
 ) -> None:
