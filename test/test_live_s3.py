@@ -249,8 +249,10 @@ def test_live_s3_multipart_round_trip(tmp_path: Path, run_prefix: str) -> None:
     src.mkdir()
     (src / "r3.yaml").write_text("dependencies: []\n")
     (src / "metadata.yaml").write_text("tags: [multipart-test]\n")
-    (src / "output").mkdir()
-    with open(src / "output" / "blob.bin", "wb") as f:
+    # Not under output/ — Job.files ignores /output by design, so a payload
+    # placed there would be excluded from the archive and this test would
+    # silently degenerate into a small single-PUT upload.
+    with open(src / "blob.bin", "wb") as f:
         for _ in range(_MULTIPART_PAYLOAD_MIB):
             f.write(os.urandom(1024 * 1024))
     job = repo.commit(Job(src))
