@@ -2121,7 +2121,8 @@ def _create_special_entry(parent: Path, external_dir: Path, kind: str):
     """Creates a special filesystem entry of ``kind`` under ``parent``.
 
     Returns ``(basename, type_keyword)`` for the created entry, or ``None`` when the
-    kind cannot be created without elevated privileges (device nodes).
+    kind cannot be created in this environment (device nodes without privileges, or an
+    AF_UNIX socket whose bind() is denied in a restricted sandbox).
     """
     if kind == "fifo":
         os.mkfifo(parent / "fifo")
@@ -2130,11 +2131,16 @@ def _create_special_entry(parent: Path, external_dir: Path, kind: str):
         sock = socket.socket(socket.AF_UNIX)
         # Bind a short *relative* name from inside ``parent`` so the AF_UNIX sun_path
         # length limit (~108 bytes) is not tripped by a long tmp path; the socket file
-        # persists on disk after the socket object is closed.
+        # persists on disk after the socket object is closed. A restricted sandbox can
+        # deny bind() with PermissionError; treat that like a device node without
+        # privileges and return None so the test skips instead of erroring.
         previous = os.getcwd()
         os.chdir(parent)
         try:
             sock.bind("sock")
+        except (PermissionError, OSError):
+            sock.close()
+            return None
         finally:
             os.chdir(previous)
         sock.close()
