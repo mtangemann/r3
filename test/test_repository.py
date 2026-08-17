@@ -1992,6 +1992,102 @@ def test_move_special_entry_after_publish_routes_through_cleanup(
     assert repo._index.get_location(job.id) == "local"
 
 
+@pytest.mark.parametrize(
+    "scan_error",
+    [
+        FileNotFoundError("scandir race"),
+        PermissionError("permission denied"),
+        OSError("generic os error"),
+    ],
+)
+def test_move_second_scan_failure_routes_through_cleanup(
+    repository_with_remote: Repository,
+    mocker: MockerFixture,
+    scan_error: OSError,
+) -> None:
+    """If the pre-delete quiescence re-check cannot COMPLETE — the second _dir_snapshot
+    raises a raw filesystem OSError (an entry vanishing between scandir and lstat, a
+    permission error, etc.) — move cannot prove the job quiescent, so it routes through
+    the SAME published-manifest cleanup as a detected change rather than letting the
+    OSError escape and orphan the just-published manifest. Local files and the index
+    stay untouched, and the raised error names the scan failure."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+
+    real_snapshot = r3.repository._dir_snapshot
+    calls = {"n": 0}
+
+    def fake_snapshot(job_dir: Path) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_snapshot(job_dir)  # the capture scan succeeds
+        raise scan_error  # the pre-delete re-check cannot complete
+
+    mocker.patch("r3.repository._dir_snapshot", side_effect=fake_snapshot)
+
+    with pytest.raises(RuntimeError, match="changed during move") as excinfo:
+        repo.move(job.id, "archive")
+
+    message = str(excinfo.value)
+    assert "could not be proven quiescent" in message  # scan failure surfaced
+    assert str(scan_error) in message
+    assert excinfo.value.__cause__ is scan_error  # original scan error chained
+
+    assert not remote.exists(job.id)  # published manifest invalidated
+    assert (repo.path / "jobs" / job.id).exists()  # local job intact
+    assert repo._index.get_location(job.id) == "local"  # index untouched
+
+
+def test_move_second_scan_failure_with_manifest_cleanup_failure_reports_both(
+    repository_with_remote: Repository,
+    mocker: MockerFixture,
+) -> None:
+    """If the quiescence re-check cannot complete AND the follow-up delete_manifest also
+    fails, the raised error must surface BOTH facts — why quiescence could not be
+    confirmed and that the published manifest may still be present and needs manual
+    cleanup — while leaving local files and the index untouched."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    remote = repo.remotes["archive"]
+
+    real_snapshot = r3.repository._dir_snapshot
+    snap_calls = {"n": 0}
+    scan_error = OSError("scandir race")
+
+    def fake_snapshot(job_dir: Path) -> dict:
+        snap_calls["n"] += 1
+        if snap_calls["n"] == 1:
+            return real_snapshot(job_dir)
+        raise scan_error
+
+    mocker.patch("r3.repository._dir_snapshot", side_effect=fake_snapshot)
+
+    real_delete = remote.delete_manifest
+    del_calls = {"n": 0}
+
+    def fake_delete(job_id: str) -> None:
+        del_calls["n"] += 1
+        if del_calls["n"] == 1:
+            real_delete(job_id)  # step-2 pre-upload invalidation succeeds
+            return
+        raise RemoteError("delete denied")  # cleanup delete_manifest fails
+
+    mocker.patch.object(remote, "delete_manifest", side_effect=fake_delete)
+
+    with pytest.raises(RemoteError) as excinfo:
+        repo.move(job.id, "archive")
+
+    message = str(excinfo.value)
+    assert "scandir race" in message  # scan failure surfaced
+    assert "manual cleanup" in message  # published manifest may still be present
+
+    assert (repo.path / "jobs" / job.id).exists()  # local job intact
+    assert repo._index.get_location(job.id) == "local"  # index untouched
+
+
 def test_move_aborts_before_upload_if_archive_not_restorable(
     repository_with_remote: Repository, monkeypatch: pytest.MonkeyPatch
 ) -> None:

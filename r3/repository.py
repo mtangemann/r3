@@ -559,21 +559,37 @@ class Repository:
 
         # 6. Quiescence re-check: abort if the job changed since the capture. A special
         #    entry appearing between the capture and here makes _dir_snapshot raise
-        #    ManifestError; treat that as "changed" too so it routes through the same
-        #    published-manifest cleanup below rather than escaping raw and orphaning the
-        #    just-published manifest.
+        #    ManifestError, and a filesystem race (e.g. an entry vanishing between
+        #    scandir and lstat, or a permission error) makes it raise a raw OSError.
+        #    Either way the scan cannot prove the job quiescent, so treat it as
+        #    "changed" too and route it through the same published-manifest cleanup
+        #    below rather than letting it escape raw and orphan the published manifest.
+        scan_error: Optional[Exception] = None
         try:
             job_changed = _dir_snapshot(job_dir) != snapshot
-        except r3.manifest.ManifestError:
+        except (r3.manifest.ManifestError, OSError) as error:
             job_changed = True
+            scan_error = error
         if job_changed:
             try:
                 remote.delete_manifest(job_id)
             except RemoteError as error:
+                if scan_error is not None:
+                    raise RemoteError(
+                        f"Job {job_id} changed during move (could not be proven "
+                        f"quiescent: {scan_error}) and the stale published manifest "
+                        f"could not be removed ({error}); manual cleanup needed."
+                    ) from error
                 raise RemoteError(
                     f"Job {job_id} changed during move and the stale published "
                     f"manifest could not be removed ({error}); manual cleanup needed."
                 ) from error
+            if scan_error is not None:
+                raise RuntimeError(
+                    f"Job {job_id} changed during move (could not be proven quiescent: "
+                    f"{scan_error}). Aborted before deleting local files; move a "
+                    "quiescent job (see LIMITATIONS.md)."
+                ) from scan_error
             raise RuntimeError(
                 f"Job {job_id} changed during move (still running?). Aborted before "
                 "deleting local files; move a quiescent job (see LIMITATIONS.md)."
