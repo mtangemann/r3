@@ -125,6 +125,65 @@ def test_cli_fetch(repository_with_remote: Repository) -> None:
     assert job_path.exists()
 
 
+def test_cli_move_unknown_remote_reports_cleanly(repository: Repository) -> None:
+    """Moving to a remote that isn't configured is a clean error, not a traceback."""
+    job = repository.commit(get_dummy_job("base"))
+    assert job.id is not None
+
+    result = CliRunner().invoke(
+        cli,
+        ["move", job.id, "nonexistent", "--repository", str(repository.path)],
+    )
+    assert result.exit_code != 0
+    # Reported, not raised as an unhandled exception.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "nonexistent" in result.output
+
+
+def test_cli_fetch_unknown_job_reports_cleanly(repository: Repository) -> None:
+    """Fetching a job that the index does not know is a clean error, not a traceback."""
+    job_id = "00000000-0000-0000-0000-000000000000"
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", job_id, "--repository", str(repository.path)],
+    )
+    assert result.exit_code != 0
+    # Reported, not raised as an unhandled exception.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert job_id in result.output
+    # ``str(KeyError(...))`` is a repr and would wrap the whole message in quotes.
+    assert "Error: '" not in result.output
+
+
+def test_cli_fetch_missing_remote_manifest_reports_cleanly(
+    repository_with_remote: Repository,
+) -> None:
+    """Index says remote but the bucket has no manifest (drift): clean error, not a
+    traceback."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    job_path = repo.path / "jobs" / job.id
+    assert not job_path.exists()
+
+    # Simulate drift: the index still says remote, but the manifest is gone from the
+    # bucket (e.g. deleted out-of-band). This is exactly what `remote check` flags.
+    repo.remotes["archive"].delete_manifest(job.id)
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", job.id, "--repository", str(repo.path)],
+    )
+    assert result.exit_code != 0
+    # Reported, not raised as an unhandled exception (no traceback).
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert job.id in result.output
+    assert "remote check" in result.output
+
+
 def test_cli_remote_check_clean(repository_with_remote: Repository) -> None:
     """A consistent repository reports no issues and exits 0."""
     repo = repository_with_remote
@@ -732,6 +791,12 @@ def commands_taking_a_repository(tmp_path: Path) -> List[List[str]]:
         ["edit", job_id],
         ["checkout", job_id, str(tmp_path / "target")],
         ["commit", str(job_path)],
+        ["move", job_id, "archive"],
+        ["fetch", job_id],
+        ["remote", "add", "archive", "--type", "s3", "--bucket", "my-bucket"],
+        ["remote", "list"],
+        ["remote", "remove", "archive"],
+        ["remote", "check"],
     ]
 
 

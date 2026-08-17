@@ -11,7 +11,22 @@ import click
 import yaml
 
 import r3
-from r3.remote import Remote, validate_remote_name
+from r3.archive import ArchiveError
+from r3.manifest import ManifestError
+from r3.remote import Remote, RemoteError, validate_remote_name
+
+# Expected operational failures of move/fetch/remote commands. These are reported to
+# the user as a concise Click error (non-zero exit, no traceback) rather than being
+# allowed to escape as a raw Python traceback. Anything not listed here (e.g. an
+# unexpected programmer error) is deliberately left to surface with its traceback.
+_OPERATIONAL_ERRORS = (
+    ValueError,
+    KeyError,
+    RemoteError,
+    RuntimeError,
+    ArchiveError,
+    ManifestError,
+)
 
 
 @click.group(
@@ -25,13 +40,37 @@ def cli() -> None:
     pass
 
 
-def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
-    """Returns the repository at the given path, reporting problems to the user."""
+def _resolve_repository_path(repository_path: Optional[Path]) -> Path:
+    """Returns the repository path, reporting a missing source to the user.
+
+    Shared by ``_get_repository`` and the ``remote`` subcommands (which operate on the
+    raw ``r3.yaml`` and must stay usable even when a stored remote config is corrupt,
+    so they must not build a full ``Repository``). Keeping the check here means the
+    "no repository given" message naming both ``--repository`` and ``R3_REPOSITORY``
+    lives in exactly one place.
+    """
     if repository_path is None:
         raise click.UsageError(
             "No repository given. Use --repository or set the R3_REPOSITORY "
             "environment variable."
         )
+    return repository_path
+
+
+def _operational_error(error: Exception) -> click.ClickException:
+    """Renders an expected operational failure as a concise Click error.
+
+    ``str(KeyError(...))`` is the repr of its argument, which would wrap the message
+    in quotes, so unwrap it to match how ``_get_job`` reports a missing job.
+    """
+    if isinstance(error, KeyError):
+        return click.ClickException(str(error.args[0]))
+    return click.ClickException(str(error))
+
+
+def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
+    """Returns the repository at the given path, reporting problems to the user."""
+    repository_path = _resolve_repository_path(repository_path)
 
     try:
         return r3.Repository(repository_path)
@@ -333,9 +372,11 @@ def edit(job_id: str, repository_path: Optional[Path]) -> None:
     "--dry-run", is_flag=True,
     help="Show what would be moved without doing it.",
 )
-def move(job_id: str, remote_name: str, repository_path: Path, dry_run: bool) -> None:
+def move(
+    job_id: str, remote_name: str, repository_path: Optional[Path], dry_run: bool
+) -> None:
     """Move a job to a remote storage location."""
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     try:
         if dry_run:
             job = repository.get_job_by_id(job_id)
@@ -352,9 +393,8 @@ def move(job_id: str, remote_name: str, repository_path: Path, dry_run: bool) ->
             print("Warning: the following jobs depend on this job:")
             for dep in dependents:
                 print(f"  - {dep.id}")
-    except (ValueError, KeyError) as error:
-        print(f"Error: {error}")
-        sys.exit(1)
+    except _OPERATIONAL_ERRORS as error:
+        raise _operational_error(error) from error
 
 
 @cli.command()
@@ -365,15 +405,14 @@ def move(job_id: str, remote_name: str, repository_path: Path, dry_run: bool) ->
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def fetch(job_id: str, repository_path: Path) -> None:
+def fetch(job_id: str, repository_path: Optional[Path]) -> None:
     """Fetch a job from remote storage back to local."""
-    repository = r3.Repository(repository_path)
+    repository = _get_repository(repository_path)
     try:
         repository.fetch(job_id)
         print(f"Fetched job {job_id} to local storage.")
-    except (ValueError, KeyError) as error:
-        print(f"Error: {error}")
-        sys.exit(1)
+    except _OPERATIONAL_ERRORS as error:
+        raise _operational_error(error) from error
 
 
 @cli.group()
@@ -422,9 +461,11 @@ def remote_add(
     addressing_style: Optional[str],
     request_checksum_calculation: Optional[str],
     response_checksum_validation: Optional[str],
-    repository_path: Path,
+    repository_path: Optional[Path],
 ) -> None:
     """Add a remote storage backend."""
+    repository_path = _resolve_repository_path(repository_path)
+
     # Reject a reserved ("local") or empty name before touching r3.yaml, so a
     # rejection leaves the config byte-for-byte unchanged (the atomic writer below is
     # never reached).
@@ -480,8 +521,9 @@ def remote_add(
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def remote_list(repository_path: Path) -> None:
+def remote_list(repository_path: Optional[Path]) -> None:
     """List configured remote storage backends."""
+    repository_path = _resolve_repository_path(repository_path)
     config_path = repository_path / "r3.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -508,7 +550,7 @@ def remote_list(repository_path: Path) -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="R3_REPOSITORY",
 )
-def remote_remove(name: str, force: bool, repository_path: Path) -> None:
+def remote_remove(name: str, force: bool, repository_path: Optional[Path]) -> None:
     """Remove a remote storage backend.
 
     Dropping the config entry does not delete any bucket objects; it only makes them
@@ -517,6 +559,7 @@ def remote_remove(name: str, force: bool, repository_path: Path) -> None:
     cache): complete jobs block removal outright, and residual debris blocks it
     unless --force is given.
     """
+    repository_path = _resolve_repository_path(repository_path)
     config_path = repository_path / "r3.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -534,7 +577,12 @@ def remote_remove(name: str, force: bool, repository_path: Path) -> None:
         raise click.ClickException(str(error)) from error
 
     # 1. Complete jobs (a manifest exists) must never be orphaned: refuse outright.
-    job_ids = list(remote.list_job_ids())
+    #    A transport failure while probing the bucket is an expected operational
+    #    error, reported concisely rather than as a raw traceback.
+    try:
+        job_ids = list(remote.list_job_ids())
+    except RemoteError as error:
+        raise click.ClickException(str(error)) from error
     if job_ids:
         raise click.ClickException(
             f"Remote '{name}' still stores complete jobs: "
@@ -543,11 +591,14 @@ def remote_remove(name: str, force: bool, repository_path: Path) -> None:
 
     # 2. Residual debris: with no complete manifests, any remaining object or any
     #    incomplete multipart upload under the prefix is leftover debris.
-    debris = [f"object {key}" for key in remote.iter_object_keys()]
-    debris += [
-        f"incomplete multipart upload {key} (upload {upload_id})"
-        for key, upload_id in remote.list_incomplete_multipart_uploads()
-    ]
+    try:
+        debris = [f"object {key}" for key in remote.iter_object_keys()]
+        debris += [
+            f"incomplete multipart upload {key} (upload {upload_id})"
+            for key, upload_id in remote.list_incomplete_multipart_uploads()
+        ]
+    except RemoteError as error:
+        raise click.ClickException(str(error)) from error
     if debris:
         if not force:
             listing = "\n".join(f"  - {item}" for item in debris)

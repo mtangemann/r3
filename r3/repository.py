@@ -600,7 +600,8 @@ class Repository:
         Raises:
             ValueError: If the job is already local.
             KeyError: If the job's remote is not configured.
-            FileNotFoundError: If the remote has no manifest for the job.
+            RemoteError: If the remote has no manifest for the job (the index says
+                remote but the bucket has none — genuine drift).
         """
         # Validate the id first: `fetch` derives a job dir, receipt path, and staging
         # dir from it below, so a traversal-shaped id must be refused up front —
@@ -646,8 +647,19 @@ class Repository:
             self._finalize_fetch(remote, job_id, receipt_path)
             return
 
-        # 1. Read the manifest; persist a local recovery receipt.
-        manifest_bytes = remote.get_manifest(job_id)
+        # 1. Read the manifest; persist a local recovery receipt. A missing remote
+        #    manifest here (index says remote, bucket has none) is genuine drift, not
+        #    a local-FS fault, so translate the bare FileNotFoundError into a typed
+        #    RemoteError — mirroring how _finalize_manifest treats an absent manifest —
+        #    rather than let it escape as an untyped error. The narrow scope keeps the
+        #    extraction/atomic-write FileNotFoundErrors below untouched.
+        try:
+            manifest_bytes = remote.get_manifest(job_id)
+        except FileNotFoundError as error:
+            raise RemoteError(
+                f"No remote manifest for job {job_id} on remote '{location}'; the "
+                "index and the bucket disagree. Run `r3 remote check` to diagnose."
+            ) from error
         manifest = r3.manifest.loads(manifest_bytes)
         _atomic_write_bytes(receipt_path, manifest_bytes)
 
