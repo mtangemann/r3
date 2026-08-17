@@ -216,6 +216,16 @@ def _full_lifecycle(repo: Repository, tmp_path: Path) -> None:
     assert not (repo.path / "jobs" / job.id).exists()
     assert repo._index.get_location(job.id) == "archive"
 
+    # While the job is remote, the bucket and index must reconcile cleanly. This is
+    # the live suite's only exercise of the bounded HEAD+GET remote_check path.
+    report = repo.remote_check()
+    assert not report.has_findings, (
+        "remote_check reported drift while the job was remote: "
+        + ", ".join(
+            f"{name}={len(value)}" for name, value in vars(report).items() if value
+        )
+    )
+
     # find() surfaces the job as a metadata-only projection: Job.files raises
     # FilesUnavailableError for remote projections by design (see commit
     # c2767f8). The cached file list lives on the index instead.
