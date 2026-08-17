@@ -2817,17 +2817,29 @@ def test_rebuild_fails_closed_on_manifest_over_extraction_caps(
 def test_rebuild_fails_closed_on_local_job_missing_r3yaml(
     repository: Repository,
 ) -> None:
+    """A canonical-UUID ``jobs/<id>`` real directory that lacks ``r3.yaml`` (R3's own
+    write paths never produce one) is local corruption: rebuild must abort fail-closed
+    and leave the previous index intact. The directory clears the name and is-directory
+    guards, so this specifically pins the missing-``r3.yaml`` guard -- asserting the
+    message names ``jobs/<id>`` and mentions ``r3.yaml`` rules out the other guards."""
     repo = repository
     job = repo.commit(get_dummy_job("base"))
     assert job.id is not None
 
     before = (repo.path / "index.sqlite").read_bytes()
-    corrupt = repo.path / "jobs" / "corrupt-job"
+    # Canonical UUID + real directory: passes the name and is-directory guards so
+    # validation reaches the r3.yaml check. metadata.yaml is present, r3.yaml never is.
+    corrupt_id = str(uuid.uuid4())
+    corrupt = repo.path / "jobs" / corrupt_id
     corrupt.mkdir()
     (corrupt / "metadata.yaml").write_text("tags: [corrupt]\n")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as excinfo:
         repo.rebuild_index()
+    message = str(excinfo.value)
+    assert f"jobs/{corrupt_id}" in message
+    assert "r3.yaml" in message
+
     _assert_index_unchanged(repo, before)
 
 
