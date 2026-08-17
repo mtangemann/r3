@@ -147,6 +147,18 @@ class Index:
                     f"{error}. Aborting without modifying the existing index."
                 ) from error
             for job_id in job_ids:
+                # Fail closed on a manifest key whose job segment is not a canonical
+                # UUID (a traversal- or nested-shaped key). Skipping it would let a
+                # crafted key hide; adopting it would index an id that later becomes a
+                # path/key and escapes. Aborting here leaves the previous index intact.
+                if not r3.utils.is_valid_job_id(job_id):
+                    raise RuntimeError(
+                        f"Remote '{remote_name}' has a manifest under a non-canonical "
+                        f"job id {job_id!r} (key "
+                        f"'{remote.prefix}{job_id}/manifest.json'); a job id must be a "
+                        "canonical UUID. Aborting rebuild without modifying the "
+                        "existing index."
+                    )
                 if job_id in local_ids:
                     continue  # Local wins; the remote copy is an ignorable leftover.
                 if job_id in candidates:
@@ -182,6 +194,10 @@ class Index:
         try:
             manifest = r3.manifest.loads(remote.get_manifest(job_id))
 
+            if not r3.utils.is_valid_job_id(manifest["job_id"]):
+                raise RuntimeError(
+                    f"manifest job_id {manifest['job_id']!r} is not a canonical UUID."
+                )
             if manifest["job_id"] != job_id:
                 raise RuntimeError(
                     f"manifest job_id {manifest['job_id']!r} does not match the "

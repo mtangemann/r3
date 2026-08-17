@@ -198,8 +198,10 @@ def test_storage_get_raises_if_job_id_does_not_exist(fs: FakeFilesystem):
     fs.create_dir("/repository")
     storage = Storage.init("/repository")
 
+    # Canonical but absent -> FileNotFoundError. A non-canonical id raises ValueError
+    # (defense in depth), covered below.
     with pytest.raises(FileNotFoundError):
-        storage.get("non-existent")
+        storage.get("00000000-0000-4000-8000-00000000dead")
 
 
 def test_storage_get_raises_if_job_does_not_exist(fs: FakeFilesystem):
@@ -207,7 +209,15 @@ def test_storage_get_raises_if_job_does_not_exist(fs: FakeFilesystem):
     storage = Storage.init("/repository")
 
     with pytest.raises(FileNotFoundError):
-        storage.get("non-existent")
+        storage.get("00000000-0000-4000-8000-00000000dead")
+
+
+def test_storage_get_rejects_non_canonical_id(fs: FakeFilesystem):
+    fs.create_dir("/repository")
+    storage = Storage.init("/repository")
+
+    with pytest.raises(ValueError):
+        storage.get("../../escaped")
 
 
 def test_storage_jobs_returns_all_jobs(fs: FakeFilesystem):

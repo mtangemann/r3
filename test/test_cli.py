@@ -19,6 +19,11 @@ DATA_PATH = Path(__file__).parent / "data"
 BUCKET = "test-cli-bucket"
 PREFIX = "r3/jobs/"
 
+# Canonical UUIDs replacing former shorthand remote ids (ORPHAN,
+# DEBRIS): S3Remote validates the id before building an object key.
+ORPHAN = "0deada11-0000-4000-8000-00000000abcd"
+DEBRIS = "0deb5111-0000-4000-8000-00000000beef"
+
 
 @pytest.fixture
 def repository(tmp_path: Path) -> Repository:
@@ -143,7 +148,7 @@ def test_cli_remote_check_reports_and_exits_nonzero(
     """A drifted repository lists the finding and exits non-zero (script-friendly)."""
     repo = repository_with_remote
     # A complete manifest with no index row -> resurrection-risk orphan.
-    repo.remotes["archive"].publish_manifest("orphan-job", b"{}")
+    repo.remotes["archive"].publish_manifest(ORPHAN, b"{}")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -151,7 +156,7 @@ def test_cli_remote_check_reports_and_exits_nonzero(
         ["remote", "check", "--repository", str(repo.path)],
     )
     assert result.exit_code != 0
-    assert "orphan-job" in result.output
+    assert ORPHAN in result.output
 
 
 def test_cli_remote_add_and_list(tmp_path: Path) -> None:
@@ -349,7 +354,7 @@ def test_cli_remote_remove_refuses_with_complete_manifest(
 ) -> None:
     """A complete manifest under the prefix blocks removal, naming the job."""
     repo = repository_with_remote
-    repo.remotes["archive"].publish_manifest("orphan-job", b"{}")
+    repo.remotes["archive"].publish_manifest(ORPHAN, b"{}")
 
     config_before = (repo.path / "r3.yaml").read_text()
 
@@ -358,7 +363,7 @@ def test_cli_remote_remove_refuses_with_complete_manifest(
         ["remote", "remove", "archive", "--repository", str(repo.path)],
     )
     assert result.exit_code != 0
-    assert "orphan-job" in result.output
+    assert ORPHAN in result.output
     # The config must be untouched when removal is refused.
     assert (repo.path / "r3.yaml").read_text() == config_before
 
@@ -368,7 +373,7 @@ def test_cli_remote_remove_refuses_debris_without_force(
 ) -> None:
     """A manifestless (debris) object blocks removal unless --force is given."""
     repo = repository_with_remote
-    repo.remotes["archive"].put_sidecar("debris-job", "metadata.yaml", b"data")
+    repo.remotes["archive"].put_sidecar(DEBRIS, "metadata.yaml", b"data")
 
     config_before = (repo.path / "r3.yaml").read_text()
 
@@ -377,7 +382,7 @@ def test_cli_remote_remove_refuses_debris_without_force(
         ["remote", "remove", "archive", "--repository", str(repo.path)],
     )
     assert result.exit_code != 0
-    assert "debris-job" in result.output
+    assert DEBRIS in result.output
     assert (repo.path / "r3.yaml").read_text() == config_before
 
 
@@ -386,14 +391,14 @@ def test_cli_remote_remove_force_removes_debris(
 ) -> None:
     """With --force, debris is reported as unmanaged and the config entry drops."""
     repo = repository_with_remote
-    repo.remotes["archive"].put_sidecar("debris-job", "metadata.yaml", b"data")
+    repo.remotes["archive"].put_sidecar(DEBRIS, "metadata.yaml", b"data")
 
     result = CliRunner().invoke(
         cli,
         ["remote", "remove", "archive", "--force", "--repository", str(repo.path)],
     )
     assert result.exit_code == 0, result.output
-    assert "debris-job" in result.output
+    assert DEBRIS in result.output
     assert "Removed remote 'archive'" in result.output
 
     with open(repo.path / "r3.yaml") as f:

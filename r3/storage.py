@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterator, Optional, Union
 import yaml
 from executor import execute
 
+import r3.utils
 from r3.job import Dependency, GitDependency, Job, JobDependency
 
 
@@ -88,7 +89,14 @@ class Storage:
 
         Returns:
             The job with the given ID.
+
+        Raises:
+            ValueError: If ``job_id`` is not a canonical UUID (defense in depth).
+            FileNotFoundError: If no such job is stored.
         """
+        # Defense in depth: refuse a non-canonical id before it is joined onto the
+        # jobs/ path, even though every caller should already have validated it.
+        r3.utils.validate_job_id(job_id)
         if job_id not in self:
             raise FileNotFoundError(f"Job not found: {job_id}")
 

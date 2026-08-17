@@ -309,6 +309,10 @@ class Repository:
         job_id = job.id if isinstance(job, Job) else job
         if job_id is None:
             raise ValueError("Cannot remove a job without an id.")
+        # Validate the resolved id BEFORE any local/remote/index access, so a
+        # traversal-shaped id (e.g. "../../victim") is refused before it can be turned
+        # into a path, glob, or remote key.
+        r3.utils.validate_job_id(job_id)
 
         try:
             self._index.get_location(job_id)
@@ -393,7 +397,12 @@ class Repository:
         ``hash()``, and ``dependencies`` raise ``FilesUnavailableError`` until
         the job is fetched. The cached file list, if any, lives on the index
         (:meth:`Index.get_file_list`). For unknown IDs, raises KeyError.
+
+        Raises:
+            ValueError: If the id is not a canonical UUID.
+            KeyError: If the id is a canonical UUID but unknown.
         """
+        r3.utils.validate_job_id(job_id)
         return self._index.get(job_id)
 
     def find(
@@ -447,6 +456,9 @@ class Repository:
             RuntimeError: If the job changed during the move (not quiescent), or the
                 built archive does not round-trip.
         """
+        # Validate the id first: `move` derives a receipt path and remote keys from it
+        # below, so a non-canonical id must be refused before any of that.
+        r3.utils.validate_job_id(job_id)
         if remote_name not in self._remotes:
             raise ValueError(f"Unknown remote: {remote_name}")
         remote = self._remotes[remote_name]
@@ -458,7 +470,9 @@ class Repository:
         # deterministic across re-moves (tar headers embed mtimes), so a leftover
         # would make a later fetch step-0 spuriously report remote/receipt
         # disagreement. Invalidate it now (missing_ok also tolerates no .fetch dir).
-        (self.path / ".fetch" / f"{job_id}.receipt.json").unlink(missing_ok=True)
+        _ensure_within(
+            self.path / ".fetch" / f"{job_id}.receipt.json", self.path / ".fetch"
+        ).unlink(missing_ok=True)
 
         job = self._storage.get(job_id)
         job_dir = job.path
@@ -555,6 +569,10 @@ class Repository:
             KeyError: If the job's remote is not configured.
             FileNotFoundError: If the remote has no manifest for the job.
         """
+        # Validate the id first: `fetch` derives a job dir, receipt path, and staging
+        # dir from it below, so a traversal-shaped id must be refused up front —
+        # regardless of any (possibly forced) index row.
+        r3.utils.validate_job_id(job_id)
         location = self._index.get_location(job_id)
         if location == "local":
             raise ValueError(f"Job {job_id} is already local.")
@@ -564,10 +582,14 @@ class Repository:
             )
         remote = self._remotes[location]
 
-        job_dir = self._storage.root / "jobs" / job_id
+        job_dir = _ensure_within(
+            self._storage.root / "jobs" / job_id, self._storage.root / "jobs"
+        )
         fetch_dir = self.path / ".fetch"
         fetch_dir.mkdir(exist_ok=True)
-        receipt_path = fetch_dir / f"{job_id}.receipt.json"
+        receipt_path = _ensure_within(
+            fetch_dir / f"{job_id}.receipt.json", fetch_dir
+        )
 
         # 0. Idempotent finalize: a prior fetch/move may have left a complete jobs/<id>.
         if job_dir.exists():
@@ -597,7 +619,9 @@ class Repository:
         _atomic_write_bytes(receipt_path, manifest_bytes)
 
         temp_dir = Path(tempfile.mkdtemp(prefix="r3-fetch-"))
-        staging_dir = fetch_dir / f"{job_id}-{uuid.uuid4().hex}"
+        staging_dir = _ensure_within(
+            fetch_dir / f"{job_id}-{uuid.uuid4().hex}", fetch_dir
+        )
         try:
             # 2. Download + verify the archive.
             archive_path = temp_dir / "data.tar.zst"
@@ -692,12 +716,16 @@ class Repository:
         """Removes jobs/<id> via an atomic rename into .trash, then rmtree. The rename
         is instantaneous, so a complete jobs/<id> never lingers after the index says
         remote."""
-        job_dir = self._storage.root / "jobs" / job_id
+        job_dir = _ensure_within(
+            self._storage.root / "jobs" / job_id, self._storage.root / "jobs"
+        )
         if not job_dir.exists():
             return
         trash_dir = self.path / ".trash"
         trash_dir.mkdir(exist_ok=True)
-        target = trash_dir / f"{job_id}-{uuid.uuid4().hex}"
+        target = _ensure_within(
+            trash_dir / f"{job_id}-{uuid.uuid4().hex}", trash_dir
+        )
         # A committed job dir is write-protected; renaming it to a different parent
         # updates its ".." entry and so needs write permission on the dir itself.
         os.chmod(job_dir, stat.S_IRWXU)
@@ -933,3 +961,20 @@ def _force_rmtree(path: Path) -> None:
     for root, _dirs, _files in os.walk(path):
         os.chmod(root, stat.S_IRWXU)
     shutil.rmtree(path)
+
+
+def _ensure_within(path: Path, parent: Path) -> Path:
+    """Guards that ``path`` resolves inside ``parent``, returning it for chaining.
+
+    Defense in depth behind the job-id validator: even if a malformed id ever slipped
+    through, a derived live job dir, fetch receipt, staging dir, or trash target must
+    still resolve inside its intended parent rather than escape the repository.
+
+    Raises:
+        ValueError: If ``path`` resolves outside ``parent``.
+    """
+    resolved_parent = parent.resolve()
+    resolved = path.resolve()
+    if resolved != resolved_parent and resolved_parent not in resolved.parents:
+        raise ValueError(f"Refusing to operate on {path}: escapes {parent}.")
+    return path

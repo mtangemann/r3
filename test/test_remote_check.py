@@ -21,6 +21,13 @@ BUCKET = "test-check-bucket"
 PREFIX = "r3/jobs/"
 OTHER_PREFIX = "r3/other/"
 
+# Canonical UUIDs replacing the former shorthand ids (ORPHAN, ...):
+# publishing/putting via S3Remote now validates the id, so setup ids that reach
+# a transport helper must be canonical UUIDs.
+ORPHAN = "0deada11-0000-4000-8000-00000000abcd"
+STRAY = "57ada11a-0000-4000-8000-00000000beef"
+STAGING_ONLY = "57a91201-0000-4000-8000-00000000cafe"
+
 
 def get_dummy_job(name: str):
     from r3.job import Job
@@ -91,12 +98,12 @@ def _s3(repo: Repository, name: str) -> S3Remote:
 
 def test_orphan_manifest_no_index_row(repo: Repository) -> None:
     remote = _s3(repo, "archive")
-    remote.publish_manifest("orphan-job", b"{}")
+    remote.publish_manifest(ORPHAN, b"{}")
 
     report = repo.remote_check()
 
-    assert "orphan-job" in _ids(report.resurrection_risks)
-    finding = next(f for f in report.resurrection_risks if f.job_id == "orphan-job")
+    assert ORPHAN in _ids(report.resurrection_risks)
+    finding = next(f for f in report.resurrection_risks if f.job_id == ORPHAN)
     assert finding.remote == "archive"
     assert "no" in finding.detail.lower() and "row" in finding.detail.lower()
 
@@ -143,16 +150,16 @@ def test_manifestless_prefix(repo: Repository, tmp_path: Path) -> None:
     remote = _s3(repo, "archive")
     archive = tmp_path / "a.tar.zst"
     archive.write_bytes(b"payload")
-    remote.put_archive("stray-job", archive)
-    remote.put_sidecar("stray-job", "r3.yaml", b"version: 1\n")
-    remote.put_sidecar("stray-job", "metadata.yaml", b"tags: []\n")
+    remote.put_archive(STRAY, archive)
+    remote.put_sidecar(STRAY, "r3.yaml", b"version: 1\n")
+    remote.put_sidecar(STRAY, "metadata.yaml", b"tags: []\n")
     # No manifest.json -> incomplete/interrupted.
 
     report = repo.remote_check()
 
-    assert "stray-job" in _ids(report.manifestless_prefixes)
+    assert STRAY in _ids(report.manifestless_prefixes)
     # No complete manifest, so it is not a resurrection risk.
-    assert "stray-job" not in _ids(report.resurrection_risks)
+    assert STRAY not in _ids(report.resurrection_risks)
 
 
 # ---------------------------------------------------------------- rule 3
@@ -175,14 +182,14 @@ def test_staging_manifest_with_final(repo: Repository) -> None:
 def test_staging_manifest_without_final(repo: Repository) -> None:
     remote = _s3(repo, "archive")
     remote._client.put_object(
-        Bucket=BUCKET, Key=remote._staging_manifest_key("staging-only"), Body=b"{}"
+        Bucket=BUCKET, Key=remote._staging_manifest_key(STAGING_ONLY), Body=b"{}"
     )
 
     report = repo.remote_check()
 
-    assert "staging-only" in _ids(report.staging_manifests)
+    assert STAGING_ONLY in _ids(report.staging_manifests)
     # Staging alone (no archive/sidecar keys) is not a manifestless prefix.
-    assert "staging-only" not in _ids(report.manifestless_prefixes)
+    assert STAGING_ONLY not in _ids(report.manifestless_prefixes)
 
 
 # ---------------------------------------------------------------- rule 4
@@ -277,13 +284,13 @@ def test_orphan_payload_is_manifestless_not_broken_row(
     remote = _s3(repo, "archive")
     archive = tmp_path / "a.tar.zst"
     archive.write_bytes(b"payload")
-    remote.put_archive("stray-job", archive)
-    remote.put_sidecar("stray-job", "r3.yaml", b"version: 1\n")
+    remote.put_archive(STRAY, archive)
+    remote.put_sidecar(STRAY, "r3.yaml", b"version: 1\n")
 
     report = repo.remote_check()
 
-    assert "stray-job" in _ids(report.manifestless_prefixes)
-    assert "stray-job" not in _ids(report.broken_rows)
+    assert STRAY in _ids(report.manifestless_prefixes)
+    assert STRAY not in _ids(report.broken_rows)
 
 
 # ---------------------------------------------------------------- rule 5
@@ -337,13 +344,13 @@ def test_remote_check_mutates_nothing(repo: Repository, tmp_path: Path) -> None:
     remote = _s3(repo, "archive")
 
     # A mix of every finding category.
-    remote.publish_manifest("orphan-job", b"{}")
+    remote.publish_manifest(ORPHAN, b"{}")
     archive = tmp_path / "a.tar.zst"
     archive.write_bytes(b"payload")
-    remote.put_archive("stray-job", archive)
-    remote.put_sidecar("stray-job", "r3.yaml", b"version: 1\n")
+    remote.put_archive(STRAY, archive)
+    remote.put_sidecar(STRAY, "r3.yaml", b"version: 1\n")
     remote._client.put_object(
-        Bucket=BUCKET, Key=remote._staging_manifest_key("staging-only"), Body=b"{}"
+        Bucket=BUCKET, Key=remote._staging_manifest_key(STAGING_ONLY), Body=b"{}"
     )
     moved = repo.commit(get_dummy_job("base"))
     assert moved.id is not None
@@ -365,3 +372,71 @@ def test_remote_check_mutates_nothing(repo: Repository, tmp_path: Path) -> None:
     assert repo._index.get_location(moved.id) == location_before
     # The multipart upload was neither aborted nor completed.
     assert mp["UploadId"] in {uid for _, uid in uploads_before}
+
+
+# ---------------------------------------------------------------- malformed keys
+
+
+def test_reports_traversal_manifest_key(repo: Repository) -> None:
+    """A traversal-shaped manifest key is reported as a malformed key, never hidden."""
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET, Key=f"{PREFIX}../../escaped/manifest.json", Body=b"{}"
+    )
+
+    report = repo.remote_check()
+
+    assert report.has_findings
+    assert "../../escaped" in _ids(report.malformed_keys)
+    finding = next(f for f in report.malformed_keys if f.job_id == "../../escaped")
+    assert finding.remote == "archive"
+
+
+def test_reports_nested_manifest_key(repo: Repository) -> None:
+    """A nested manifest key (extra path components) is reported as malformed."""
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET, Key=f"{PREFIX}nested/uuid/manifest.json", Body=b"{}"
+    )
+
+    report = repo.remote_check()
+
+    assert "nested/uuid" in _ids(report.malformed_keys)
+
+
+def test_well_formed_manifest_key_is_not_malformed(repo: Repository) -> None:
+    """A canonical-UUID manifest key must never be flagged malformed."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    report = repo.remote_check()
+
+    assert job.id not in _ids(report.malformed_keys)
+    assert report.malformed_keys == []
+
+
+def test_survives_corrupt_index_row_with_invalid_id(repo: Repository) -> None:
+    """A pre-existing index row whose id is not a canonical UUID (only possible via
+    external corruption) must be REPORTED, not crash the read-only check.
+
+    Rule 4 probes each row on the remote via ``get_manifest``, which validates the id
+    and would otherwise raise ``ValueError`` and abort the whole diagnostic — exactly
+    the run you'd make on a corrupt store."""
+    from datetime import datetime
+
+    import r3.index
+
+    with r3.index.Transaction(repo.path / "index.sqlite") as tx:
+        tx.execute(
+            "INSERT INTO jobs (id, timestamp, metadata, location)"
+            " VALUES (?, ?, ?, ?)",
+            ("../../escaped", datetime.now().isoformat(), "{}", "archive"),
+        )
+
+    report = repo.remote_check()  # must not raise
+
+    assert report.has_findings
+    assert "../../escaped" in _ids(report.broken_rows)
+    finding = next(f for f in report.broken_rows if f.job_id == "../../escaped")
+    assert finding.remote == "archive"

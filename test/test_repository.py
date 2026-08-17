@@ -862,10 +862,12 @@ def test_repository_get_job_by_id(repository: Repository) -> None:
 
     assert retrieved_job.id == retrieved_job_syntax_sugar.id == job.id
 
+    # A canonical-but-absent id still raises KeyError (unknown). Non-canonical ids
+    # raise ValueError instead; that is covered by the id-validation tests.
     with pytest.raises(KeyError):
-        repository.get_job_by_id("invalid-job-id")
+        repository.get_job_by_id("00000000-0000-4000-8000-00000000dead")
     with pytest.raises(KeyError):
-        repository["invalid-job-id"]
+        repository["00000000-0000-4000-8000-00000000dead"]
 
 
 # --- Remote / move / fetch tests ---
@@ -941,8 +943,13 @@ def test_repository_move_raises_for_unknown_remote(
 def test_repository_move_raises_for_unknown_job(
     repository_with_remote: Repository,
 ) -> None:
+    # A canonical-but-absent id: move validates the id, then raises KeyError because
+    # it is unknown. (A non-canonical id would be rejected with ValueError earlier;
+    # that path is covered by the id-validation tests.)
     with pytest.raises(KeyError):
-        repository_with_remote.move("nonexistent-job-id", "archive")
+        repository_with_remote.move(
+            "00000000-0000-4000-8000-00000000dead", "archive"
+        )
 
 
 def test_repository_fetch_downloads_and_restores_local(
@@ -1353,8 +1360,10 @@ def test_get_job_by_id_returns_remote_projection(
 
 
 def test_get_job_by_id_unknown_raises_keyerror(repository: Repository) -> None:
+    # Canonical but absent -> KeyError (a non-canonical id raises ValueError; see the
+    # id-validation tests).
     with pytest.raises(KeyError):
-        repository.get_job_by_id("nonexistent-id")
+        repository.get_job_by_id("00000000-0000-4000-8000-00000000dead")
 
 
 def test_contains_remote_job_dependency_with_path_in_file_list(
@@ -2462,3 +2471,227 @@ def test_remove_retry_completes_remote_only_job_after_mid_sweep_failure(
     # Retry must complete the sweep rather than refuse "not contained".
     repo.remove(job.id)
     assert _job_object_keys(job.id, PREFIX) == []
+
+
+# --- job-id validation: path-traversal / injection defense ---
+
+
+# A canonical UUID that is never committed, for "valid shape but absent" cases.
+_ABSENT_UUID = "00000000-0000-4000-8000-00000000dead"
+
+# Non-canonical / hostile ids that must be rejected before any mutation.
+_MALICIOUS_IDS = [
+    "../../victim",              # relative traversal
+    "/etc/passwd",              # absolute path
+    "a/b",                      # path separator
+    "job-*",                    # glob metacharacter
+    "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",  # uppercase, non-canonical
+    "{00000000-0000-4000-8000-000000000000}",  # braces
+    "urn:uuid:00000000-0000-4000-8000-000000000000",  # urn form
+    "not-a-uuid",
+    "",
+]
+
+
+def test_reproduction_remove_path_traversal_leaves_victim_untouched(
+    repository: Repository, tmp_path: Path
+) -> None:
+    """Reproduction 1 (was RED): ``remove('../../victim')`` must not escape the repo.
+
+    Before the fix, ``jobs/../../victim`` resolved outside the repository, got renamed
+    to an escaped trash target, and was deleted. It must now be refused before any
+    filesystem mutation, leaving the outside directory fully intact.
+    """
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "important.txt").write_text("precious")
+
+    with pytest.raises(ValueError):
+        repository.remove("../../victim")
+
+    assert victim.exists()
+    assert (victim / "important.txt").read_text() == "precious"
+
+
+@pytest.mark.parametrize("bad_id", _MALICIOUS_IDS)
+def test_remove_rejects_non_canonical_id(
+    repository: Repository, tmp_path: Path, bad_id: str
+) -> None:
+    with pytest.raises(ValueError):
+        repository.remove(bad_id)
+
+
+def test_remove_valid_but_absent_uuid_reports_not_contained(
+    repository: Repository,
+) -> None:
+    """A canonical-but-absent id passes validation and reaches the normal
+    'not contained' refusal (ValueError), not the id-validation refusal."""
+    with pytest.raises(ValueError, match="not contained"):
+        repository.remove(_ABSENT_UUID)
+
+
+@pytest.mark.parametrize("bad_id", _MALICIOUS_IDS)
+def test_get_job_by_id_rejects_non_canonical_id(
+    repository: Repository, bad_id: str
+) -> None:
+    with pytest.raises(ValueError):
+        repository.get_job_by_id(bad_id)
+    with pytest.raises(ValueError):
+        repository[bad_id]
+
+
+@pytest.mark.parametrize("bad_id", _MALICIOUS_IDS)
+def test_move_rejects_non_canonical_id_before_mutation(
+    repository_with_remote: Repository, bad_id: str
+) -> None:
+    repo = repository_with_remote
+    with pytest.raises(ValueError):
+        repo.move(bad_id, "archive")
+    # Nothing was written under the remote prefix for the hostile id.
+    assert _all_bucket_keys() == set()
+
+
+@pytest.mark.parametrize("bad_id", _MALICIOUS_IDS)
+def test_fetch_rejects_non_canonical_id_before_mutation(
+    repository_with_remote: Repository, bad_id: str
+) -> None:
+    repo = repository_with_remote
+    with pytest.raises(ValueError):
+        repo.fetch(bad_id)
+
+
+def _all_bucket_keys() -> set:
+    client = boto3.client("s3", region_name="us-east-1")
+    return {
+        obj["Key"]
+        for obj in client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+    }
+
+
+def _put_object(key: str, body: bytes) -> None:
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=BUCKET, Key=key, Body=body
+    )
+
+
+def _publish_representation_raw(job_dir: Path, job_id: str, prefix: str) -> None:
+    """Uploads a complete, self-consistent representation of ``job_dir`` under
+    ``{prefix}{job_id}/`` via the RAW S3 client, bypassing the guarded S3Remote
+    transport. This is the only way to plant a hostile ``job_id`` on the bucket once
+    the transport validates ids, so it is exactly how an attacker's object store —
+    or a corrupted one — could present a traversal-shaped key to discovery/rebuild."""
+    files = [c.relative_to(job_dir) for c in job_dir.rglob("*") if c.is_file()]
+    member_paths = [p for p in files if p.as_posix() not in r3.manifest.SIDECAR_PATHS]
+    temp_dir = Path(tempfile.mkdtemp(prefix="r3-test-rawpublish-"))
+    try:
+        archive_path = temp_dir / "data.tar.zst"
+        result = r3.archive.create_archive(job_dir, member_paths, archive_path)
+        entries = list(result.entries)
+        sidecar_bytes = {}
+        for name in r3.manifest.SIDECAR_PATHS:
+            data = (job_dir / name).read_bytes()
+            sidecar_bytes[name] = data
+            entries.append(
+                r3.manifest.FileEntry(name, len(data), r3.utils.hash_bytes(data))
+            )
+        manifest = r3.manifest.build_manifest(
+            job_id, entries, result.sha256, result.size
+        )
+        base = f"{prefix}{job_id}/"
+        _put_object(base + "data.tar.zst", archive_path.read_bytes())
+        for name, data in sidecar_bytes.items():
+            _put_object(base + name, data)
+        _put_object(base + "manifest.json", r3.manifest.dumps(manifest))
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_reproduction_remote_escape_rebuild_fails_closed(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """Reproduction 2 (was RED): a traversal-shaped remote manifest key must not be
+    indexed, and rebuild must FAIL CLOSED, leaving the previous index intact.
+
+    A COMPLETE, self-consistent 4-object representation is published directly under
+    ``{prefix}../../escaped/`` (raw client, so the manifest's own ``job_id`` is also
+    ``../../escaped``). Before the fix this reconstructed cleanly and indexed an
+    escaped job (which ``fetch`` would then write outside the repo). Rebuild must now
+    enumerate the manifest key, see a non-canonical job segment, and abort with a
+    diagnostic naming it — without replacing the previous index.
+    """
+    repo = repository_with_remote
+    # A legitimate committed job so there is a real index to protect, and a real
+    # job_dir to build the (otherwise valid) escaped representation from.
+    good = repo.commit(get_dummy_job("base"))
+    assert good.id is not None
+    before = (repo.path / "index.sqlite").read_bytes()
+
+    _publish_representation_raw(repo.path / "jobs" / good.id, "../../escaped", PREFIX)
+
+    outside = (repo.path / ".." / ".." / "escaped").resolve()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    assert "escaped" in str(excinfo.value)
+
+    _assert_index_unchanged(repo, before)
+    assert not outside.exists()
+
+
+def test_remote_check_reports_malformed_manifest_key(
+    repository_with_remote: Repository,
+) -> None:
+    """``remote check`` must surface a traversal/nested manifest key as a finding,
+    never silently omit it."""
+    repo = repository_with_remote
+    _put_object(f"{PREFIX}../../escaped/manifest.json", b"{}")
+    _put_object(f"{PREFIX}nested/uuid/manifest.json", b"{}")
+
+    report = repo.remote_check()
+
+    assert report.has_findings
+    reported = {finding.job_id for finding in report.malformed_keys}
+    assert "../../escaped" in reported
+    assert "nested/uuid" in reported
+
+
+def test_fetch_refuses_escaped_id_even_if_indexed(
+    repository_with_remote: Repository, tmp_path: Path
+) -> None:
+    """Defense in depth: even if a traversal id is force-inserted into the index,
+    ``fetch`` refuses via id validation before writing anything outside the repo."""
+    import r3.index
+
+    repo = repository_with_remote
+    with r3.index.Transaction(repo.path / "index.sqlite") as tx:
+        tx.execute(
+            "INSERT INTO jobs (id, timestamp, metadata, location)"
+            " VALUES (?, ?, ?, ?)",
+            ("../../escaped", datetime.now().isoformat(), "{}", "archive"),
+        )
+
+    outside = (repo.path / ".." / ".." / "escaped").resolve()
+    with pytest.raises(ValueError):
+        repo.fetch("../../escaped")
+    assert not outside.exists()
+
+
+def test_valid_uuid_round_trip_unaffected(
+    repository_with_remote: Repository,
+) -> None:
+    """A canonical-UUID job survives the full commit/move/fetch/remove round-trip."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    assert r3.utils.is_valid_job_id(job.id)
+
+    repo.move(job.id, "archive")
+    assert repo._index.get_location(job.id) == "archive"
+
+    repo.fetch(job.id)
+    assert (repo.path / "jobs" / job.id).exists()
+    assert repo._index.get_location(job.id) == "local"
+
+    repo.remove(job.id)
+    with pytest.raises(KeyError):
+        repo._index.get_location(job.id)

@@ -40,9 +40,12 @@ def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
 
 
 def _get_job(repository: r3.Repository, job_id: str) -> r3.Job:
-    """Returns the job with the given ID, reporting a missing job to the user."""
+    """Returns the job with the given ID, reporting a bad/missing id to the user."""
     try:
         return repository.get_job_by_id(job_id)
+    except ValueError as error:
+        # An invalid (non-canonical) id: the message is already the plain string.
+        raise click.ClickException(str(error)) from error
     except KeyError as error:
         # `str` of a KeyError is the repr of its argument, which would add quotes.
         raise click.ClickException(str(error.args[0])) from error
@@ -602,6 +605,7 @@ def remote_check(repository_path: Optional[Path]) -> None:
     _emit("Manifestless job prefixes", report.manifestless_prefixes)
     _emit("Leftover staging manifests", report.staging_manifests)
     _emit("Broken remote rows", report.broken_rows)
+    _emit("Malformed manifest keys", report.malformed_keys)
 
     if report.incomplete_multipart_uploads:
         print("Incomplete multipart uploads:")

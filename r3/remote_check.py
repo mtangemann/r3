@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set
 
 import r3.manifest
+import r3.utils
 from r3.index import Index
 from r3.manifest import SIDECAR_PATHS
 from r3.remote import (
@@ -63,6 +64,10 @@ class _RemoteCheckReport:
     staging_manifests: List[_RemoteCheckFinding] = field(default_factory=list)
     #: Index rows on a remote whose manifest/archive is missing or inconsistent.
     broken_rows: List[_RemoteCheckFinding] = field(default_factory=list)
+    #: ``manifest.json`` keys whose job segment is not a canonical UUID (traversal- or
+    #: nested-shaped). Rebuild fails closed on these; they are surfaced here rather
+    #: than silently omitted. ``job_id`` carries the offending raw segment.
+    malformed_keys: List[_RemoteCheckFinding] = field(default_factory=list)
     #: Incomplete multipart uploads wasting quota under a remote's prefix.
     incomplete_multipart_uploads: List[_MultipartUploadFinding] = field(
         default_factory=list
@@ -76,6 +81,7 @@ class _RemoteCheckReport:
             or self.manifestless_prefixes
             or self.staging_manifests
             or self.broken_rows
+            or self.malformed_keys
             or self.incomplete_multipart_uploads
         )
 
@@ -101,9 +107,27 @@ def _check_remote(
     """Reconciles a single remote's bucket against the index into ``report``."""
     # Enumerate every object once and group it by job id, recording which of the
     # known per-job objects each prefix carries.
+    manifest_suffix = "/" + _MANIFEST_NAME
     objects: Dict[str, Set[str]] = {}
     for key in remote.iter_object_keys():
         rel = key[len(remote.prefix) :]
+        # A manifest key whose job segment is not a canonical UUID (traversal- or
+        # nested-shaped) is the exact shape rebuild fails closed on and that a fetch
+        # would try to escape with. Report it explicitly rather than group or ignore
+        # it — grouping by the first path component would otherwise hide it.
+        if rel.endswith(manifest_suffix):
+            segment = rel[: -len(manifest_suffix)]
+            if not r3.utils.is_valid_job_id(segment):
+                report.malformed_keys.append(
+                    _RemoteCheckFinding(
+                        remote_name,
+                        segment,
+                        f"manifest key '{key}' has a non-canonical job segment "
+                        f"{segment!r} (not a UUID, or nested); rebuild fails "
+                        "closed on it",
+                    )
+                )
+                continue
         job_id, separator, rest = rel.partition("/")
         if not job_id or not separator or not rest:
             # A stray object directly under the prefix (e.g. a key like
@@ -143,6 +167,20 @@ def _check_remote(
     # Rule 4: index rows that claim this remote but do not verify against it.
     for job in index.find({}, location=remote_name):
         assert job.id is not None
+        # A pre-existing row whose id is not a canonical UUID (only reachable via
+        # external corruption) cannot be probed — get_manifest would validate the id
+        # and raise, aborting the whole read-only check. Report it as a broken row
+        # and move on, so the diagnostic survives a corrupt store.
+        if not r3.utils.is_valid_job_id(job.id):
+            report.broken_rows.append(
+                _RemoteCheckFinding(
+                    remote_name,
+                    job.id,
+                    "indexed on this remote under a non-canonical job id "
+                    "(corrupt index row); it cannot be probed and should be removed",
+                )
+            )
+            continue
         _probe_remote_row(remote_name, remote, job.id, report)
 
     # Rule 5: incomplete multipart uploads wasting quota under the prefix.

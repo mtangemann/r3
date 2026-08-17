@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
 
+import r3.utils
 from r3.manifest import SIDECAR_PATHS
 
 # Explicit multipart transfer configuration rather than evolving SDK defaults
@@ -106,7 +107,15 @@ class Remote(ABC):
 
     @abstractmethod
     def list_job_ids(self) -> Iterator[str]:
-        """Yields the job IDs that have a manifest under the remote's prefix."""
+        """Yields the raw job segment of every ``*/manifest.json`` key under the prefix.
+
+        The yielded segment is the substring between the prefix and the trailing
+        ``/manifest.json`` — verbatim, WITHOUT validation. A malformed key (a segment
+        that is not a canonical UUID, or that carries extra path components) is yielded
+        as-is rather than silently dropped, so the consumer sees it: ``rebuild`` fails
+        closed on it and ``remote check`` reports it. Callers that turn the segment
+        into a path or key MUST validate it first.
+        """
 
     @abstractmethod
     def iter_object_keys(self) -> Iterator[str]:
@@ -225,20 +234,33 @@ class S3Remote(Remote):
         )
 
     # -- key scheme --------------------------------------------------------------
+    #
+    # Every per-job object key is built here, so validating the id in each key
+    # helper is the single choke point that stops a non-canonical id (traversal,
+    # separators, glob metacharacters, ...) from ever becoming an S3 key — no matter
+    # which public transport method is called. The id-free enumeration methods
+    # (`list_job_ids`, `iter_object_keys`, `list_incomplete_multipart_uploads`)
+    # deliberately do NOT go through here: they must still surface malformed keys to
+    # discovery/reconciliation rather than reject them.
 
     def _job_prefix(self, job_id: str) -> str:
+        r3.utils.validate_job_id(job_id)
         return f"{self.prefix}{job_id}/"
 
     def _archive_key(self, job_id: str) -> str:
+        r3.utils.validate_job_id(job_id)
         return f"{self.prefix}{job_id}/{_ARCHIVE_NAME}"
 
     def _sidecar_key(self, job_id: str, name: str) -> str:
+        r3.utils.validate_job_id(job_id)
         return f"{self.prefix}{job_id}/{name}"
 
     def _manifest_key(self, job_id: str) -> str:
+        r3.utils.validate_job_id(job_id)
         return f"{self.prefix}{job_id}/{_MANIFEST_NAME}"
 
     def _staging_manifest_key(self, job_id: str) -> str:
+        r3.utils.validate_job_id(job_id)
         return f"{self.prefix}{job_id}/{_STAGING_MANIFEST_NAME}"
 
     # -- client ------------------------------------------------------------------
@@ -446,6 +468,9 @@ class S3Remote(Remote):
         )
 
     def list_job_ids(self) -> Iterator[str]:
+        # Yields the raw job segment for every manifest key, malformed ones included
+        # (see the base-class contract); it must never validate or filter here, or
+        # discovery/reconciliation would be blind to a traversal-shaped key.
         paginator = self._client.get_paginator("list_objects_v2")
         suffix = f"/{_MANIFEST_NAME}"
         for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
