@@ -109,11 +109,17 @@ see what would move, including dependents, without doing it.
 deleting the local copy and aborts if they changed, so a still-running job is detected
 rather than silently truncated.
 
-`move` builds a temporary compressed archive of the job under the system temp
-directory (Python's `tempfile`, usually `/tmp`) before uploading it. When moving large
-jobs, make sure that location has enough free space for one archive-sized file. On an
-HPC node where `/tmp` is small, point `tempfile` at a roomier scratch filesystem by
-setting the `TMPDIR` environment variable (for example
+Before uploading, `move` builds a temporary compressed archive of the job under the
+system temp directory (Python's `tempfile`, usually `/tmp`), then extracts that
+archive again into the same temp directory and re-verifies it against the job's
+manifest — proof that the job is restorable from the archive before the local copy
+(the only copy at that point) is deleted. The archive and its extracted copy exist on
+disk at the same time, so peak temp usage is roughly **the compressed archive plus a
+full extracted copy of the job's files**, not just the archive alone; for compressible
+data the extracted copy can be several times the archive size. When moving large jobs,
+make sure that location has enough free space for that combined peak. On an HPC node
+where `/tmp` is small, point `tempfile` at a roomier scratch filesystem by setting the
+`TMPDIR` environment variable (for example
 `TMPDIR=/scratch/$USER r3 move <job_id> <remote>`).
 
 Fetch a moved job back to local storage:
