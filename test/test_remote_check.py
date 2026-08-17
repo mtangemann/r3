@@ -4,14 +4,16 @@ Uses moto to mock S3. ``remote_check`` reconciles each remote's bucket against t
 index and reports drift; it must mutate nothing (no deletes, no writes).
 """
 
+import json
 from pathlib import Path
-from typing import Generator, Set
+from typing import Dict, Generator, Set
 
 import boto3
 import pytest
 import yaml
 from moto import mock_aws
 
+from r3.index import MAX_MANIFEST_BYTES, MAX_SIDECAR_BYTES
 from r3.remote import S3Remote
 from r3.repository import Repository
 
@@ -27,6 +29,8 @@ OTHER_PREFIX = "r3/other/"
 ORPHAN = "0deada11-0000-4000-8000-00000000abcd"
 STRAY = "57ada11a-0000-4000-8000-00000000beef"
 STAGING_ONLY = "57a91201-0000-4000-8000-00000000cafe"
+# A different canonical UUID, used to rewrite a manifest's own job_id.
+MISMATCH_ID = "0deada11-0000-4000-8000-00000000d00d"
 
 
 def get_dummy_job(name: str):
@@ -78,6 +82,15 @@ def _all_keys() -> Set[str]:
     client = boto3.client("s3", region_name="us-east-1")
     return {
         obj["Key"]
+        for obj in client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+    }
+
+
+def _all_keys_and_etags() -> Dict[str, str]:
+    """Every object key mapped to its ETag (a content fingerprint) in the bucket."""
+    client = boto3.client("s3", region_name="us-east-1")
+    return {
+        obj["Key"]: obj["ETag"]
         for obj in client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
     }
 
@@ -256,6 +269,182 @@ def test_broken_row_malformed_manifest(repo: Repository) -> None:
     assert job.id in _ids(report.broken_rows)
     finding = next(f for f in report.broken_rows if f.job_id == job.id)
     assert "malformed" in finding.detail.lower()
+
+
+def test_broken_row_metadata_sidecar_missing(repo: Repository) -> None:
+    """Deleting only ``metadata.yaml`` (manifest + archive intact) breaks the row.
+
+    This is the reviewer's reproduction: the probe used to pass while ``fetch`` fails
+    on the missing sidecar. The finding must name the missing sidecar.
+    """
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    remote._client.delete_object(
+        Bucket=BUCKET, Key=remote._sidecar_key(job.id, "metadata.yaml")
+    )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("metadata.yaml" in f.detail for f in findings)
+
+
+def test_broken_row_r3_sidecar_missing(repo: Repository) -> None:
+    """Deleting only ``r3.yaml`` (manifest + archive intact) breaks the row."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    remote._client.delete_object(
+        Bucket=BUCKET, Key=remote._sidecar_key(job.id, "r3.yaml")
+    )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("r3.yaml" in f.detail for f in findings)
+
+
+def test_broken_row_both_sidecars_missing(repo: Repository) -> None:
+    """Both sidecars missing yields one finding per sidecar (not just the first)."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    for name in ("r3.yaml", "metadata.yaml"):
+        remote._client.delete_object(
+            Bucket=BUCKET, Key=remote._sidecar_key(job.id, name)
+        )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("r3.yaml" in f.detail for f in findings)
+    assert any("metadata.yaml" in f.detail for f in findings)
+
+
+def test_broken_row_mismatched_manifest_id(repo: Repository) -> None:
+    """A manifest whose own ``job_id`` names a different job breaks the row.
+
+    The manifest stays structurally valid; only its ``job_id`` is rewritten to another
+    canonical UUID, so the identity binding in ``loads(expected_job_id=...)`` is the
+    sole reason it is rejected (never reported healthy).
+    """
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+
+    manifest = json.loads(remote.get_manifest(job.id))
+    manifest["job_id"] = MISMATCH_ID
+    remote._client.put_object(
+        Bucket=BUCKET,
+        Key=remote._manifest_key(job.id),
+        Body=json.dumps(manifest).encode("utf-8"),
+    )
+
+    report = repo.remote_check()
+
+    assert job.id in _ids(report.broken_rows)
+
+
+def test_broken_row_oversized_manifest(repo: Repository) -> None:
+    """An over-cap ``manifest.json`` breaks the row (rejected before its body read)."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    remote._client.put_object(
+        Bucket=BUCKET,
+        Key=remote._manifest_key(job.id),
+        Body=b"\0" * (MAX_MANIFEST_BYTES + 1),
+    )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("manifest" in f.detail.lower() and "cap" in f.detail.lower()
+               for f in findings)
+
+
+def test_broken_row_oversized_sidecar(repo: Repository) -> None:
+    """An over-cap sidecar breaks the row (probe bounds the read like fetch/rebuild)."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    remote._client.put_object(
+        Bucket=BUCKET,
+        Key=remote._sidecar_key(job.id, "metadata.yaml"),
+        Body=b"\0" * (MAX_SIDECAR_BYTES + 1),
+    )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("metadata.yaml" in f.detail and "cap" in f.detail.lower()
+               for f in findings)
+
+
+def test_broken_row_sidecar_content_mismatch_metadata(repo: Repository) -> None:
+    """A present, same-size ``metadata.yaml`` with WRONG content (only the hash
+    differs) breaks the row: presence and cap alone are not enough, because
+    ``fetch``'s verify_directory would reject the mismatched bytes."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    original = remote.get_sidecar(job.id, "metadata.yaml")
+    tampered = bytes(byte ^ 0xFF for byte in original)
+    assert len(tampered) == len(original) and tampered != original
+    remote._client.put_object(
+        Bucket=BUCKET,
+        Key=remote._sidecar_key(job.id, "metadata.yaml"),
+        Body=tampered,
+    )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("metadata.yaml" in f.detail for f in findings)
+
+
+def test_broken_row_sidecar_content_mismatch_r3(repo: Repository) -> None:
+    """Same-size, wrong-content ``r3.yaml`` (only the hash differs) breaks the row."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+    remote = _s3(repo, "archive")
+    original = remote.get_sidecar(job.id, "r3.yaml")
+    tampered = bytes(byte ^ 0xFF for byte in original)
+    assert len(tampered) == len(original) and tampered != original
+    remote._client.put_object(
+        Bucket=BUCKET,
+        Key=remote._sidecar_key(job.id, "r3.yaml"),
+        Body=tampered,
+    )
+
+    report = repo.remote_check()
+
+    findings = [f for f in report.broken_rows if f.job_id == job.id]
+    assert any("r3.yaml" in f.detail for f in findings)
+
+
+def test_healthy_moved_row_clean_and_probe_read_only(repo: Repository) -> None:
+    """A fully-present moved job yields NO broken finding, and probing it (including
+    the sidecar reads) mutates no remote object."""
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = _all_keys_and_etags()
+    report = repo.remote_check()
+
+    assert job.id not in _ids(report.broken_rows)
+    assert report.broken_rows == []
+    assert _all_keys_and_etags() == before
 
 
 # --------------------------------------------- rule 2 vs rule 4 are disjoint

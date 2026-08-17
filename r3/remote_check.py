@@ -14,13 +14,14 @@ from typing import Dict, List, Set
 
 import r3.manifest
 import r3.utils
-from r3.index import Index
+from r3.index import MAX_MANIFEST_BYTES, MAX_SIDECAR_BYTES, Index
 from r3.manifest import SIDECAR_PATHS
 from r3.remote import (
     _ARCHIVE_NAME,
     _MANIFEST_NAME,
     _STAGING_MANIFEST_NAME,
     Remote,
+    RemoteError,
 )
 
 # The per-job object names (imported from ``r3.remote``, the one source of truth for
@@ -62,7 +63,10 @@ class _RemoteCheckReport:
     manifestless_prefixes: List[_RemoteCheckFinding] = field(default_factory=list)
     #: Leftover ``manifest.json.staging`` objects (interrupted publishes).
     staging_manifests: List[_RemoteCheckFinding] = field(default_factory=list)
-    #: Index rows on a remote whose manifest/archive is missing or inconsistent.
+    #: Index rows on a remote whose manifest, archive, or a sidecar is missing or
+    #: inconsistent — e.g. an oversized/malformed/mismatched manifest, a missing or
+    #: wrong-sized archive, or a sidecar that is missing, over-cap, or whose
+    #: size/hash disagrees with the manifest.
     broken_rows: List[_RemoteCheckFinding] = field(default_factory=list)
     #: ``manifest.json`` keys whose job segment is not a canonical UUID (traversal- or
     #: nested-shaped). Rebuild fails closed on these; they are surfaced here rather
@@ -92,8 +96,8 @@ def check(index: Index, remotes: Dict[str, Remote]) -> _RemoteCheckReport:
     Reports five classes of drift without mutating anything (no deletes, no
     writes): resurrection-risk complete manifests (no index row, or a row that
     disagrees on location), manifestless job prefixes, leftover staging
-    manifests, index rows on a remote whose manifest/archive is missing or
-    inconsistent, and incomplete multipart uploads.
+    manifests, index rows on a remote whose manifest, archive, or a sidecar is
+    missing or inconsistent, and incomplete multipart uploads.
     """
     report = _RemoteCheckReport()
     for remote_name, remote in remotes.items():
@@ -242,10 +246,17 @@ def _probe_remote_row(
 ) -> None:
     """Verifies an index row that claims ``remote_name`` against the bucket.
 
-    Read-only: reads the manifest and HEADs the archive; never writes or deletes.
+    Read-only: reads the manifest (bounded) and HEADs the archive, then reads each
+    sidecar (bounded) and checks its size and SHA-256 against the manifest; never
+    writes or deletes. This is the same minimally-complete-job bar ``fetch`` and
+    ``rebuild`` enforce — a manifest bound to this ``job_id``, an archive of the
+    recorded size, and both sidecars present, within cap, and matching their manifest
+    entries — so a row this probe calls healthy is one ``fetch`` can restore, rather
+    than one it would fail on. Like ``rebuild``, the (possibly huge) archive is checked
+    by size only; only the small sidecars are content-hashed.
     """
     try:
-        manifest_bytes = remote.get_manifest(job_id)
+        manifest_bytes = remote.get_manifest(job_id, max_bytes=MAX_MANIFEST_BYTES)
     except FileNotFoundError:
         report.broken_rows.append(
             _RemoteCheckFinding(
@@ -255,9 +266,18 @@ def _probe_remote_row(
             )
         )
         return
+    except RemoteError:
+        report.broken_rows.append(
+            _RemoteCheckFinding(
+                remote_name,
+                job_id,
+                "indexed on this remote but its manifest.json exceeds the size cap",
+            )
+        )
+        return
 
     try:
-        manifest = r3.manifest.loads(manifest_bytes)
+        manifest = r3.manifest.loads(manifest_bytes, expected_job_id=job_id)
     except r3.manifest.ManifestError as error:
         report.broken_rows.append(
             _RemoteCheckFinding(
@@ -287,3 +307,61 @@ def _probe_remote_row(
                 f"{expected_size}",
             )
         )
+
+    # Both sidecars must be retrievable, within cap, and match their manifest entry
+    # exactly: ``fetch`` reads and hashes them (its verify_directory would reject a
+    # tampered sidecar), so a probe that only proved presence would call a row healthy
+    # that ``fetch`` cannot restore. Reading each (bounded) proves it exists and bounds
+    # the read, and comparing size+hash against the manifest — the identical check
+    # ``rebuild`` runs — makes "healthy" mean fetchable rather than merely present.
+    # Report every defective sidecar rather than stopping at the first.
+    entries = {entry["path"]: entry for entry in manifest["files"]}
+    for name in SIDECAR_PATHS:
+        try:
+            data = remote.get_sidecar(job_id, name, max_bytes=MAX_SIDECAR_BYTES)
+        except FileNotFoundError:
+            report.broken_rows.append(
+                _RemoteCheckFinding(
+                    remote_name,
+                    job_id,
+                    f"indexed on this remote but its {name} is missing",
+                )
+            )
+            continue
+        except RemoteError:
+            report.broken_rows.append(
+                _RemoteCheckFinding(
+                    remote_name,
+                    job_id,
+                    f"indexed on this remote but its {name} exceeds the size cap",
+                )
+            )
+            continue
+
+        entry = entries.get(name)
+        if entry is None:
+            # A move-built manifest always lists both sidecars; a manifest missing one
+            # cannot describe a fetchable job, so treat it as a broken row.
+            report.broken_rows.append(
+                _RemoteCheckFinding(
+                    remote_name,
+                    job_id,
+                    f"manifest has no entry for sidecar {name}",
+                )
+            )
+        elif len(data) != entry["size"]:
+            report.broken_rows.append(
+                _RemoteCheckFinding(
+                    remote_name,
+                    job_id,
+                    f"sidecar {name} size {len(data)} != manifest {entry['size']}",
+                )
+            )
+        elif r3.utils.hash_bytes(data) != entry["sha256"]:
+            report.broken_rows.append(
+                _RemoteCheckFinding(
+                    remote_name,
+                    job_id,
+                    f"sidecar {name} content does not match the manifest hash",
+                )
+            )
