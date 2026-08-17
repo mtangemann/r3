@@ -100,11 +100,17 @@ class Remote(ABC):
         """Deletes the manifest (invalidates the publication); idempotent."""
 
     @abstractmethod
-    def get_manifest(self, job_id: str) -> bytes:
+    def get_manifest(self, job_id: str, max_bytes: Optional[int] = None) -> bytes:
         """Returns the raw manifest bytes.
+
+        Parameters:
+            max_bytes: If given, reject an object larger than this many bytes before
+                its body is read into memory (a defense-in-depth bound for callers,
+                like rebuild, that parse an untrusted manifest). None reads it in full.
 
         Raises:
             FileNotFoundError: If the manifest does not exist.
+            RemoteError: If ``max_bytes`` is given and the object exceeds it.
         """
 
     @abstractmethod
@@ -122,8 +128,18 @@ class Remote(ABC):
         """
 
     @abstractmethod
-    def get_sidecar(self, job_id: str, name: str) -> bytes:
-        """Returns a sidecar object's bytes."""
+    def get_sidecar(
+        self, job_id: str, name: str, max_bytes: Optional[int] = None
+    ) -> bytes:
+        """Returns a sidecar object's bytes.
+
+        Parameters:
+            max_bytes: If given, reject an object larger than this many bytes before
+                its body is read into memory. None reads it in full.
+
+        Raises:
+            RemoteError: If ``max_bytes`` is given and the object exceeds it.
+        """
 
     @abstractmethod
     def archive_size(self, job_id: str) -> Optional[int]:
@@ -353,7 +369,17 @@ class S3Remote(Remote):
             raise
         return response["ContentLength"]
 
-    def _get_bytes(self, key: str) -> bytes:
+    def _get_bytes(self, key: str, max_bytes: Optional[int] = None) -> bytes:
+        # When a cap is requested, HEAD the object first and reject an over-cap size
+        # before its body is pulled into memory. A missing object (HEAD -> None) falls
+        # through to the GET below, which raises the usual FileNotFoundError.
+        if max_bytes is not None:
+            size = self._head(key)
+            if size is not None and size > max_bytes:
+                raise RemoteError(
+                    f"Object {key} is {size} bytes, exceeding the {max_bytes}-byte "
+                    "cap for this object."
+                )
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=key)
         except self._client.exceptions.NoSuchKey as error:
@@ -489,8 +515,8 @@ class S3Remote(Remote):
     def delete_manifest(self, job_id: str) -> None:
         self._delete([self._manifest_key(job_id)])
 
-    def get_manifest(self, job_id: str) -> bytes:
-        return self._get_bytes(self._manifest_key(job_id))
+    def get_manifest(self, job_id: str, max_bytes: Optional[int] = None) -> bytes:
+        return self._get_bytes(self._manifest_key(job_id), max_bytes=max_bytes)
 
     def download_archive(self, job_id: str, destination: Path) -> None:
         self._client.download_file(
@@ -516,8 +542,10 @@ class S3Remote(Remote):
             digest.update(chunk)
         return digest.hexdigest()
 
-    def get_sidecar(self, job_id: str, name: str) -> bytes:
-        return self._get_bytes(self._sidecar_key(job_id, name))
+    def get_sidecar(
+        self, job_id: str, name: str, max_bytes: Optional[int] = None
+    ) -> bytes:
+        return self._get_bytes(self._sidecar_key(job_id, name), max_bytes=max_bytes)
 
     def archive_size(self, job_id: str) -> Optional[int]:
         return self._head(self._archive_key(job_id))

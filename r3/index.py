@@ -10,12 +10,27 @@ from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Set, Tuple
 
 import r3.manifest
 import r3.utils
+from r3.archive import (
+    DEFAULT_MAX_FILE_BYTES,
+    DEFAULT_MAX_FILE_COUNT,
+    DEFAULT_MAX_TOTAL_BYTES,
+    enforce_extraction_caps,
+)
 from r3.job import Job, JobDependency
 from r3.query import mongo_to_sql
 from r3.storage import Storage
 
 if TYPE_CHECKING:
     from r3.remote import Remote
+
+# Defense-in-depth caps on the metadata objects rebuild reads into memory before
+# parsing. A manifest and the r3.yaml/metadata.yaml sidecars are normally only a few
+# KB, so a few MiB is very generous; rejecting anything larger keeps a corrupt or
+# hostile object from exhausting memory during a rebuild, and — together with the
+# extraction caps applied to the parsed manifest — makes rebuild fail closed on a job
+# a later fetch would refuse rather than caching it.
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_SIDECAR_BYTES = 4 * 1024 * 1024
 
 
 class Index:
@@ -192,7 +207,9 @@ class Index:
         path. Any failure raises `RuntimeError` naming the remote and job.
         """
         try:
-            manifest = r3.manifest.loads(remote.get_manifest(job_id))
+            manifest = r3.manifest.loads(
+                remote.get_manifest(job_id, max_bytes=MAX_MANIFEST_BYTES)
+            )
 
             if not r3.utils.is_valid_job_id(manifest["job_id"]):
                 raise RuntimeError(
@@ -204,13 +221,29 @@ class Index:
                     f"object key job_id {job_id!r}."
                 )
 
+            # Fail closed on a manifest that declares more files or bytes than the
+            # extraction caps allow, using the same bound fetch enforces — so rebuild
+            # never caches a job a later fetch would refuse (and never touches those
+            # declared bytes). Sidecars live outside the archive, so mirror fetch and
+            # bound only the archive-resident payload.
+            enforce_extraction_caps(
+                {
+                    entry["path"]: entry["size"]
+                    for entry in manifest["files"]
+                    if entry["path"] not in r3.manifest.SIDECAR_PATHS
+                },
+                DEFAULT_MAX_TOTAL_BYTES,
+                DEFAULT_MAX_FILE_COUNT,
+                DEFAULT_MAX_FILE_BYTES,
+            )
+
             entries = {entry["path"]: entry for entry in manifest["files"]}
             sidecar_bytes: Dict[str, bytes] = {}
             for name in r3.manifest.SIDECAR_PATHS:
                 if name not in entries:
                     raise RuntimeError(f"manifest has no entry for sidecar {name!r}.")
                 entry = entries[name]
-                data = remote.get_sidecar(job_id, name)
+                data = remote.get_sidecar(job_id, name, max_bytes=MAX_SIDECAR_BYTES)
                 sidecar_bytes[name] = data
                 if len(data) != entry["size"]:
                     raise RuntimeError(

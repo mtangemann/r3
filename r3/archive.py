@@ -174,7 +174,7 @@ def safe_extract(
         ArchiveError: On any unsafe, unexpected, or size-mismatched member, if a
             backstop cap is exceeded, or if a member cannot be written.
     """
-    _enforce_extraction_caps(
+    enforce_extraction_caps(
         expected_sizes, max_total_bytes, max_file_count, max_file_bytes
     )
 
@@ -204,12 +204,23 @@ def safe_extract(
     (staging_dir / "output").mkdir(parents=True, exist_ok=True)
 
 
-def _enforce_extraction_caps(
+def enforce_extraction_caps(
     expected_sizes: Mapping[str, int],
     max_total_bytes: int,
     max_file_count: int,
     max_file_bytes: int,
 ) -> None:
+    """Rejects a file set whose count or declared sizes exceed the backstop caps.
+
+    Shared by :func:`safe_extract` (the fetch-time extraction boundary) and by the
+    index rebuild, so both reject an over-populated or over-large manifest by the same
+    rule rather than letting rebuild cache one that fetch would refuse. Operates purely
+    on the declared ``{path: size}`` mapping — no bytes are read.
+
+    Raises:
+        ArchiveError: If the count, summed size, or any single declared size exceeds
+            its cap.
+    """
     count = len(expected_sizes)
     if count > max_file_count:
         raise ArchiveError(

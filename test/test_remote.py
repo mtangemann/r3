@@ -176,6 +176,33 @@ def test_get_manifest_raises_when_missing(s3_remote: S3Remote) -> None:
         s3_remote.get_manifest(ABSENT)
 
 
+def test_get_manifest_rejects_object_exceeding_max_bytes(
+    s3_remote: S3Remote,
+) -> None:
+    """A capped manifest read rejects an object larger than the cap (checked before
+    the body is pulled into memory); uncapped or generous reads still return it."""
+    s3_remote.publish_manifest(JOB1, b'{"manifest_version": 1}')
+
+    with pytest.raises(RemoteError, match="cap"):
+        s3_remote.get_manifest(JOB1, max_bytes=5)
+
+    assert s3_remote.get_manifest(JOB1) == b'{"manifest_version": 1}'
+    assert s3_remote.get_manifest(JOB1, max_bytes=1000) == b'{"manifest_version": 1}'
+
+
+def test_get_sidecar_rejects_object_exceeding_max_bytes(
+    s3_remote: S3Remote,
+) -> None:
+    """A capped sidecar read rejects an object larger than the cap; a generous cap
+    returns it unchanged."""
+    s3_remote.put_sidecar(JOB1, "r3.yaml", b"version: 1\n")
+
+    with pytest.raises(RemoteError, match="cap"):
+        s3_remote.get_sidecar(JOB1, "r3.yaml", max_bytes=3)
+
+    assert s3_remote.get_sidecar(JOB1, "r3.yaml", max_bytes=1000) == b"version: 1\n"
+
+
 def test_exists_only_after_manifest_published(
     s3_remote: S3Remote, tmp_path: Path
 ) -> None:

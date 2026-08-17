@@ -21,6 +21,7 @@ from moto import mock_aws
 from pytest_mock.plugin import MockerFixture
 
 import r3.archive
+import r3.index
 import r3.manifest
 import r3.repository
 import r3.utils
@@ -2526,6 +2527,84 @@ def test_rebuild_fails_closed_on_missing_archive(
 
     with pytest.raises(RuntimeError):
         repo.rebuild_index()
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_oversized_manifest(
+    repository_with_remote: Repository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest object larger than the rebuild byte cap aborts the rebuild before it
+    is slurped and cached, leaving the old index intact. Shrinking the cap so the
+    job's own (valid) manifest exceeds it isolates the cap as the sole cause."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    monkeypatch.setattr(r3.index, "MAX_MANIFEST_BYTES", 5, raising=False)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    message = str(excinfo.value)
+    assert job.id in message and "archive" in message
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_oversized_sidecar(
+    repository_with_remote: Repository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sidecar object larger than the rebuild byte cap aborts the rebuild before it
+    is slurped and cached, leaving the old index intact."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    monkeypatch.setattr(r3.index, "MAX_SIDECAR_BYTES", 3, raising=False)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    message = str(excinfo.value)
+    assert job.id in message and "archive" in message
+    _assert_index_unchanged(repo, before)
+
+
+def test_rebuild_fails_closed_on_manifest_over_extraction_caps(
+    repository_with_remote: Repository,
+) -> None:
+    """A manifest whose declared file sizes exceed the extraction caps is rejected at
+    rebuild — the same bound fetch enforces — so rebuild never caches a manifest a
+    later fetch would refuse. The manifest is otherwise valid and consistent, so the
+    cap is the sole cause of the abort."""
+    repo = repository_with_remote
+    job = repo.commit(get_dummy_job("base"))
+    assert job.id is not None
+    repo.move(job.id, "archive")
+
+    before = (repo.path / "index.sqlite").read_bytes()
+    manifest = r3.manifest.loads(repo.remotes["archive"].get_manifest(job.id))
+    manifest["files"].append(
+        {
+            "path": "huge.bin",
+            "size": r3.archive.DEFAULT_MAX_TOTAL_BYTES + 1,
+            "sha256": "0" * 64,
+        }
+    )
+    client = boto3.client("s3", region_name="us-east-1")
+    client.put_object(
+        Bucket=BUCKET,
+        Key=f"{PREFIX}{job.id}/manifest.json",
+        Body=r3.manifest.dumps(manifest),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        repo.rebuild_index()
+    message = str(excinfo.value)
+    assert job.id in message and "archive" in message
     _assert_index_unchanged(repo, before)
 
 
