@@ -86,7 +86,14 @@ class Job:
         return self._metadata_from_cache
 
     def reload_metadata(self) -> None:
-        """Reloads the metadata from the metadata file."""
+        """Reloads the metadata from the metadata file.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection. Its metadata
+                file is not available locally, so reloading would wipe the valid
+                cached metadata; the cached value stays readable via `metadata`.
+        """
+        self._require_local("metadata")
         if (self.path / "metadata.yaml").is_file():
             with open(self.path / "metadata.yaml", "r") as metadata_file:
                 self._metadata = yaml.safe_load(metadata_file)
@@ -98,7 +105,13 @@ class Job:
         """Saves the job metadata to the metadata file.
 
         This method has to be called after modifying the metadata dictionary.
+
+        Raises:
+            FilesUnavailableError: If this job is a remote projection. Editing the
+                metadata of a job stored on a remote is not supported; fetch the job
+                back to local storage first.
         """
+        self._require_local("metadata")
         with open(self.path / "metadata.yaml", "w") as metadata_file:
             yaml.dump(self.metadata, metadata_file)
 

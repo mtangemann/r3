@@ -624,3 +624,37 @@ def test_job_remote_projection_raises_on_file_access():
         job.hash()
     with pytest.raises(r3.FilesUnavailableError):
         _ = job.dependencies
+
+
+def test_job_reload_metadata_refuses_on_remote_projection(tmp_path: Path) -> None:
+    """reload_metadata must refuse on a remote projection rather than silently
+    replacing the valid cached remote metadata with an empty dict."""
+    job = r3.Job(
+        tmp_path,
+        id=str(uuid.uuid4()),
+        cached_metadata={"tags": ["cached"]},
+        remote_location="archive",
+    )
+
+    with pytest.raises(r3.FilesUnavailableError):
+        job.reload_metadata()
+
+    # The cached metadata survives, and no local metadata file is created.
+    assert job.metadata == {"tags": ["cached"]}
+    assert job.uses_cached_metadata()
+    assert not (tmp_path / "metadata.yaml").exists()
+
+
+def test_job_save_metadata_refuses_on_remote_projection(tmp_path: Path) -> None:
+    """save_metadata must refuse on a remote projection and write no file."""
+    job = r3.Job(
+        tmp_path,
+        id=str(uuid.uuid4()),
+        cached_metadata={"tags": ["cached"]},
+        remote_location="archive",
+    )
+
+    with pytest.raises(r3.FilesUnavailableError):
+        job.save_metadata()
+
+    assert not (tmp_path / "metadata.yaml").exists()

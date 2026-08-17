@@ -7,6 +7,7 @@ import socket
 import stat
 import tarfile
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, Sequence, Union
@@ -145,17 +146,58 @@ def test_repository_jobs_calls_find(
     repository_find.assert_called_once_with({}, latest=False)
 
 
-def test_repository_contains_job_calls_storage_contains(
-        tmp_path: Path, mocker: MockerFixture
+def _archive_job(repository: Repository, job: Job) -> None:
+    """Simulates a move: flip the job to a remote location and drop its local
+    files, leaving the metadata-only index row a projection is built from."""
+    assert job.id is not None
+    repository._index.set_location(job.id, "archive")
+    repository._storage.remove(job)
+
+
+def test_repository_contains_local_job(repository: Repository) -> None:
+    committed = repository.commit(get_dummy_job("base"))
+    assert committed in repository
+
+
+def test_repository_contains_remote_projection_from_find(
+    repository: Repository,
 ) -> None:
-    storage_contains = mocker.patch("r3.storage.Storage.__contains__")
+    committed = repository.commit(get_dummy_job("base"))
+    _archive_job(repository, committed)
 
-    path = tmp_path / "repository"
-    repository = Repository.init(path)
-    job = get_dummy_job("base")
-    job in repository  # noqa: B015
+    projection = repository.find({})[0]
+    assert projection in repository
 
-    storage_contains.assert_called_once_with(job)
+
+def test_repository_contains_remote_projection_from_get(
+    repository: Repository,
+) -> None:
+    committed = repository.commit(get_dummy_job("base"))
+    assert committed.id is not None
+    _archive_job(repository, committed)
+
+    projection = repository.get_job_by_id(committed.id)
+    assert projection in repository
+
+
+def test_repository_does_not_contain_same_id_job_from_other_repository(
+    tmp_path: Path,
+) -> None:
+    repository = Repository.init(tmp_path / "repository")
+    other_repository = Repository.init(tmp_path / "other")
+    committed = repository.commit(get_dummy_job("base"))
+    assert committed.id is not None
+
+    # A Job with the same id but living under another repository's job path must
+    # not be adopted merely because the id is known to this repository's index.
+    foreign = Job(other_repository.path / "jobs" / committed.id, committed.id)
+    assert foreign not in repository
+
+
+def test_repository_does_not_contain_unknown_job(repository: Repository) -> None:
+    unknown_id = str(uuid.uuid4())
+    foreign = Job(repository.path / "jobs" / unknown_id, unknown_id)
+    assert foreign not in repository
 
 
 def test_repository_contains_job_dependency(tmp_path: Path) -> None:

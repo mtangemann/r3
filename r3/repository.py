@@ -135,7 +135,19 @@ class Repository:
             Whether the given job or dependency is contained in this repository.
         """
         if isinstance(item, Job):
-            return item in self._storage
+            # A job is contained if this repository's index knows its id (local OR
+            # remote) AND the job points at this repository's job path. The path
+            # guard is what stops an unrelated `Job` from another repository that
+            # merely shares an id from being adopted; a projection built by this
+            # repo's own `find`/`get` is constructed with exactly that path, so it
+            # matches, and so does a local job from this repo.
+            if not r3.utils.is_valid_job_id(item.id):
+                return False
+            assert item.id is not None  # narrowed by is_valid_job_id above
+            if item not in self._index:
+                return False
+            expected = (self._storage.root / "jobs" / item.id).resolve()
+            return item.path.resolve() == expected
 
         try:
             resolved_item = self.resolve(item)

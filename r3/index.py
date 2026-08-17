@@ -354,6 +354,31 @@ class Index:
             )
         return self.storage.get(job_id, cached_timestamp, cached_metadata)
 
+    def _row_to_job(
+        self,
+        job_id: str,
+        cached_timestamp: datetime,
+        cached_metadata: Dict[str, Any],
+        location: str,
+    ) -> Job:
+        """Builds a `Job` from an index row, location-aware.
+
+        A row indexed as ``local`` is materialized from storage (and verified for
+        corruption via `_local_job`); any other location is a metadata-only remote
+        projection whose files/hash/dependencies raise `FilesUnavailableError` until
+        the job is fetched. Shared by `get`, `find`, and `find_dependents` so the
+        projection construction lives in exactly one place.
+        """
+        if location == "local":
+            return self._local_job(job_id, cached_timestamp, cached_metadata)
+        return Job(
+            self.storage.root / "jobs" / job_id,
+            job_id,
+            cached_timestamp=cached_timestamp,
+            cached_metadata=cached_metadata,
+            remote_location=location,
+        )
+
     def get(self, job_id: str) -> Job:
         """Gets a job by ID.
 
@@ -377,18 +402,7 @@ class Index:
         cached_metadata = json.loads(result[1])
         location = result[2]
 
-        if location == "local":
-            return self._local_job(job_id, cached_timestamp, cached_metadata)
-
-        # Remote job: return a metadata-only projection. Its files/hash/dependencies
-        # raise FilesUnavailableError until the job is fetched.
-        return Job(
-            self.storage.root / "jobs" / job_id,
-            job_id,
-            cached_timestamp=cached_timestamp,
-            cached_metadata=cached_metadata,
-            remote_location=location,
-        )
+        return self._row_to_job(job_id, cached_timestamp, cached_metadata, location)
 
     def update(self, job: Job) -> None:
         """Updates a job in the index.
@@ -559,21 +573,11 @@ class Index:
             cached_timestamp = datetime.fromisoformat(result[1])
             cached_metadata = json.loads(result[2])
             row_location = result[3]
-            if row_location == "local":
-                jobs.append(
-                    self._local_job(job_id, cached_timestamp, cached_metadata)
+            jobs.append(
+                self._row_to_job(
+                    job_id, cached_timestamp, cached_metadata, row_location
                 )
-            else:
-                # Remote job: metadata-only projection.
-                jobs.append(
-                    Job(
-                        self.storage.root / "jobs" / job_id,
-                        job_id,
-                        cached_timestamp=cached_timestamp,
-                        cached_metadata=cached_metadata,
-                        remote_location=row_location,
-                    )
-                )
+            )
         return jobs
 
     def find_dependents(self, job: Job, recursive: bool = False) -> Set[Job]:
@@ -606,21 +610,12 @@ class Index:
             cached_metadata = json.loads(result[2])
             row_location = result[3]
 
-            # Use the same location-aware projection as get()/find(): a remote
-            # dependent has no local directory, so build a metadata-only projection
-            # instead of calling storage.get (which would raise FileNotFoundError).
-            if row_location == "local":
-                dependent_job = self._local_job(
-                    job_id, cached_timestamp, cached_metadata
-                )
-            else:
-                dependent_job = Job(
-                    self.storage.root / "jobs" / job_id,
-                    job_id,
-                    cached_timestamp=cached_timestamp,
-                    cached_metadata=cached_metadata,
-                    remote_location=row_location,
-                )
+            # A remote dependent has no local directory, so `_row_to_job` builds a
+            # metadata-only projection instead of calling storage.get (which would
+            # raise FileNotFoundError).
+            dependent_job = self._row_to_job(
+                job_id, cached_timestamp, cached_metadata, row_location
+            )
             dependents[dependent_job.id] = dependent_job
 
             if recursive:
