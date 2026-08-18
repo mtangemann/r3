@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import pytest
 import yaml
 
-from r3.index import Index
+from r3.index import Index, Transaction
 from r3.job import Job, JobDependency
 from r3.storage import Storage
 
@@ -262,3 +262,32 @@ def test_index_find_dependents_uses_cached_metadata(storage_with_jobs: Storage):
     job = index.find({"tags": {"$all": ["test-again"]}}, latest=True)[0]
     dependents = index.find_dependents(job)
     assert all(dependent.uses_cached_metadata() for dependent in dependents)
+
+
+def test_transaction_rolls_back_on_exception(storage: Storage):
+    """A Transaction that raises mid-block must not persist its writes."""
+    # Bootstrap the schema via Index (its __init__ rebuilds an absent index),
+    # then talk to the raw Transaction directly.
+    index = Index(storage)
+    path = storage.root / "index.sqlite"
+    del index
+
+    class _BoomError(Exception):
+        pass
+
+    # A write followed by a raise inside the block: the exception must
+    # propagate and the write must not be committed.
+    with pytest.raises(_BoomError):
+        with Transaction(path) as cursor:
+            cursor.execute(
+                "INSERT INTO jobs (id, timestamp, metadata) VALUES (?, ?, ?)",
+                ("rollback-sentinel", "2021-01-01T00:00:00", "{}"),
+            )
+            raise _BoomError
+
+    # A fresh connection must not see the rolled-back row.
+    with Transaction(path) as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?", ("rollback-sentinel",)
+        )
+        assert cursor.fetchone()[0] == 0

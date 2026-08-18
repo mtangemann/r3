@@ -269,5 +269,10 @@ class Transaction:
         return self.cursor
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.connection.commit()
-        self.connection.close()
+        try:
+            if exc_type is None:
+                self.connection.commit()
+            else:
+                self.connection.rollback()
+        finally:
+            self.connection.close()
