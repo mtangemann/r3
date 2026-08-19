@@ -1,8 +1,28 @@
 import hashlib
+import uuid
 from pathlib import Path
 from typing import Iterable, List, Optional
 
 from executor import ExternalCommandFailed, execute
+
+
+def is_valid_job_id(job_id: object) -> bool:
+    """Returns whether ``job_id`` is a canonical UUID string (as produced by uuid4)."""
+    try:
+        return isinstance(job_id, str) and str(uuid.UUID(job_id)) == job_id
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def validate_job_id(job_id: object) -> None:
+    """Raises ``ValueError`` unless ``job_id`` is a canonical UUID string.
+
+    Call this at every boundary that turns an id into a filesystem path, before the
+    path is built. ``ValueError`` (rather than a bespoke type) is deliberate: the CLI
+    already funnels these into clean user-facing errors.
+    """
+    if not is_valid_job_id(job_id):
+        raise ValueError(f"Invalid job id: {job_id!r}")
 
 
 def find_files(path: Path, ignore_patterns: Iterable[str]) -> List[Path]:

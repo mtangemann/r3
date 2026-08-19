@@ -199,7 +199,7 @@ def test_storage_get_raises_if_job_id_does_not_exist(fs: FakeFilesystem):
     storage = Storage.init("/repository")
 
     with pytest.raises(FileNotFoundError):
-        storage.get("non-existent")
+        storage.get("00000000-0000-4000-8000-00000000dead")
 
 
 def test_storage_get_raises_if_job_does_not_exist(fs: FakeFilesystem):
@@ -207,7 +207,7 @@ def test_storage_get_raises_if_job_does_not_exist(fs: FakeFilesystem):
     storage = Storage.init("/repository")
 
     with pytest.raises(FileNotFoundError):
-        storage.get("non-existent")
+        storage.get("00000000-0000-4000-8000-00000000dead")
 
 
 def test_storage_jobs_returns_all_jobs(fs: FakeFilesystem):
@@ -486,3 +486,19 @@ def test_checkout_git_dependency_clones_repository():
             expected_content_path / "test" / "test_storage.py",
             checkout_path / "destination",
         )
+
+
+def test_storage_get_rejects_non_canonical_id(fs: FakeFilesystem):
+    fs.create_dir("/repository")
+    storage = Storage.init("/repository")
+
+    with pytest.raises(ValueError):
+        storage.get("../../escaped")
+
+
+def test_checkout_job_dependency_rejects_non_canonical_id(fs: FakeFilesystem):
+    fs.create_dir("/repository")
+    storage = Storage.init("/repository")
+    dependency = JobDependency("destination", "../../escaped", "source")
+    with pytest.raises(ValueError):
+        storage.checkout_job_dependency(dependency, Path("/checkout"))
