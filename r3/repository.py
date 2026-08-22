@@ -114,6 +114,8 @@ class Repository:
             return all(dependency in self for dependency in resolved_item)
 
         if isinstance(resolved_item, JobDependency):
+            if not r3.utils.is_valid_job_id(resolved_item.job):
+                return False
             target = self.path / "jobs" / resolved_item.job / resolved_item.source
             return target.exists()
 
