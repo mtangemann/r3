@@ -854,3 +854,13 @@ def test_repository_get_job_by_id(repository: Repository) -> None:
         repository.get_job_by_id("invalid-job-id")
     with pytest.raises(KeyError):
         repository["invalid-job-id"]
+
+
+def test_repository_does_not_contain_dependency_with_non_canonical_job_id(
+    repository: Repository,
+) -> None:
+    # A dependency whose job id escapes jobs/ and points back at an existing file:
+    # the raw join would report it as contained, so it must be rejected as invalid.
+    (repository.path / "marker").write_text("x")
+    dependency = JobDependency(destination="d", job="..", source="marker")
+    assert dependency not in repository
