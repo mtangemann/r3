@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterator, Optional, Union
 import yaml
 from executor import execute
 
+import r3.utils
 from r3.job import Dependency, GitDependency, Job, JobDependency
 
 
@@ -53,11 +54,14 @@ class Storage:
         points at that stored job. The latter matters because `remove` and
         `checkout_job` use this check to guard operations on `job.path`.
 
+        A non-canonical id string raises ``ValueError`` (see ``_job_path``) rather
+        than returning ``False``.
+
         Parameters:
             job_or_job_id: The job or job ID to check for.
         """
         if isinstance(job_or_job_id, str):
-            return (self.root / "jobs" / job_or_job_id).exists()
+            return self._job_path(job_or_job_id).exists()
 
         if isinstance(job_or_job_id, Job):
             if job_or_job_id.id is None:
@@ -70,6 +74,16 @@ class Storage:
             )
 
         raise TypeError(f"Expected Job or str, got {type(job_or_job_id)}")
+
+    def _job_path(self, job_id: str) -> Path:
+        """Validates ``job_id`` and returns its path under ``jobs/``.
+
+        The single choke point where a job id becomes a ``jobs/`` path. Validating
+        here refuses a non-canonical id — path traversal, glob, separators — before it
+        is ever joined onto the storage root.
+        """
+        r3.utils.validate_job_id(job_id)
+        return self.root / "jobs" / job_id
 
     def get(
         self,
@@ -89,11 +103,12 @@ class Storage:
         Returns:
             The job with the given ID.
         """
-        if job_id not in self:
+        job_path = self._job_path(job_id)
+        if not job_path.exists():
             raise FileNotFoundError(f"Job not found: {job_id}")
 
         return Job(
-            self.root / "jobs" / job_id,
+            job_path,
             job_id,
             cached_timestamp=cached_timestamp,
             cached_metadata=cached_metadata,
@@ -241,7 +256,7 @@ class Storage:
             self.checkout_job(job, destination)
             return
 
-        source = self.root / "jobs" / dependency.job / dependency.source
+        source = self._job_path(dependency.job) / dependency.source
 
         os.makedirs(destination.parent, exist_ok=True)
         os.symlink(source, destination)

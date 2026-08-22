@@ -220,7 +220,7 @@ class Repository:
         """
         try:
             return self._storage.get(job_id=job_id)
-        except FileNotFoundError as error:
+        except (FileNotFoundError, ValueError) as error:
             message = f"Job with ID {job_id} not found in this repository."
             raise KeyError(message) from error
 
