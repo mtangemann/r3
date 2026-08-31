@@ -7,16 +7,8 @@ import pytest
 def _isolated_git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give every test a self-contained git identity, independent of the machine.
 
-    Several tests create throwaway git repos and commit into them (via
-    ``executor.execute``), which needs an author/committer identity. Nulling the
-    global and system git config makes a LOCAL run reproduce the bare-CI state (no
-    ambient ``~/.gitconfig`` identity), so a green local run genuinely proves the CI
-    fix -- identity then comes only from the ``GIT_*`` env vars set below.
-
-    ``executor.execute(...)`` spawns subprocesses that inherit ``os.environ``, so
-    ``monkeypatch.setenv`` is sufficient; no per-call plumbing is needed. This fixture
-    is function-scoped because it uses the function-scoped ``monkeypatch`` fixture
-    (which auto-reverts), so the env changes never leak between tests.
+    Also nulls ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` so machine-local settings
+    (e.g. ``commit.gpgsign``) can't make ``git commit`` fail regardless of identity.
     """
     monkeypatch.setenv("GIT_AUTHOR_NAME", "R3 Test")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "R3 Test")

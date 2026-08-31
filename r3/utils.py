@@ -7,18 +7,7 @@ from executor import ExternalCommandFailed, execute
 
 
 def is_valid_job_id(job_id: object) -> bool:
-    """Returns whether ``job_id`` is a canonical UUID string.
-
-    A job id is only ever produced as ``str(uuid.uuid4())``, so the one legitimate
-    shape is a canonical 36-character UUID: lowercase hex with hyphens, no braces,
-    no ``urn:`` prefix. This is the single choke point that rejects everything a
-    canonical UUID is not — non-strings, ``".."``, absolute/relative paths, path
-    separators, glob metacharacters, uppercase, ``{braces}``, and ``urn:`` forms —
-    before an id is ever used to derive a filesystem path, a glob, an S3 key, or an
-    index value. The round-trip (parse AND re-serialise to the same string) is what
-    makes it exact: ``uuid.UUID`` accepts many non-canonical spellings, but only the
-    canonical one serialises back to itself.
-    """
+    """Returns whether ``job_id`` is a canonical UUID string (as produced by uuid4)."""
     try:
         return isinstance(job_id, str) and str(uuid.UUID(job_id)) == job_id
     except (ValueError, AttributeError, TypeError):

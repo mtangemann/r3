@@ -33,4 +33,7 @@ limits, see [LIMITATIONS.md](LIMITATIONS.md).
   sweep every configured remote; that must be revisited before remotes can be shared.
 - **Power-loss durability (`fsync`).** The current crash model covers process
   interruption, not power loss.
-- **Python 3.13 support.**
+- **Python 3.13 support.** Blocked on the `executor` dependency, which imports the
+  `pipes` stdlib module (removed in 3.13) at import time, so r3 can't be imported on
+  3.13 at all. r3's own code is 3.13-clean; unblocking needs a 3.13-compatible
+  `executor` release (23.2 still imports `pipes`) or replacing that dependency.
