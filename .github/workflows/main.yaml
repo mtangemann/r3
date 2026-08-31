@@ -52,5 +52,7 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
+      # AWS_CONFIG_FILE=/dev/null keeps a global ~/.aws/config (endpoint_url) from
+      # bypassing moto. live_s3 tests need real credentials and stay out of CI.
       - name: Run tests
-        run: uv run python -m pytest
+        run: AWS_CONFIG_FILE=/dev/null uv run python -m pytest -m "not live_s3"

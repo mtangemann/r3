@@ -1,5 +1,11 @@
 # R3 - **R**epository for **R**eliable **R**esearch
 
+> **Remote storage (alpha).** R3 can archive committed jobs to an S3/CEPH bucket to
+> free local space while keeping them findable, then fetch them back on demand. This
+> is an alpha feature — the bucket/on-disk layout, CLI, and Python API may change in
+> backward-incompatible ways, so back up anything you can't reproduce. See the
+> [remote storage guide](docs/remote-storage.md).
+
 ## Usage
 Use the `stable` branch to get the latest release of R3:
 

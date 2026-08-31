@@ -1,13 +1,32 @@
 """R3 command line interface."""
 # ruff: noqa: T201
 
+import os
 import sys
+import tempfile
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import click
+import yaml
 
 import r3
+from r3.archive import ArchiveError
+from r3.manifest import ManifestError
+from r3.remote import Remote, RemoteError, validate_remote_name
+
+# Expected operational failures of move/fetch/remote commands. These are reported to
+# the user as a concise Click error (non-zero exit, no traceback) rather than being
+# allowed to escape as a raw Python traceback. Anything not listed here (e.g. an
+# unexpected programmer error) is deliberately left to surface with its traceback.
+_OPERATIONAL_ERRORS = (
+    ValueError,
+    KeyError,
+    RemoteError,
+    RuntimeError,
+    ArchiveError,
+    ManifestError,
+)
 
 
 @click.group(
@@ -21,13 +40,37 @@ def cli() -> None:
     pass
 
 
-def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
-    """Returns the repository at the given path, reporting problems to the user."""
+def _resolve_repository_path(repository_path: Optional[Path]) -> Path:
+    """Returns the repository path, reporting a missing source to the user.
+
+    Shared by ``_get_repository`` and the ``remote`` subcommands (which operate on the
+    raw ``r3.yaml`` and must stay usable even when a stored remote config is corrupt,
+    so they must not build a full ``Repository``). Keeping the check here means the
+    "no repository given" message naming both ``--repository`` and ``R3_REPOSITORY``
+    lives in exactly one place.
+    """
     if repository_path is None:
         raise click.UsageError(
             "No repository given. Use --repository or set the R3_REPOSITORY "
             "environment variable."
         )
+    return repository_path
+
+
+def _operational_error(error: Exception) -> click.ClickException:
+    """Renders an expected operational failure as a concise Click error.
+
+    ``str(KeyError(...))`` is the repr of its argument, which would wrap the message
+    in quotes, so unwrap it to match how ``_get_job`` reports a missing job.
+    """
+    if isinstance(error, KeyError):
+        return click.ClickException(str(error.args[0]))
+    return click.ClickException(str(error))
+
+
+def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
+    """Returns the repository at the given path, reporting problems to the user."""
+    repository_path = _resolve_repository_path(repository_path)
 
     try:
         return r3.Repository(repository_path)
@@ -36,19 +79,80 @@ def _get_repository(repository_path: Optional[Path]) -> r3.Repository:
 
 
 def _get_job(repository: r3.Repository, job_id: str) -> r3.Job:
-    """Returns the job with the given ID, reporting a missing job to the user."""
+    """Returns the job with the given ID, reporting a bad/missing id to the user."""
     try:
         return repository.get_job_by_id(job_id)
+    except ValueError as error:
+        # An invalid (non-canonical) id: the message is already the plain string.
+        raise click.ClickException(str(error)) from error
     except KeyError as error:
         # `str` of a KeyError is the repr of its argument, which would add quotes.
         raise click.ClickException(str(error.args[0])) from error
+
+
+def _config_has_comments(config_text: str) -> bool:
+    """Best-effort detection of YAML comments in the raw ``r3.yaml`` text.
+
+    ``remote add``/``remote remove`` rewrite ``r3.yaml`` via ``yaml.dump``, which
+    drops any comments, blank lines, and key ordering. This flags the common comment
+    shapes so the user can be warned before that happens. It is a heuristic, not a
+    YAML parser: it does not try to exclude a ``#`` inside a quoted scalar.
+    """
+    for line in config_text.splitlines():
+        if line.strip().startswith("#"):
+            return True
+        # An inline comment: a `#` after some content, preceded by whitespace.
+        if " #" in line or "\t#" in line:
+            return True
+    return False
+
+
+def _warn_if_config_has_comments(config_path: Path) -> None:
+    """Warn that rewriting ``r3.yaml`` will not preserve comments/formatting."""
+    try:
+        config_text = config_path.read_text()
+    except OSError:
+        return
+    if _config_has_comments(config_text):
+        print(
+            "Warning: comments and formatting in r3.yaml are not preserved by "
+            "'r3 remote add/remove'."
+        )
+
+
+def _write_config_atomically(config_path: Path, config: Dict[str, Any]) -> None:
+    """Writes ``r3.yaml`` via a same-directory temp file + ``os.replace``.
+
+    A plain ``open(..., "w")`` truncates in place, so a crash mid-write can leave a
+    truncated ``r3.yaml`` that has lost the whole ``remotes`` map. Writing to a temp
+    file in the same directory and atomically renaming it over the target means a
+    reader only ever sees either the old file or the fully-written new one.
+    """
+    directory = config_path.parent
+    fd, temp_name = tempfile.mkstemp(dir=directory, prefix=".r3.yaml.", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w") as temp_file:
+            yaml.dump(config, temp_file)
+        # mkstemp creates the temp file 0600; preserve the existing file's mode so a
+        # shared (group-readable) repo config is not silently narrowed on rewrite.
+        if config_path.exists():
+            os.chmod(temp_path, config_path.stat().st_mode & 0o777)
+        os.replace(temp_path, config_path)
+    except BaseException:
+        # Swallow a secondary cleanup error so it cannot mask the original failure.
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 @cli.command()
 @click.argument("path", type=click.Path(file_okay=False, exists=False, path_type=Path))
 def init(path: Path):
     """Creates an empty R3 repository at PATH.
-    
+
     The given PATH must not exist yet.
     """
 
@@ -137,10 +241,13 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     If any other job in the R3 repository depends on the job, removing it will fail.
     """
     repository = _get_repository(repository_path)
-    job = _get_job(repository, job_id)
 
+    # Pass the raw id, not a materialized Job: `remove` must stay usable in the retry
+    # state where the index row still says local but jobs/<id> is already gone (which
+    # `_get_job` would reject as corruption). An unknown id is reported by `remove`
+    # itself, via a ValueError naming the job.
     try:
-        repository.remove(job)
+        repository.remove(job_id)
     except ValueError as error:
         raise click.ClickException(str(error)) from error
 
@@ -164,6 +271,10 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     )
 )
 @click.option(
+    "--location", type=str, default=None,
+    help="Filter by job location.",
+)
+@click.option(
     "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -171,12 +282,16 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     show_envvar=True,
 )
 def find(
-    tags: Iterable[str], latest: bool, long: bool, repository_path: Optional[Path]
+    tags: Iterable[str],
+    latest: bool,
+    long: bool,
+    location: Optional[str],
+    repository_path: Optional[Path],
 ) -> None:
     """Searches the R3 repository for jobs matching the given conditions."""
     repository = _get_repository(repository_path)
     query = {"tags": {"$all": tags}}
-    for job in repository.find(query, latest):
+    for job in repository.find(query, latest, location=location):
         if long:
             assert job.timestamp is not None
             datetime = job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S")
@@ -196,7 +311,7 @@ def find(
 )
 def rebuild_index(repository_path: Optional[Path]):
     """Rebuild the search index.
-    
+
     The index is used when querying for jobs. All R3 commands properly update the index.
     When job metadata is modified manually, however, the index needs to be rebuilt in
     order for the changes to take effect.
@@ -221,12 +336,344 @@ def edit(job_id: str, repository_path: Optional[Path]) -> None:
     repository = _get_repository(repository_path)
     job = _get_job(repository, job_id)
 
+    # Refuse a remote job before opening the editor: its files are not local, so
+    # `click.edit` would otherwise create a stray metadata.yaml at the (absent) job
+    # path. The check runs before any file is touched.
+    location = repository._index.get_location(job_id)
+    if location != "local":
+        raise click.ClickException(
+            f'Job {job_id} is on remote "{location}"; '
+            f"run `r3 fetch {job_id}` first."
+        )
+
     # Let user edit the metadata file of the job
     metadata_file_path = job.path / "metadata.yaml"
     click.edit(filename=str(metadata_file_path))
 
+    # Reload metadata from disk before indexing: `job` may have been constructed
+    # with cached metadata (get_job_by_id routes through Index.get), so updating the
+    # index directly from it would write back the pre-edit metadata.
+    job.reload_metadata()
+
     # Update job in search index (SQLite DB)
     repository._index.update(job)
+
+
+@cli.command()
+@click.argument("job_id", type=str)
+@click.argument("remote_name", type=str)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Show what would be moved without doing it.",
+)
+def move(
+    job_id: str, remote_name: str, repository_path: Optional[Path], dry_run: bool
+) -> None:
+    """Move a job to a remote storage location."""
+    repository = _get_repository(repository_path)
+    try:
+        if dry_run:
+            job = repository.get_job_by_id(job_id)
+            dependents = repository.find_dependents(job)
+            print(f"Would move job {job_id} to remote '{remote_name}'.")
+            if dependents:
+                print("The following jobs depend on this job:")
+                for dep in dependents:
+                    print(f"  - {dep.id}")
+            return
+        dependents = repository.move(job_id, remote_name)
+        print(f"Moved job {job_id} to remote '{remote_name}'.")
+        if dependents:
+            print("Warning: the following jobs depend on this job:")
+            for dep in dependents:
+                print(f"  - {dep.id}")
+    except _OPERATIONAL_ERRORS as error:
+        raise _operational_error(error) from error
+
+
+@cli.command()
+@click.argument("job_id", type=str)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def fetch(job_id: str, repository_path: Optional[Path]) -> None:
+    """Fetch a job from remote storage back to local."""
+    repository = _get_repository(repository_path)
+    try:
+        repository.fetch(job_id)
+        print(f"Fetched job {job_id} to local storage.")
+    except _OPERATIONAL_ERRORS as error:
+        raise _operational_error(error) from error
+
+
+@cli.group()
+def remote() -> None:
+    """Manage remote storage backends."""
+    pass
+
+
+@remote.command("add")
+@click.argument("name", type=str)
+@click.option(
+    "--type", "remote_type", type=str, required=True,
+    help="Remote type (e.g. s3).",
+)
+@click.option("--bucket", type=str, default=None, help="S3 bucket name.")
+@click.option("--prefix", type=str, default=None, help="S3 key prefix.")
+@click.option("--profile", type=str, default=None, help="AWS profile name.")
+@click.option("--endpoint-url", type=str, default=None, help="S3 endpoint URL.")
+@click.option(
+    "--addressing-style", type=str, default=None,
+    help="S3 addressing style ('auto', 'path', or 'virtual'). CEPH RGW usually "
+    "needs 'path'.",
+)
+@click.option(
+    "--request-checksum-calculation", type=str, default=None,
+    help="'when_supported' or 'when_required'. CEPH RGW builds that reject the "
+    "integrity headers 'when_supported' adds need 'when_required'.",
+)
+@click.option(
+    "--response-checksum-validation", type=str, default=None,
+    help="'when_supported' or 'when_required'.",
+)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def remote_add(
+    name: str,
+    remote_type: str,
+    bucket: Optional[str],
+    prefix: Optional[str],
+    profile: Optional[str],
+    endpoint_url: Optional[str],
+    addressing_style: Optional[str],
+    request_checksum_calculation: Optional[str],
+    response_checksum_validation: Optional[str],
+    repository_path: Optional[Path],
+) -> None:
+    """Add a remote storage backend."""
+    repository_path = _resolve_repository_path(repository_path)
+
+    # Reject a reserved ("local") or empty name before touching r3.yaml, so a
+    # rejection leaves the config byte-for-byte unchanged (the atomic writer below is
+    # never reached).
+    try:
+        validate_remote_name(name)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
+    config_path = repository_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    remotes = config.get("remotes", {})
+    if name in remotes:
+        print(f"Error: Remote '{name}' already exists.")
+        sys.exit(1)
+
+    remote_config: Dict[str, Any] = {"type": remote_type}
+    if bucket is not None:
+        remote_config["bucket"] = bucket
+    if prefix is not None:
+        remote_config["prefix"] = prefix
+    if profile is not None:
+        remote_config["profile"] = profile
+    if endpoint_url is not None:
+        remote_config["endpoint_url"] = endpoint_url
+    if addressing_style is not None:
+        remote_config["addressing_style"] = addressing_style
+    if request_checksum_calculation is not None:
+        remote_config["request_checksum_calculation"] = request_checksum_calculation
+    if response_checksum_validation is not None:
+        remote_config["response_checksum_validation"] = response_checksum_validation
+
+    # Validate the config before writing so a bad remote never lands in r3.yaml
+    # (a truncating write of an invalid entry could also drop the whole map).
+    try:
+        Remote.from_config(remote_config)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
+    remotes[name] = remote_config
+    config["remotes"] = remotes
+    _warn_if_config_has_comments(config_path)
+    _write_config_atomically(config_path, config)
+
+    print(f"Added remote '{name}' (type: {remote_type}).")
+
+
+@remote.command("list")
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def remote_list(repository_path: Optional[Path]) -> None:
+    """List configured remote storage backends."""
+    repository_path = _resolve_repository_path(repository_path)
+    config_path = repository_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    remotes = config.get("remotes", {})
+    if not remotes:
+        print("No remotes configured.")
+        return
+
+    for name, remote_config in remotes.items():
+        print(f"{name} ({remote_config.get('type', 'unknown')})")
+
+
+@remote.command("remove")
+@click.argument("name", type=str)
+@click.option(
+    "--force", is_flag=True,
+    help="Drop the config entry even if residual (manifestless) debris remains "
+    "under the prefix; the leftover objects become unmanaged.",
+)
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+)
+def remote_remove(name: str, force: bool, repository_path: Optional[Path]) -> None:
+    """Remove a remote storage backend.
+
+    Dropping the config entry does not delete any bucket objects; it only makes them
+    unreachable through R3. To avoid orphaning live jobs or silently abandoning
+    debris, the bucket is probed directly (never the index, which is a disposable
+    cache): complete jobs block removal outright, and residual debris blocks it
+    unless --force is given.
+    """
+    repository_path = _resolve_repository_path(repository_path)
+    config_path = repository_path / "r3.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    remotes = config.get("remotes", {})
+    if name not in remotes:
+        print(f"Error: Remote '{name}' does not exist.")
+        sys.exit(1)
+
+    # A hand-corrupted stored config must report cleanly (this is exactly the
+    # recovery scenario remove exists for), matching remote add's validation.
+    try:
+        remote = Remote.from_config(remotes[name])
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
+    # 1. Complete jobs (a manifest exists) must never be orphaned: refuse outright.
+    #    A transport failure while probing the bucket is an expected operational
+    #    error, reported concisely rather than as a raw traceback.
+    try:
+        job_ids = list(remote.list_job_ids())
+    except RemoteError as error:
+        raise click.ClickException(str(error)) from error
+    if job_ids:
+        raise click.ClickException(
+            f"Remote '{name}' still stores complete jobs: "
+            f"{', '.join(sorted(job_ids))}. Fetch or remove them first."
+        )
+
+    # 2. Residual debris: with no complete manifests, any remaining object or any
+    #    incomplete multipart upload under the prefix is leftover debris.
+    try:
+        debris = [f"object {key}" for key in remote.iter_object_keys()]
+        debris += [
+            f"incomplete multipart upload {key} (upload {upload_id})"
+            for key, upload_id in remote.list_incomplete_multipart_uploads()
+        ]
+    except RemoteError as error:
+        raise click.ClickException(str(error)) from error
+    if debris:
+        if not force:
+            listing = "\n".join(f"  - {item}" for item in debris)
+            raise click.ClickException(
+                f"Remote '{name}' has residual debris that would be orphaned:\n"
+                f"{listing}\nUse --force to remove the config entry anyway."
+            )
+        print(f"Warning: the following objects will become unmanaged for '{name}':")
+        for item in debris:
+            print(f"  - {item}")
+
+    # 3. Safe to drop the config entry.
+    del remotes[name]
+    config["remotes"] = remotes
+    _warn_if_config_has_comments(config_path)
+    _write_config_atomically(config_path, config)
+
+    print(f"Removed remote '{name}'.")
+
+
+@remote.command("check")
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+    show_envvar=True,
+)
+def remote_check(repository_path: Optional[Path]) -> None:
+    """Reconcile the index against the configured REMOTE bucket(s) (read-only).
+
+    This checks only the configured remote storage backend(s): it reconciles the
+    index against each remote's bucket and reports drift. It does NOT verify local
+    job integrity, so it is not a full-repository check.
+
+    This mutates nothing. It reports resurrection-risk manifests, manifestless job
+    prefixes, leftover staging manifests, broken remote rows, and incomplete
+    multipart uploads. Exits non-zero if any issue is found, so it is script-friendly.
+    """
+    repository = _get_repository(repository_path)
+    report = repository.remote_check()
+
+    print(
+        "Reconciling the index against the configured remote bucket(s) "
+        "(read-only; local job integrity is not verified)."
+    )
+
+    if not report.has_findings:
+        print("No issues found.")
+        return
+
+    def _emit(title: str, findings: list) -> None:
+        if not findings:
+            return
+        print(f"{title}:")
+        for finding in findings:
+            print(f"  - {finding.job_id} [{finding.remote}]: {finding.detail}")
+
+    _emit(
+        "Resurrection-risk orphans / location disagreements",
+        report.resurrection_risks,
+    )
+    _emit("Manifestless job prefixes", report.manifestless_prefixes)
+    _emit("Leftover staging manifests", report.staging_manifests)
+    _emit("Broken remote rows", report.broken_rows)
+    _emit("Malformed manifest keys", report.malformed_keys)
+
+    if report.incomplete_multipart_uploads:
+        print("Incomplete multipart uploads:")
+        for upload in report.incomplete_multipart_uploads:
+            print(
+                f"  - {upload.key} [{upload.remote}] (upload {upload.upload_id})"
+            )
+
+    sys.exit(1)
 
 
 if __name__ == "__main__":

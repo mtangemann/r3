@@ -604,3 +604,57 @@ def test_git_dependency_is_resolved_if_commit_is_not_none() -> None:
         "https://github.com/user/model.git",
     )
     assert not dependency.is_resolved()
+
+
+def test_job_remote_projection_raises_on_file_access():
+    """A remote projection exposes cached metadata but raises on file access."""
+    job = r3.Job(
+        "/nonexistent/path",
+        id="abc",
+        cached_metadata={"tags": ["x"]},
+        remote_location="archive",
+    )
+    # Metadata / id remain available from the cache.
+    assert job.id == "abc"
+    assert job.metadata == {"tags": ["x"]}
+    # Files, hash, and dependencies are not available until the job is fetched.
+    with pytest.raises(r3.FilesUnavailableError):
+        _ = job.files
+    with pytest.raises(r3.FilesUnavailableError):
+        job.hash()
+    with pytest.raises(r3.FilesUnavailableError):
+        _ = job.dependencies
+
+
+def test_job_reload_metadata_refuses_on_remote_projection(tmp_path: Path) -> None:
+    """reload_metadata must refuse on a remote projection rather than silently
+    replacing the valid cached remote metadata with an empty dict."""
+    job = r3.Job(
+        tmp_path,
+        id=str(uuid.uuid4()),
+        cached_metadata={"tags": ["cached"]},
+        remote_location="archive",
+    )
+
+    with pytest.raises(r3.FilesUnavailableError):
+        job.reload_metadata()
+
+    # The cached metadata survives, and no local metadata file is created.
+    assert job.metadata == {"tags": ["cached"]}
+    assert job.uses_cached_metadata()
+    assert not (tmp_path / "metadata.yaml").exists()
+
+
+def test_job_save_metadata_refuses_on_remote_projection(tmp_path: Path) -> None:
+    """save_metadata must refuse on a remote projection and write no file."""
+    job = r3.Job(
+        tmp_path,
+        id=str(uuid.uuid4()),
+        cached_metadata={"tags": ["cached"]},
+        remote_location="archive",
+    )
+
+    with pytest.raises(r3.FilesUnavailableError):
+        job.save_metadata()
+
+    assert not (tmp_path / "metadata.yaml").exists()

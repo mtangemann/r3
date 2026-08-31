@@ -17,9 +17,9 @@ def is_valid_job_id(job_id: object) -> bool:
 def validate_job_id(job_id: object) -> None:
     """Raises ``ValueError`` unless ``job_id`` is a canonical UUID string.
 
-    Call this at every boundary that turns an id into a filesystem path, before the
-    path is built. ``ValueError`` (rather than a bespoke type) is deliberate: the CLI
-    already funnels these into clean user-facing errors.
+    Call this at every boundary that turns an id into a path, glob, key, or index
+    value, before any local or remote mutation. ``ValueError`` (rather than a bespoke
+    type) is deliberate: the CLI already funnels these into clean user-facing errors.
     """
     if not is_valid_job_id(job_id):
         raise ValueError(f"Invalid job id: {job_id!r}")
@@ -71,6 +71,10 @@ def hash_file(path: Path, chunk_size: int = 2**16) -> str:
 
 def hash_str(string: str) -> str:
     return hashlib.sha256(string.encode()).hexdigest()
+
+
+def hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def git_commit_exists(repository: Path, commit: str) -> bool:
