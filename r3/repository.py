@@ -232,7 +232,9 @@ class Repository:
             latest: Whether to return the latest job or all jobs with the given tags.
 
         Returns:
-            The jobs that match the given tags.
+            The jobs that match the given tags, ordered oldest-first by timestamp
+            (ties broken by job id). When `latest` is set, only the single most
+            recent job is returned.
         """
         return self._index.find(query, latest)
 

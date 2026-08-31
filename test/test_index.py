@@ -182,6 +182,69 @@ def test_index_find(storage_with_jobs: Storage):
     assert set(result.id for result in results) == {job1.id, job2.id}
 
 
+def _with_timestamp(job: Job, timestamp: datetime.datetime) -> Job:
+    """Re-wraps a committed job with an explicit cached timestamp."""
+    return Job(job.path, job.id, cached_timestamp=timestamp)
+
+
+def test_index_find_orders_by_timestamp(storage: Storage):
+    """`find` returns jobs oldest-first, independent of insertion order."""
+    index = Index(storage)
+
+    early, middle, late = (storage.add(get_dummy_job("base")) for _ in range(3))
+
+    # Assign explicit, non-chronological timestamps and insert into the index in an
+    # order that does not match timestamp order. The result can only come out sorted
+    # if `find` orders by timestamp rather than by insertion (rowid) order.
+    index.add(_with_timestamp(middle, datetime.datetime(2021, 1, 2)))
+    index.add(_with_timestamp(late, datetime.datetime(2021, 1, 3)))
+    index.add(_with_timestamp(early, datetime.datetime(2021, 1, 1)))
+
+    results = index.find({})
+
+    assert [job.timestamp for job in results] == [
+        datetime.datetime(2021, 1, 1),
+        datetime.datetime(2021, 1, 2),
+        datetime.datetime(2021, 1, 3),
+    ]
+
+
+def test_index_find_breaks_timestamp_ties_by_id(storage: Storage):
+    """Identical timestamps are ordered deterministically by job id."""
+    index = Index(storage)
+    timestamp = datetime.datetime(2021, 1, 1)
+
+    jobs = [storage.add(get_dummy_job("base")) for _ in range(4)]
+    by_id = sorted(jobs, key=lambda job: str(job.id))
+
+    # Insert id-descending so a correct (id-ascending) result cannot come from
+    # insertion order.
+    for job in reversed(by_id):
+        index.add(_with_timestamp(job, timestamp))
+
+    results = index.find({})
+
+    assert [job.id for job in results] == [job.id for job in by_id]
+
+
+def test_index_find_latest_breaks_timestamp_ties_by_id(storage: Storage):
+    """`latest` resolves timestamp ties deterministically by job id."""
+    index = Index(storage)
+    timestamp = datetime.datetime(2021, 1, 1)
+
+    jobs = [storage.add(get_dummy_job("base")) for _ in range(4)]
+    by_id = sorted(jobs, key=lambda job: str(job.id))
+
+    # Insert id-ascending so the largest id is not simply the first inserted.
+    for job in by_id:
+        index.add(_with_timestamp(job, timestamp))
+
+    results = index.find({}, latest=True)
+
+    assert len(results) == 1
+    assert results[0].id == by_id[-1].id
+
+
 @pytest.mark.parametrize(
     "tags,expected",
     [
