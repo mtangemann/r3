@@ -173,7 +173,10 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
 def find(
     tags: Iterable[str], latest: bool, long: bool, repository_path: Optional[Path]
 ) -> None:
-    """Searches the R3 repository for jobs matching the given conditions."""
+    """Searches the R3 repository for jobs matching the given conditions.
+
+    Results are listed oldest-first by timestamp.
+    """
     repository = _get_repository(repository_path)
     query = {"tags": {"$all": tags}}
     for job in repository.find(query, latest):

@@ -200,11 +200,15 @@ class Index:
             latest: Whether to return the latest job or all jobs with the given tags.
 
         Returns:
-            The jobs that match the given query.
+            The jobs that match the given query, ordered oldest-first by timestamp,
+            ties broken by job id. When `latest` is set, only the single most recent
+            job is returned.
         """
         sql_query = f"SELECT id, timestamp, metadata FROM jobs WHERE {mongo_to_sql(query)}"  # noqa: E501
         if latest:
-            sql_query += " ORDER BY timestamp DESC LIMIT 1"
+            sql_query += " ORDER BY timestamp DESC, id DESC LIMIT 1"
+        else:
+            sql_query += " ORDER BY timestamp ASC, id ASC"
 
         with Transaction(self._path) as transaction:
             transaction.execute(sql_query)
