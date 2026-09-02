@@ -257,8 +257,37 @@ CONDITION_TEST_CASES = [
         {"$elemMatch": {"$gt": 28, "$lt": 32}},
         "EXISTS (SELECT 1 FROM json_each(field) WHERE value > 28 AND value < 32)",
     ),
+    # single quotes in string values must be doubled, not left to break the SQL
+    ({"$eq": "a'b"},                 "field = 'a''b'"),
+    ({"$ne": "a'b"},                 "field != 'a''b'"),
+    ({"$glob": "a'b*"},              "field GLOB 'a''b*'"),
+    ({"$in": ["a'b"]},               "field IN ('a''b')"),
 ]
 @pytest.mark.parametrize("mongo,sql", CONDITION_TEST_CASES)
 def test_condition_to_sql(mongo, sql):
     condition = Condition.from_mongo(mongo)
     assert condition.to_sql("field") == sql
+
+
+def test_string_values_with_single_quotes_are_escaped(tmp_path):
+    path = tmp_path / "db.sqlite"
+    connection = sqlite3.connect(path)
+    cursor = connection.cursor()
+    cursor.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, metadata JSON NOT NULL)")
+    cursor.execute(
+        "INSERT INTO jobs (id, metadata) VALUES (?, ?)",
+        ("j1", json.dumps({"path": "a'b/c"})),
+    )
+    connection.commit()
+
+    # Must not raise (no broken/injected SQL) and must match literally.
+    # (Build the WHERE clause first — an f-string can't contain the backslashes/
+    # nested quotes this would otherwise need on Python < 3.12.)
+    glob_where = mongo_to_sql({"path": {"$glob": "a'b/*"}})
+    cursor.execute("SELECT id FROM jobs WHERE " + glob_where)
+    assert {row[0] for row in cursor.fetchall()} == {"j1"}
+
+    eq_where = mongo_to_sql({"path": "a'b/c"})
+    cursor.execute("SELECT id FROM jobs WHERE " + eq_where)
+    assert {row[0] for row in cursor.fetchall()} == {"j1"}
+    connection.close()
