@@ -6,9 +6,9 @@
 
 ## Motivation
 
-`metadata.path` has, over years of use, become a load-bearing convention: jobs
-are organized in a virtual filesystem addressed by a single slash-separated
-`path` string (`gold-standard/experiments/2026-02-16-foo/report`). It is
+`metadata.path` has, over years of use, become a core convention: jobs are
+organized in a virtual filesystem addressed by a single slash-separated `path`
+string (`gold-standard/experiments/2026-02-16-foo/report`). It is
 project-prefixed, globally unique by that prefix, and **mutable** (a job can be
 re-`path`ed later; dependencies pin job ids, not paths, so re-pathing is safe).
 The leaf segment is effectively the job's name — there is no separate `name`
@@ -112,7 +112,8 @@ placeholders + a params list threaded through `to_sql`). Tracked separately.
 `r3 ls <prefix>` shows **one level** of the virtual filesystem under `<prefix>`,
 the way you'd browse a directory tree. It is a navigation tool; `find -p` remains
 the tool for glob search. The `<prefix>` argument is a **literal path**, not a
-glob.
+glob, and a **trailing slash is insignificant** — `r3 ls foo/bar/` is treated as
+`r3 ls foo/bar` (trailing slashes are stripped on input; see B7).
 
 ### B2. Entities shown
 
@@ -184,13 +185,15 @@ tasks/
 ### B6. Flags
 
 - `-l/--long` — add job id and tags to job rows (see B4); honors `--no-tags`.
-- `-d` — self entry only: show the `.` line (the job[s] at the prefix) without
-  expanding children. The explicit, discoverable form of "don't descend" —
-  replacing any trailing-slash magic.
 - `-t` — sort by timestamp instead of alphabetically. A leaf/`.` uses its latest
   revision time; a directory uses the max timestamp among its descendants (all
   already fetched). Default remains alphabetical.
 - `--repository` / `R3_REPOSITORY` — as for other commands.
+
+There is deliberately **no self-only flag** (v1): to see just the job(s) at an
+exact path without expanding the subtree, use `r3 find -p <path>` (a literal
+GLOB with no wildcard is an exact match; add `--latest` for the newest). A
+dedicated `ls` flag can be added later if a real need emerges, designed then.
 
 ### B7. Argument handling and edge cases
 
@@ -227,12 +230,13 @@ revisions). Build the sorted, interleaved listing from the buckets.
 - **`r3 ls`**: fixtures covering — pure directory; prefix-as-job (`.` entry);
   leaf/dir collision (both lines); revisions annotation and latest timestamp;
   root listing; empty result; trailing-slash equivalence; a prefix containing a
-  GLOB metacharacter (escaped, no over-match); `-d`, `-t`, `-l`/`--no-tags`.
+  GLOB metacharacter (escaped, no over-match); `-t`, `-l`/`--no-tags`.
 - Follows the repo's pytest + `pyfakefs` conventions and fixtures in
   `test/data/jobs/`.
 
 ## Non-goals / deferred (recap)
 
 `-q/--query`; parameter-bound `query.py`; dependency `find_latest`/`find_all`
-path sugar; path-hygiene lint; single-child directory-chain collapsing; the
-`docs/tutorial.md` cleanup (separate PR).
+path sugar; path-hygiene lint; single-child directory-chain collapsing; a
+self-only `r3 ls` flag (use `find -p` instead); the `docs/tutorial.md` cleanup
+(separate PR).
