@@ -3,7 +3,7 @@
 
 import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import click
 
@@ -154,6 +154,15 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     )
 )
 @click.option(
+    "--path", "-p", "path_glob", type=str, default=None,
+    help=(
+        "Only list jobs whose `path` matches this glob pattern. The pattern is a "
+        "literal SQLite GLOB (`*`, `?`, `[...]` are wildcards) and you add the "
+        "wildcards yourself, e.g. -p '*mnist*' or -p 'proj/experiments/*'. "
+        "Combined with --tag via AND."
+    )
+)
+@click.option(
     "--latest/--all", default=False,
     help="Whether to list all job matching the given conditions or only the latest job."
 )
@@ -164,6 +173,13 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     )
 )
 @click.option(
+    "--tags/--no-tags", "show_tags", default=True,
+    help=(
+        "Include the tags column in --long output (default: --tags). Use "
+        "--no-tags to drop it; the path column already shows where a job lives."
+    )
+)
+@click.option(
     "--repository",
     "repository_path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -171,22 +187,43 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
     show_envvar=True,
 )
 def find(
-    tags: Iterable[str], latest: bool, long: bool, repository_path: Optional[Path]
+    tags: Iterable[str],
+    path_glob: Optional[str],
+    latest: bool,
+    long: bool,
+    show_tags: bool,
+    repository_path: Optional[Path],
 ) -> None:
     """Searches the R3 repository for jobs matching the given conditions.
 
     Results are listed oldest-first by timestamp.
     """
     repository = _get_repository(repository_path)
-    query = {"tags": {"$all": tags}}
+    query = _build_find_query(tags, path_glob)
     for job in repository.find(query, latest):
         if long:
             assert job.timestamp is not None
-            datetime = job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S")
-            tags = " ".join(f"#{tag}" for tag in job.metadata.get("tags", []))
-            print(f"{job.id} | {datetime} | {tags}")
+            datetime_str = job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S")
+            path = job.metadata.get("path", "")
+            line = f"{job.id} | {datetime_str} | {path}"
+            if show_tags:
+                tags_str = " ".join(
+                    f"#{tag}" for tag in job.metadata.get("tags", [])
+                )
+                line += f" | {tags_str}"
+            print(line)
         else:
             print(job.id)
+
+
+def _build_find_query(
+    tags: Iterable[str], path_glob: Optional[str]
+) -> Dict[str, Any]:
+    """Builds the Mongo-style query for `find` from the tag/path options."""
+    query: Dict[str, Any] = {"tags": {"$all": list(tags)}}
+    if path_glob is not None:
+        query["path"] = {"$glob": path_glob}
+    return query
 
 
 @cli.command()
