@@ -34,10 +34,6 @@ environment:
   container: *container
   gpus: none
 
-commands:
-  run: python run.py
-  done: ls output/test
-
 parameters:
   name: World
 ```
