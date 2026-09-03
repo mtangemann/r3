@@ -11,7 +11,7 @@ r3 init path/to/repository
 
 Data files or directories can be added to the repository using the `commit-data`
 command. The command returns the path to the job within the repository, that can be
-used to specifiy dependencies later.
+used to specify dependencies later.
 
 ```bash
 $ r3 commit-data container-v1.sif --tag container
@@ -50,9 +50,6 @@ name = parameters.get("name", "World")
 with open("output/test", "w") as output_file:
     output_file.write(f"Hello {name}!")
 ```
-
-To facilitate developing jobs, dependencies for uncomitted jobs can be checked out
-using `r3 dev checkout`.
 
 Now commit your job to the repository:
 ```
