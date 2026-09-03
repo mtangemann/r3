@@ -12,7 +12,9 @@ for any interaction with repositories and stored jobs.
 - A repository is a folder with the following contents:
   - `r3.yaml`: Contains a single key `version` mapping to the version of this
     specification.
-  - `index.yaml` or `index.sqlite`: Optional cache of job metadata for fast retrieval.
+  - `index.sqlite`: Optional cache of job metadata for fast retrieval. (Older
+    repositories may still contain a legacy `index.yaml`; current R3 uses only
+    `index.sqlite`.)
   - `git/`: Cloned git repositories.
   - `jobs/`: Committed jobs.
 
@@ -24,7 +26,7 @@ for any interaction with repositories and stored jobs.
   `jobs/$uuid/`). Each job is assigned a uuid version 4 when committed to the
   repository.
 
-- Each job directory `job/$uuid/` is write protected and has the following contents:
+- Each job directory `jobs/$uuid/` is write protected and has the following contents:
   - `r3.yaml`: Job metadata used by R3 (write protected).
   - `metadata.yaml`: Custom job metadata that may be changed at any time.
   - `output/`: Directory for all job outputs. Contents may be changed.
@@ -53,14 +55,19 @@ for any interaction with repositories and stored jobs.
     - `commit` (git only): Full commit id.
     - `source`: Optional. A path relative to the item if only a specific subfolder
       or file is needed. For example: `output/checkpoints/best.pth`. Defaults to the
-      empty string.
+      empty string. Not applicable to `find_all` dependencies, which are always
+      checked out from the job root into per-job subdirectories of `destination`.
     - `destination`: A path relative to the job directory where the dependency will be
        checked out. For example: `pretrained_weights.pth`.
-    - `query` (job only): Optional. The original query that was resolved to this
-       dependency.
-  - `ignore`: A list of ignore patterns as used by git. The given patterns must not
-    match any file belonging to the job.
-  - `hashes`: A dictionary apping paths to hashes (as specified aboce). The key `.`
+    - `find_latest` / `find_all` (job only): Optional. The MongoDB-style query this
+       dependency was resolved from, recorded on the resolved dependency. (`query` /
+       `query_all` are the deprecated equivalents.)
+  - `ignore`: A list of ignore patterns. Currently only absolute patterns naming a
+    top-level file or directory are supported (e.g. `/output`, `/__pycache__`);
+    patterns not starting with `/` raise an error, and glob / `.gitignore`-style
+    matching is not supported. The given patterns must not match any file belonging to
+    the job.
+  - `hashes`: A dictionary mapping paths to hashes (as specified above). The key `.`
     maps to the overall job hash.
   - `timestamp`: The timestamp when the job was created as an ISO 8601 string.
 
