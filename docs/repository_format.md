@@ -62,11 +62,10 @@ for any interaction with repositories and stored jobs.
     - `find_latest` / `find_all` (job only): Optional. The MongoDB-style query this
        dependency was resolved from, recorded on the resolved dependency. (`query` /
        `query_all` are the deprecated equivalents.)
-  - `ignore`: A list of ignore patterns. Currently only absolute patterns naming a
-    top-level file or directory are supported (e.g. `/output`, `/__pycache__`);
-    patterns not starting with `/` raise an error, and glob / `.gitignore`-style
-    matching is not supported. The given patterns must not match any file belonging to
-    the job.
+  - `ignore`: A list of ignore patterns. Each pattern is an absolute path from the job
+    root (e.g. `/output`, `/__pycache__`, `/output/cache`) and is matched exactly, with
+    no glob or `.gitignore`-style matching; patterns not starting with `/` raise an
+    error. The given patterns must not match any file belonging to the job.
   - `hashes`: A dictionary mapping paths to hashes (as specified above). The key `.`
     maps to the overall job hash.
   - `timestamp`: The timestamp when the job was created as an ISO 8601 string.
