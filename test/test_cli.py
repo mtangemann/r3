@@ -316,3 +316,117 @@ def test_find_no_tags_drops_tags_column(repository: Repository) -> None:
     assert result.exit_code == 0
     assert "#a" not in result.output
     assert "proj/exp/pilot" in result.output
+
+
+def test_ls_lists_one_level(repository: Repository) -> None:
+    pilot = _commit_with(repository, "base", "proj/exp/pilot", [])
+    _commit_with(repository, "base", "proj/exp/grid/run1", [])
+    _commit_with(repository, "base", "proj/exp/grid/run2", [])
+    result = CliRunner().invoke(
+        cli, ["ls", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    assert len(lines) == 2  # grid/run1 + grid/run2 collapse into a single grid/ entry
+    # alphabetical, interleaved: "grid" (dir) before "pilot" (leaf)
+    assert lines[0].strip() == "grid/"
+    assert lines[1].startswith("pilot")
+    assert pilot.timestamp.strftime(r"%Y-%m-%d %H:%M:%S") in lines[1]
+
+
+def test_ls_self_entry_for_job_at_prefix(repository: Repository) -> None:
+    self_job = _commit_with(repository, "base", "proj/exp", [])
+    _commit_with(repository, "base", "proj/exp/pilot", [])
+    result = CliRunner().invoke(
+        cli, ["ls", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    assert lines[0].startswith(".")
+    assert self_job.timestamp.strftime(r"%Y-%m-%d %H:%M:%S") in lines[0]
+
+
+def test_ls_collision_shows_job_and_dir(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/analysis", [])
+    _commit_with(repository, "base", "proj/exp/analysis/report", [])
+    result = CliRunner().invoke(
+        cli, ["ls", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    # analysis is both a job leaf and a directory: both lines, leaf then dir
+    assert lines[0].startswith("analysis") and not lines[0].strip().endswith("/")
+    assert lines[1].strip() == "analysis/"
+
+
+def test_ls_revision_count_and_latest(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/pilot", ["v1"])
+    newer = _commit_with(repository, "base", "proj/exp/pilot", ["v2"])
+    result = CliRunner().invoke(
+        cli, ["ls", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    assert "(2 revisions)" in result.output
+    # latest revision (committed last -> later now()) supplies the timestamp
+    assert newer.timestamp.strftime(r"%Y-%m-%d %H:%M:%S") in result.output
+
+
+def test_ls_root_lists_top_level(repository: Repository) -> None:
+    _commit_with(repository, "base", "projA/exp/pilot", [])
+    _commit_with(repository, "base", "single", [])
+    result = CliRunner().invoke(
+        cli, ["ls", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    out = result.output
+    assert "projA/" in out
+    assert "single" in out
+
+
+def test_ls_trailing_slash_is_insignificant(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/pilot", [])
+    with_slash = CliRunner().invoke(
+        cli, ["ls", "proj/exp/", "--repository", str(repository.path)]
+    )
+    without_slash = CliRunner().invoke(
+        cli, ["ls", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert with_slash.output == without_slash.output
+
+
+def test_ls_empty_when_no_match(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/pilot", [])
+    result = CliRunner().invoke(
+        cli, ["ls", "nope/here", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    assert result.output.strip() == ""
+
+
+def test_ls_long_shows_id_and_tags(repository: Repository) -> None:
+    job = _commit_with(repository, "base", "proj/exp/pilot", ["t1"])
+    result = CliRunner().invoke(
+        cli, ["ls", "-l", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    assert job.id in result.output
+    assert "#t1" in result.output
+    no_tags = CliRunner().invoke(
+        cli, ["ls", "-l", "--no-tags", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert "#t1" not in no_tags.output
+
+
+def test_ls_time_sort_differs_from_alphabetical(repository: Repository) -> None:
+    # Commit "aaa" first (older), "zzz" second (newer):
+    # alphabetical -> aaa, zzz ; time (newest first) -> zzz, aaa.
+    _commit_with(repository, "base", "proj/exp/aaa", [])
+    _commit_with(repository, "base", "proj/exp/zzz", [])
+    alpha = CliRunner().invoke(
+        cli, ["ls", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert [ln.split()[0] for ln in alpha.output.strip().splitlines()] == ["aaa", "zzz"]
+    timed = CliRunner().invoke(
+        cli, ["ls", "-t", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert [ln.split()[0] for ln in timed.output.strip().splitlines()] == ["zzz", "aaa"]

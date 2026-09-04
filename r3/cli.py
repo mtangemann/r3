@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, Optional
 import click
 
 import r3
+import r3.ls
 
 
 @click.group(
@@ -223,6 +224,44 @@ def _build_find_query(
     if path_glob is not None:
         query["path"] = {"$glob": path_glob}
     return query
+
+
+@cli.command()
+@click.argument("prefix", type=str, default="")
+@click.option("--long/--short", "-l", default=False,
+    help="Show the job id and tags for each job entry, not just its timestamp.")
+@click.option(
+    "--tags/--no-tags", "show_tags", default=True,
+    help="Include tags in --long output (default: --tags).")
+@click.option("--time/--name", "-t", "by_time", default=False,
+    help="Sort by timestamp (newest first) instead of alphabetically.")
+@click.option(
+    "--repository",
+    "repository_path",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    envvar="R3_REPOSITORY",
+    show_envvar=True,
+)
+def ls(
+    prefix: str,
+    long: bool,
+    show_tags: bool,
+    by_time: bool,
+    repository_path: Optional[Path],
+) -> None:
+    """Lists one level of the job virtual filesystem under PREFIX.
+
+    Jobs are organized by their `metadata.path`. This shows the job(s) sitting
+    exactly at PREFIX (as `.`), jobs one level below it, and sub-directories
+    (names with `/`). Jobs without a `path` are not shown. With no PREFIX, lists
+    the top level.
+    """
+    repository = _get_repository(repository_path)
+    query = r3.ls.query_for_prefix(prefix)
+    jobs = repository.find(query)
+    entries = r3.ls.build_listing(jobs, prefix, by_time=by_time)
+    if entries:
+        print(r3.ls.format_listing(entries, long=long, show_tags=show_tags))
 
 
 @cli.command()
