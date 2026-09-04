@@ -37,6 +37,18 @@ def commit_dependent_job(repository: Repository, job: Job, destination: str) -> 
     return repository.commit(dependent_job)
 
 
+def _commit_with(repository: Repository, name: str, path: str, tags):
+    """Commits `test/data/jobs/<name>` with the given path/tags metadata.
+
+    NB: `storage.add` sets timestamp = now(), so rely on commit *order* for time
+    and read timestamps back from the returned committed job.
+    """
+    job = get_dummy_job(name)
+    job.metadata["path"] = path
+    job.metadata["tags"] = list(tags)
+    return repository.commit(job)
+
+
 def test_remove_removes_job(repository: Repository) -> None:
     job = repository.commit(get_dummy_job("base"))
     assert job.id is not None
@@ -227,3 +239,80 @@ def test_help_mentions_the_repository_env_var() -> None:
 
     assert result.exit_code == 0
     assert "R3_REPOSITORY" in result.output
+
+
+def test_find_long_shows_path_before_tags(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/pilot", ["a", "b"])
+    result = CliRunner().invoke(
+        cli, ["find", "-l", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    line = result.output.strip().splitlines()[0]
+    # Columns: id | datetime | path | tags
+    assert " | proj/exp/pilot | " in line
+    assert line.index("proj/exp/pilot") < line.index("#a")
+
+
+def test_find_long_blank_path_column_when_absent(repository: Repository) -> None:
+    job = get_dummy_job("base")
+    job.metadata["tags"] = ["only-tag"]
+    repository.commit(job)
+    result = CliRunner().invoke(
+        cli, ["find", "-l", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    # path column present but empty, still before tags
+    assert " |  | #only-tag" in result.output
+
+
+def test_find_path_filter_is_literal_glob(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/pilot", [])
+    _commit_with(repository, "base", "proj/other/run", [])
+    result = CliRunner().invoke(
+        cli, ["find", "-p", "proj/exp/*", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    ids = set(result.output.split())
+    pilot = repository.find({"path": "proj/exp/pilot"})[0]
+    other = repository.find({"path": "proj/other/run"})[0]
+    assert pilot.id in ids
+    assert other.id not in ids
+
+
+def test_find_path_filter_no_automatic_wildcard(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp", [])
+    _commit_with(repository, "base", "proj/experiment", [])
+    result = CliRunner().invoke(
+        cli, ["find", "-p", "proj/exp", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    exp = repository.find({"path": "proj/exp"})[0]
+    experiment = repository.find({"path": "proj/experiment"})[0]
+    ids = set(result.output.split())
+    assert exp.id in ids
+    assert experiment.id not in ids
+
+
+def test_find_path_and_tag_are_anded(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/a", ["keep"])
+    _commit_with(repository, "base", "proj/exp/b", ["drop"])
+    result = CliRunner().invoke(
+        cli,
+        ["find", "-p", "proj/exp/*", "-t", "keep",
+         "--repository", str(repository.path)],
+    )
+    assert result.exit_code == 0
+    keep = repository.find({"path": "proj/exp/a"})[0]
+    drop = repository.find({"path": "proj/exp/b"})[0]
+    ids = set(result.output.split())
+    assert keep.id in ids and drop.id not in ids
+
+
+def test_find_no_tags_drops_tags_column(repository: Repository) -> None:
+    _commit_with(repository, "base", "proj/exp/pilot", ["a"])
+    result = CliRunner().invoke(
+        cli, ["find", "-l", "--no-tags", "--repository", str(repository.path)]
+    )
+    assert result.exit_code == 0
+    assert "#a" not in result.output
+    assert "proj/exp/pilot" in result.output

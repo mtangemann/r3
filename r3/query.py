@@ -5,6 +5,17 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 
+def _sql_str(value: str) -> str:
+    """Return a SQL string literal for `value`, with embedded single quotes doubled.
+
+    Values are interpolated into SQL directly (not bound), so any `'` in a
+    user-supplied string — e.g. an `r3 find --path` pattern — must be escaped or
+    it breaks/injects the query. Might be replaced by proper parameter binding in
+    the future.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
 def mongo_to_sql(query: Dict[str, Any]) -> str:
     """Converts a MongoDB query document to a SQL query."""
     return Query.from_mongo(query).to_sql()
@@ -175,7 +186,7 @@ class Eq(Condition):
 
     def to_sql(self, field: str) -> str:
         if isinstance(self.value, str):
-            return f"{field} = '{self.value}'"
+            return f"{field} = {_sql_str(self.value)}"
         else:
             return f"{field} = {self.value}"
 
@@ -191,7 +202,7 @@ class Ne(Condition):
 
     def to_sql(self, field: str) -> str:
         if isinstance(self.value, str):
-            return f"{field} != '{self.value}'"
+            return f"{field} != {_sql_str(self.value)}"
         else:
             return f"{field} != {self.value}"
 
@@ -207,7 +218,7 @@ class In(Condition):
 
     def to_sql(self, field: str) -> str:
         values = [
-            f"'{value}'" if isinstance(value, str) else str(value)
+            _sql_str(value) if isinstance(value, str) else str(value)
             for value in self.values
         ]
         return f"{field} IN ({', '.join(values)})"
@@ -224,7 +235,7 @@ class Nin(Condition):
 
     def to_sql(self, field: str) -> str:
         values = [
-            f"'{value}'" if isinstance(value, str) else str(value)
+            _sql_str(value) if isinstance(value, str) else str(value)
             for value in self.values
         ]
         return f"{field} NOT IN ({', '.join(values)})"
@@ -292,7 +303,7 @@ class Glob(Condition):
         return True
 
     def to_sql(self, field: str) -> str:
-        return f"{field} GLOB '{self.pattern}'"
+        return f"{field} GLOB {_sql_str(self.pattern)}"
 
 
 @dataclass
@@ -309,7 +320,7 @@ class All(Condition):
             return "TRUE"
 
         subqueries = [
-            f"EXISTS (SELECT 1 FROM json_each({field}) WHERE value = '{value}')"
+            f"EXISTS (SELECT 1 FROM json_each({field}) WHERE value = {_sql_str(value)})"
             if isinstance(value, str)
             else f"EXISTS (SELECT 1 FROM json_each({field}) WHERE value = {value})"
             for value in self.values
