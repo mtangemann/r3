@@ -125,10 +125,12 @@ def test_build_listing_by_time_orders_newest_first_self_still_first():
 
 
 def test_format_listing_default_and_long():
+    ts1 = datetime.datetime(2026, 6, 1, 9, 0, 0)
+    ts2 = datetime.datetime(2026, 6, 2, 10, 0, 0)
     entries = [
-        Entry(kind="self", name=".", timestamp=datetime.datetime(2026, 6, 1, 9, 0, 0),
+        Entry(kind="self", name=".", timestamp=ts1,
               revisions=2, job_id="jid", tags=["main"]),
-        Entry(kind="leaf", name="eval", timestamp=datetime.datetime(2026, 6, 2, 10, 0, 0),
+        Entry(kind="leaf", name="eval", timestamp=ts2,
               revisions=1, job_id="jid2", tags=["eval"]),
         Entry(kind="dir", name="tasks"),
     ]
