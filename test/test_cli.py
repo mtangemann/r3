@@ -327,6 +327,7 @@ def test_ls_lists_one_level(repository: Repository) -> None:
     )
     assert result.exit_code == 0
     lines = result.output.strip().splitlines()
+    assert len(lines) == 2  # grid/run1 + grid/run2 collapse into a single grid/ entry
     # alphabetical, interleaved: "grid" (dir) before "pilot" (leaf)
     assert lines[0].strip() == "grid/"
     assert lines[1].startswith("pilot")

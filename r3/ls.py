@@ -71,7 +71,7 @@ def build_listing(
         elif path.startswith(prefix + "/"):
             remainder = path[len(prefix) + 1:]
         else:
-            continue  # outside the prefix (defensive; query shouldn't return these)
+            continue  # path is not under prefix: skip
 
         if "/" in remainder:
             dirs.setdefault(remainder.split("/", 1)[0], []).append(job)
