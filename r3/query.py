@@ -10,8 +10,8 @@ def _sql_str(value: str) -> str:
 
     Values are interpolated into SQL directly (not bound), so any `'` in a
     user-supplied string — e.g. an `r3 find --path` pattern — must be escaped or
-    it breaks/injects the query. This is the minimal fix; parameter binding is a
-    tracked follow-up.
+    it breaks/injects the query. Might be replaced by proper parameter binding in
+    the future.
     """
     return "'" + value.replace("'", "''") + "'"
 

@@ -175,8 +175,7 @@ def remove(job_id: str, repository_path: Optional[Path]) -> None:
 @click.option(
     "--tags/--no-tags", "show_tags", default=True,
     help=(
-        "Include the tags column in --long output (default: --tags). Use "
-        "--no-tags to drop it; the path column already shows where a job lives."
+        "Include the tags column in --long output (default: --tags)."
     )
 )
 @click.option(
