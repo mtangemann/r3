@@ -231,7 +231,14 @@ class Storage:
         for child in job.path.iterdir():
             if child.name not in ["r3.yaml", "metadata.yaml", "output"]:
                 if child.is_dir():
-                    shutil.copytree(child, destination / child.name)
+                    # Use shutil.copy, not copytree's default copy2: copy2 also
+                    # replicates the source's POSIX ACL onto the read-only file,
+                    # which fails (EACCES) on ACL filesystems under Python <= 3.11.
+                    # REVIEW: making checked-out directories writable may be worth
+                    # doing here (e.g. for run-time caches inside subdirectories).
+                    shutil.copytree(
+                        child, destination / child.name, copy_function=shutil.copy
+                    )
                 else:
                     shutil.copy(child, destination / child.name)
 
