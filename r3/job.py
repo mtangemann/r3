@@ -716,12 +716,12 @@ class GitDependency(Dependency):
     @property
     def repository_path(self) -> Path:
         """Returns the path where the repository will stored in R3."""
-        https_pattern = r"^https://github\.com/([^/]+)/([^/\.]+)(?:\.git)?$"
+        https_pattern = r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?$"
         match = re.match(https_pattern, self.repository)
         if match:
             return Path("git") / "github.com" / match.group(1) / match.group(2)
 
-        ssh_pattern = r"^git@github\.com:([^/]+)/([^/\.]+)(?:\.git)?$"
+        ssh_pattern = r"^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$"
         match = re.match(ssh_pattern, self.repository)
         if match:
             return Path("git") / "github.com" / match.group(1) / match.group(2)

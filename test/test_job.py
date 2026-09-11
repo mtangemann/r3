@@ -604,3 +604,35 @@ def test_git_dependency_is_resolved_if_commit_is_not_none() -> None:
         "https://github.com/user/model.git",
     )
     assert not dependency.is_resolved()
+
+
+@pytest.mark.parametrize(
+    ("repository", "expected"),
+    [
+        # Plain repository names, with and without the optional ``.git`` suffix.
+        ("https://github.com/user/model.git", Path("git/github.com/user/model")),
+        ("https://github.com/user/model", Path("git/github.com/user/model")),
+        ("git@github.com:user/model.git", Path("git/github.com/user/model")),
+        # Repository names containing dots must be preserved (only a trailing
+        # ``.git`` suffix is stripped). See mtangemann/r3#82.
+        (
+            "https://github.com/Susmit-A/DeepGaze3.5-VL.git",
+            Path("git/github.com/Susmit-A/DeepGaze3.5-VL"),
+        ),
+        (
+            "https://github.com/Susmit-A/DeepGaze3.5-VL",
+            Path("git/github.com/Susmit-A/DeepGaze3.5-VL"),
+        ),
+        (
+            "https://github.com/socketio/socket.io.git",
+            Path("git/github.com/socketio/socket.io"),
+        ),
+        (
+            "git@github.com:Susmit-A/DeepGaze3.5-VL.git",
+            Path("git/github.com/Susmit-A/DeepGaze3.5-VL"),
+        ),
+    ],
+)
+def test_git_dependency_repository_path(repository: str, expected: Path) -> None:
+    dependency = r3.GitDependency("destination", repository)
+    assert dependency.repository_path == expected
