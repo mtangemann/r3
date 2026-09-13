@@ -58,3 +58,21 @@ re-serializing the parsed config, which does not preserve comments, blank lines,
 order. Don't rely on hand-formatting there — it's lost on the next rewrite; keep notes
 about your setup elsewhere. Round-tripping through a comment-aware YAML library is a
 possible future improvement (see [ROADMAP.md](ROADMAP.md)).
+
+---
+
+## Git dependencies: GitHub only, and git-LFS data is not included
+
+A `git` dependency must be a GitHub repository — R3 recognizes only
+`https://github.com/<owner>/<repo>` and `git@github.com:<owner>/<repo>` URLs; other hosts
+(GitLab, Bitbucket, self-hosted, or arbitrary `git://`/`file://` remotes) are rejected with
+`Unrecognized git url`.
+
+R3 also does not handle **git-LFS**. Dependencies are mirrored with `git clone --bare`,
+which copies the LFS *pointer* files but not the LFS blobs, so checking out a dependency on
+an LFS-backed repo fails at the smudge step (`remote missing object …` /
+`smudge filter lfs failed`). It is also a provenance gap: a committed job's LFS data is not
+captured in the repository, so the job is not self-contained. A workaround and a design
+sketch for proper support are in
+[docs/ideas/git-lfs-support.md](docs/ideas/git-lfs-support.md) (tracked in
+[#84](https://github.com/mtangemann/r3/issues/84)).
