@@ -58,12 +58,11 @@ def checkout(job_dir: Path, repository_path: Path) -> None:
         repository.checkout(dependency, job_dir)
         click.echo(f"{dependency.destination}: checked out")
 
-        # Optional — uncomment (and `import subprocess`) to hack on a git
-        # dependency and push it back. A checked-out git dep is a detached
-        # checkout whose `origin` is r3's internal mirror; add the public repo
-        # as `upstream` so you can branch off it and open a PR. Git deps only —
-        # job deps are symlinks.
-        # if isinstance(dependency, r3.GitDependency):
+        # Optional — add `upstream` (the public repo) so you can hack on a git
+        # dependency and open a PR. Whole-repo checkouts only (root `source`, so
+        # the destination is a real clone). Uncomment and `import subprocess`.
+        # is_whole_repo = dependency.source == Path(".")
+        # if isinstance(dependency, r3.GitDependency) and is_whole_repo:
         #     subprocess.run(
         #         ["git", "remote", "add", "upstream", dependency.repository],
         #         cwd=destination, check=True,
